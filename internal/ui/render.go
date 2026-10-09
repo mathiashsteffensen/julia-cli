@@ -434,8 +434,10 @@ func (m *model) footer() string {
 			return mutedStyle.Render("↑↓ choose · enter apply · esc back")
 		}
 		text := "↑↓ choose  enter apply  esc back"
-		if m.codexSettings() {
-			text += "  tab model / reasoning"
+		if m.picker.kind == "model" && len(m.modelCatalogProviders()) > 1 {
+			text += "  tab provider"
+		} else if m.picker.kind == "reasoning" && m.codexSettings() {
+			text += "  tab models"
 		}
 		return mutedStyle.Render(text)
 	}

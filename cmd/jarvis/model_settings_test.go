@@ -24,7 +24,7 @@ func TestApplySessionSettingsSaveFailureIsAtomic(t *testing.T) {
 	cfg := config.Default()
 	saveFailure := errors.New("disk full")
 	saved := 0
-	err := applySessionSettings(cfg, current, "second-model", "high", func(candidate *core.Session) error {
+	err := applySessionSettings(cfg, current, "codex", "second-model", "high", func(candidate *core.Session) error {
 		saved++
 		if candidate == current {
 			t.Fatal("save received live session")
@@ -49,7 +49,7 @@ func TestApplySessionSettingsPersistsSelectionAndPreservesCodexContinuation(t *t
 	before := *current
 	store := &session.Store{Directory: t.TempDir()}
 	defer store.Close()
-	if err := applySessionSettings(config.Default(), current, "second-model", "", store.Save); err != nil {
+	if err := applySessionSettings(config.Default(), current, "codex", "second-model", "", store.Save); err != nil {
 		t.Fatal(err)
 	}
 	saved, err := store.Load(current.ID)
@@ -74,36 +74,73 @@ func TestApplySessionSettingsValidationDoesNotPersist(t *testing.T) {
 			current.Provider = tt.provider
 			before := *current
 			calls := 0
-			err := applySessionSettings(config.Default(), current, tt.model, tt.effort, func(*core.Session) error { calls++; return nil })
+			err := applySessionSettings(config.Default(), current, tt.provider, tt.model, tt.effort, func(*core.Session) error { calls++; return nil })
 			if err == nil || calls != 0 || !reflect.DeepEqual(*current, before) {
 				t.Fatal("invalid setting changed session", err, calls)
 			}
 		})
 	}
 }
-func TestAPIModelChangeRequiresClearForEveryContinuationKind(t *testing.T) {
+func TestIncompatibleModelSwitchStartsFreshAndPreservesPreviousSession(t *testing.T) {
 	for _, tt := range []struct {
-		name string
-		fill func(*core.Session)
-	}{{"messages", func(s *core.Session) { s.Messages = []core.Message{{Role: "assistant", Content: "history"}} }}, {"state", func(s *core.Session) { s.State = json.RawMessage(`{}`) }}, {"remote ID", func(s *core.Session) { s.RemoteID = "thread" }}, {"pending tool", func(s *core.Session) { s.PendingTool = &core.ToolCall{Name: "Read"} }}} {
+		name, fromProvider, toProvider, model, reasoning string
+	}{
+		{"OpenRouter model change", "compatible", "compatible", "new-model", ""},
+		{"switch to OpenRouter", "codex", "compatible", "openrouter/model", ""},
+		{"switch back to Codex", "compatible", "codex", "codex-model", "medium"},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			current := &core.Session{Provider: "compatible", Model: "old-model"}
-			tt.fill(current)
+			current := settingsSession()
+			current.Provider, current.Model = tt.fromProvider, "old-model"
 			before := *current
-			saves := 0
-			save := func(*core.Session) error { saves++; return nil }
-			err := applySessionSettings(config.Default(), current, "new-model", "", save)
-			if err == nil || !strings.Contains(err.Error(), "/clear") || saves != 0 || !reflect.DeepEqual(*current, before) {
-				t.Fatal("API continuation switched model", err, saves)
+			store := &session.Store{Directory: t.TempDir()}
+			defer store.Close()
+			if err := applySessionSettings(config.Default(), current, tt.toProvider, tt.model, tt.reasoning, store.Save); err != nil {
+				t.Fatal(err)
 			}
-			if err := applySessionSettings(config.Default(), current, "old-model", "", save); err != nil {
-				t.Fatal("unchanged model rejected", err)
+			if current.ID == before.ID || current.Provider != tt.toProvider || current.Model != tt.model || len(current.Messages) != 0 || len(current.State) != 0 || current.RemoteID != "" || current.PendingTool != nil {
+				t.Fatal("model/provider switch did not start a clean session", current)
 			}
-			cleared := &core.Session{Provider: "compatible", Model: "old-model"}
-			if err := applySessionSettings(config.Default(), cleared, "new-model", "", save); err != nil || cleared.Model != "new-model" {
-				t.Fatal("cleared conversation could not switch", err)
+			previous, err := store.Load(before.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if previous.Provider != before.Provider || previous.Model != before.Model || !equalSettingsJSON(previous.State, before.State) || !reflect.DeepEqual(previous.Messages, before.Messages) || !reflect.DeepEqual(previous.Audit, before.Audit) {
+				t.Fatal("previous conversation was not preserved", previous)
+			}
+			if before.PendingTool != nil && (previous.PendingTool == nil || previous.PendingTool.ID != before.PendingTool.ID || previous.PendingTool.Name != before.PendingTool.Name || !equalSettingsJSON(previous.PendingTool.Arguments, before.PendingTool.Arguments)) {
+				t.Fatal("previous pending tool was not preserved", previous.PendingTool)
+			}
+			fresh, err := store.Load(current.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fresh.Provider != tt.toProvider || fresh.Model != tt.model || len(fresh.Messages) != 0 || len(fresh.State) != 0 {
+				t.Fatal("new conversation was not persisted", fresh)
 			}
 		})
+	}
+}
+
+func TestOpenRouterCatalogRequiresItsConfiguredAPIKey(t *testing.T) {
+	cfg := config.Default()
+	cfg.Provider, cfg.Model, cfg.BaseURL = "compatible", "provider/model", "https://openrouter.ai/api/v1"
+	cfg.APIKeyEnv, cfg.OpenRouterModels = "OPENROUTER_API_KEY", []string{"provider/model"}
+	t.Setenv("OPENROUTER_API_KEY", "")
+	if _, _, err := newBackend(context.Background(), cfg, nil); err == nil || !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
+		t.Fatal("OpenRouter startup did not report its missing key", err)
+	}
+}
+
+func TestUnchangedAPIModelKeepsContinuation(t *testing.T) {
+	current := settingsSession()
+	current.Provider, current.Model, current.Reasoning, current.ReasoningSet = "compatible", "openrouter/model", "", true
+	before := *current
+	if err := applySessionSettings(config.Default(), current, "compatible", current.Model, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(*current, before) {
+		t.Fatal("same API model should keep its current continuation")
 	}
 }
 func TestResumePersistedTUIEffortOverridesConfigUnlessCLIExplicit(t *testing.T) {
@@ -168,7 +205,7 @@ func TestRuntimeChangesAgentSettingsWithoutChangingFixedReviewer(t *testing.T) {
 	if err := runner.Run(context.Background(), current, "First task", nil, emit); err != nil {
 		t.Fatal(err)
 	}
-	if err := applySessionSettings(cfg, current, "second-model", "high", nil); err != nil {
+	if err := applySessionSettings(cfg, current, "codex", "second-model", "high", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := runner.Run(context.Background(), current, "Second task", nil, emit); err != nil {

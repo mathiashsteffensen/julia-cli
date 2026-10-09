@@ -13,17 +13,18 @@ import (
 )
 
 type Config struct {
-	SkillPaths   []string `json:"skill_paths,omitempty"`
-	Provider     string   `json:"provider"`
-	Model        string   `json:"model,omitempty"`
-	BaseURL      string   `json:"base_url,omitempty"`
-	APIKeyEnv    string   `json:"api_key_env,omitempty"`
-	Mode         string   `json:"mode"`
-	CodexBinary  string   `json:"codex_binary,omitempty"`
-	Reasoning    string   `json:"reasoning,omitempty"`
-	MaxSteps     int      `json:"max_steps"`
-	ContextBytes int      `json:"context_bytes"`
-	Timeout      string   `json:"timeout"`
+	SkillPaths       []string `json:"skill_paths,omitempty"`
+	Provider         string   `json:"provider"`
+	Model            string   `json:"model,omitempty"`
+	OpenRouterModels []string `json:"openrouter_models,omitempty"`
+	BaseURL          string   `json:"base_url,omitempty"`
+	APIKeyEnv        string   `json:"api_key_env,omitempty"`
+	Mode             string   `json:"mode"`
+	CodexBinary      string   `json:"codex_binary,omitempty"`
+	Reasoning        string   `json:"reasoning,omitempty"`
+	MaxSteps         int      `json:"max_steps"`
+	ContextBytes     int      `json:"context_bytes"`
+	Timeout          string   `json:"timeout"`
 }
 
 func Default() Config {
@@ -76,6 +77,19 @@ func (c Config) Validate() error {
 	}
 	if c.Model != strings.TrimSpace(c.Model) || strings.IndexFunc(c.Model, unicode.IsControl) >= 0 {
 		return errors.New("model must be a provider model ID without surrounding whitespace or control characters")
+	}
+	if len(c.OpenRouterModels) > 100 {
+		return errors.New("openrouter_models may contain at most 100 model IDs")
+	}
+	seenOpenRouterModels := make(map[string]bool, len(c.OpenRouterModels))
+	for _, model := range c.OpenRouterModels {
+		if model == "" || len(model) > 512 || model != strings.TrimSpace(model) || strings.IndexFunc(model, unicode.IsControl) >= 0 {
+			return errors.New("openrouter_models must contain model IDs without surrounding whitespace or control characters")
+		}
+		if seenOpenRouterModels[model] {
+			return fmt.Errorf("openrouter_models contains duplicate model ID %q", model)
+		}
+		seenOpenRouterModels[model] = true
 	}
 	if c.Reasoning != "" {
 		if c.Provider != "codex" {

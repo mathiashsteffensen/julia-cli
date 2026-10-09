@@ -50,17 +50,18 @@ func NewApprover() (core.Approver, <-chan ApprovalRequest) {
 }
 
 type Config struct {
-	Session         *core.Session
-	Backend         core.Backend
-	Tools           core.ToolExecutor
-	ToolDefinitions []core.ToolDefinition
-	Mode            string
-	Save            func(*core.Session) error
-	Approvals       <-chan ApprovalRequest
-	Demo            bool
-	Models          func(context.Context) ([]core.ModelOption, error)
-	ApplySettings   func(*core.Session, string, string) error
-	WeeklyUsage     func(context.Context) (*core.WeeklyUsage, error)
+	Session          *core.Session
+	Backend          core.Backend
+	Tools            core.ToolExecutor
+	ToolDefinitions  []core.ToolDefinition
+	Mode             string
+	Save             func(*core.Session) error
+	Approvals        <-chan ApprovalRequest
+	Demo             bool
+	Models           func(context.Context) ([]core.ModelOption, error)
+	OpenRouterModels []core.ModelOption
+	ApplySettings    func(*core.Session, string, string, string) error
+	WeeklyUsage      func(context.Context) (*core.WeeklyUsage, error)
 }
 
 type entry struct {
@@ -431,7 +432,7 @@ func (m *model) submit() tea.Cmd {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results\n- **Ctrl+P** or `/model` opens model search\n- `/reasoning` chooses Codex reasoning effort\n- `/model ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results\n- **Ctrl+P** or `/model` opens model search · **Tab** switches Codex/OpenRouter catalogs\n- `/reasoning` chooses Codex reasoning effort\n- `/model ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
 		case "/clear":
 			next := sessions.New(m.cfg.Session.Directory, m.cfg.Session.Provider, m.cfg.Session.Model)
 			next.Reasoning = m.cfg.Session.Reasoning

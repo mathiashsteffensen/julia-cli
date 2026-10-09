@@ -125,7 +125,23 @@ Repository-local provider configuration is deliberately not loaded.
 }
 ```
 
-Optional fields: `model`, `base_url`, `api_key_env`, `skill_paths`, and Codex `reasoning`.
+Optional fields: `model`, `base_url`, `api_key_env`, `openrouter_models`, `skill_paths`, and Codex `reasoning`.
+
+To keep both model catalogs available, configure the OpenRouter endpoint and save the
+model IDs in the same personal config. Leave `provider` as `codex` if you want Codex
+to remain the default at launch; the picker can still switch to OpenRouter:
+
+```json
+{
+  "provider": "codex",
+  "base_url": "https://openrouter.ai/api/v1",
+  "api_key_env": "OPENROUTER_API_KEY",
+  "openrouter_models": ["provider/model-id-one", "provider/model-id-two"]
+}
+```
+
+Set `OPENROUTER_API_KEY` in the environment before starting JARVIS. Replace the
+example IDs with exact IDs from OpenRouter; the key is not stored in this file.
 Select model and effort at launch, or save them in personal configuration:
 
 ```sh
@@ -141,10 +157,13 @@ setting instead of silently ignoring it. `jarvis doctor` shows launch settings,
 and the conversation UI shows the selected model and effort.
 
 Inside the TUI, press **Ctrl+P** or enter `/model` for a searchable model picker.
-Use `/reasoning` to choose an effort supported by the selected Codex model. Arrow
-keys navigate, Tab switches between models and effort, Enter selects, and Esc closes
-without changing settings or losing your message draft. The model list comes from Codex itself without starting a
-conversation or making an inference request. You can also set values directly:
+Use **Tab** (or **Shift+Tab**) to switch between the live Codex catalog and your saved
+OpenRouter list; arrow keys navigate, Enter selects, and Esc closes without changing
+settings or losing your message draft. Codex models are fetched from Codex without
+starting a conversation or making an inference request. OpenRouter choices come from
+`openrouter_models` in your personal config, using the exact model IDs from OpenRouter.
+Use `/reasoning` to choose an effort supported by the selected Codex model. You can
+also set values directly:
 
 ```text
 /model gpt-6-astra
@@ -152,20 +171,23 @@ conversation or making an inference request. You can also set values directly:
 /reasoning default
 ```
 
-Changes are saved with the current conversation and apply to the executing agent's
-next turn. The approval reviewer stays fixed at Codex `gpt-6-luna`, reasoning `none`,
-and priority service. The personal configuration is unchanged.
+Selections are saved with their session and apply to the next turn. The approval
+reviewer stays fixed at Codex `gpt-6-luna`, reasoning `none`, and priority service.
+The personal configuration is unchanged.
 Finish or cancel a running task before changing settings. Known catalog model
 switches adjust an inherited or unsupported effort to that model's advertised
-default. API providers accept `/model ID`; use `/clear` before switching an API
-model once the conversation has history. Reasoning selection remains Codex-only.
+default. Selecting a different provider or API model starts a fresh session and saves
+the previous conversation, because provider continuation state cannot be transferred.
+Codex model changes continue the existing Codex thread. Reasoning selection remains
+Codex-only.
 
 Command-line flags override personal configuration. Resuming keeps the session's
 provider/model unless `--model` explicitly changes a Codex session. Reasoning
 precedence is an explicit `--reasoning` flag, an explicit saved session selection
 (from the TUI or an earlier flag), then personal configuration and legacy saved
-effort. An empty flag or `/reasoning default` restores Codex inheritance. API sessions retain
-their original model. Provider endpoints require HTTPS, except loopback servers.
+effort. An empty flag or `/reasoning default` restores Codex inheritance. API sessions
+retain their original provider/model when resumed. Provider endpoints require HTTPS,
+except loopback servers.
 
 ## Agent instructions and personal skills
 

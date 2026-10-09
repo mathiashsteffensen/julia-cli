@@ -16,6 +16,7 @@ import (
 
 type settingsPicker struct {
 	kind     string
+	provider string
 	search   textinput.Model
 	selected int
 	loading  bool
@@ -49,7 +50,6 @@ func (m *model) openPicker(kind string) tea.Cmd {
 		return nil
 	}
 	m.closePicker()
-	m.pickerSequence++
 	search := textinput.New()
 	search.Prompt = "› "
 	search.Placeholder = "Search models by name or ID"
@@ -60,7 +60,16 @@ func (m *model) openPicker(kind string) tea.Cmd {
 	search.SetVirtualCursor(true)
 	search.SetWidth(max(8, m.mainWidth-8))
 	search.Focus()
-	m.picker = &settingsPicker{kind: kind, search: search, sequence: m.pickerSequence}
+	catalog := m.cfg.Session.Provider
+	if kind == "reasoning" {
+		catalog = "codex"
+	} else if catalog != "codex" && catalog != "compatible" {
+		catalogs := m.modelCatalogProviders()
+		if len(catalogs) > 0 {
+			catalog = catalogs[0]
+		}
+	}
+	m.picker = &settingsPicker{kind: kind, search: search, provider: catalog}
 	m.input.Blur()
 	m.notice = ""
 	if m.cfg.Demo {
@@ -70,27 +79,100 @@ func (m *model) openPicker(kind string) tea.Cmd {
 		}
 		return textinput.Blink
 	}
-	if m.cfg.Models == nil {
-		m.picker.err = "Model catalog unavailable. Esc, then use /model ID."
-		if kind == "reasoning" {
-			m.picker.err = "Effort catalog unavailable. Esc, then use /reasoning LEVEL."
+	return m.loadPickerModels(catalog, true)
+}
+
+func (m *model) modelCatalogProviders() []string {
+	var providers []string
+	if m.cfg.Models != nil || m.cfg.Session.Provider == "codex" {
+		providers = append(providers, "codex")
+	}
+	if len(m.cfg.OpenRouterModels) > 0 || m.cfg.Session.Provider == "compatible" {
+		providers = append(providers, "compatible")
+	}
+	if len(providers) == 0 {
+		providers = append(providers, m.cfg.Session.Provider)
+	}
+	return providers
+}
+
+func (m *model) catalogFetch(provider string) (func(context.Context) ([]core.ModelOption, error), error) {
+	switch provider {
+	case "codex":
+		if m.cfg.Models == nil {
+			return nil, fmt.Errorf("Codex model catalog unavailable")
 		}
-		return textinput.Blink
+		return m.cfg.Models, nil
+	case "compatible":
+		options := append([]core.ModelOption(nil), m.cfg.OpenRouterModels...)
+		if m.cfg.Session.Provider == "compatible" && m.cfg.Session.Model != "" {
+			found := false
+			for _, option := range options {
+				if option.ID == m.cfg.Session.Model {
+					found = true
+					break
+				}
+			}
+			if !found {
+				options = append(options, core.ModelOption{ID: m.cfg.Session.Model, Name: m.cfg.Session.Model, Description: "Current OpenRouter model · not in the saved list"})
+			}
+		}
+		if len(options) == 0 {
+			return nil, fmt.Errorf("no saved OpenRouter models; add IDs to openrouter_models in your JARVIS config")
+		}
+		return func(context.Context) ([]core.ModelOption, error) { return options, nil }, nil
+	default:
+		if provider == m.cfg.Session.Provider && m.cfg.Session.Model != "" {
+			option := core.ModelOption{ID: m.cfg.Session.Model, Name: m.cfg.Session.Model, Description: "Current provider model"}
+			return func(context.Context) ([]core.ModelOption, error) { return []core.ModelOption{option}, nil }, nil
+		}
+		return nil, fmt.Errorf("model catalog unavailable for %s", provider)
+	}
+}
+
+func (m *model) loadPickerModels(provider string, blink bool) tea.Cmd {
+	if m.picker == nil {
+		return nil
+	}
+	if m.picker.cancel != nil {
+		m.picker.cancel()
+		m.picker.cancel = nil
+	}
+	m.picker.provider = provider
+	m.pickerSequence++
+	m.picker.sequence = m.pickerSequence
+	m.picker.err = ""
+	m.models = nil
+	fetch, err := m.catalogFetch(provider)
+	if err != nil {
+		m.picker.loading = false
+		if m.picker.kind == "reasoning" {
+			m.picker.err = "Effort catalog unavailable. Esc, then use /reasoning LEVEL."
+		} else {
+			m.picker.err = oneLine(err.Error()) + ". Esc, then use /model ID."
+		}
+		if blink {
+			return textinput.Blink
+		}
+		return nil
 	}
 	m.picker.loading = true
 	ctx, cancel := context.WithTimeout(m.lifetime, 30*time.Second)
 	m.picker.cancel = cancel
-	sequence, fetch := m.picker.sequence, m.cfg.Models
-	return tea.Batch(textinput.Blink, func() tea.Msg {
+	sequence := m.picker.sequence
+	load := func() tea.Msg {
 		defer cancel()
 		options, err := fetch(ctx)
-		// Detach slices from provider-owned catalog storage.
 		options = append([]core.ModelOption(nil), options...)
 		for i := range options {
 			options[i].ReasoningEfforts = append([]string(nil), options[i].ReasoningEfforts...)
 		}
 		return modelsMsg{sequence: sequence, options: options, err: err}
-	})
+	}
+	if blink {
+		return tea.Batch(textinput.Blink, load)
+	}
+	return load
 }
 
 func (m *model) codexSettings() bool {
@@ -167,7 +249,7 @@ func (m *model) pickerChoices() []settingChoice {
 			if option.IsDefault {
 				detail = "Provider default · " + detail
 			}
-			choices = append(choices, settingChoice{value: option.ID, label: option.ID, detail: detail, active: option.ID == m.cfg.Session.Model || (m.cfg.Session.Model == "" && option.IsDefault)})
+			choices = append(choices, settingChoice{value: option.ID, label: option.ID, detail: detail, active: m.picker.provider == m.cfg.Session.Provider && (option.ID == m.cfg.Session.Model || (m.cfg.Session.Model == "" && option.IsDefault))})
 		}
 	}
 	query := strings.ToLower(strings.TrimSpace(m.picker.search.Value()))
@@ -185,28 +267,35 @@ func (m *model) updatePicker(msg tea.Msg) tea.Cmd {
 		case "esc":
 			m.closePicker()
 			return m.input.Focus()
-		case "tab":
-			if !m.codexSettings() {
+		case "tab", "shift+tab":
+			m.picker.search.Reset()
+			m.picker.selected = 0
+			if m.picker.kind == "reasoning" {
+				m.picker.kind = "model"
+				m.picker.search.Placeholder = "Search models by name or ID"
+				for i, choice := range m.pickerChoices() {
+					if choice.active {
+						m.picker.selected = i
+						break
+					}
+				}
 				return nil
 			}
-			kind := "reasoning"
-			if m.picker.kind == "reasoning" {
-				kind = "model"
+			providers := m.modelCatalogProviders()
+			if len(providers) < 2 {
+				return nil
 			}
-			m.picker.kind = kind
-			m.picker.search.Reset()
+			index := slices.Index(providers, m.picker.provider)
+			if index < 0 {
+				index = 0
+			}
+			delta := 1
+			if key.String() == "shift+tab" {
+				delta = -1
+			}
+			provider := providers[(index+delta+len(providers))%len(providers)]
 			m.picker.search.Placeholder = "Search models by name or ID"
-			if kind == "reasoning" {
-				m.picker.search.Placeholder = "Filter reasoning levels"
-			}
-			m.picker.selected = 0
-			for i, choice := range m.pickerChoices() {
-				if choice.active {
-					m.picker.selected = i
-					break
-				}
-			}
-			return nil
+			return m.loadPickerModels(provider, false)
 		case "up", "ctrl+p":
 			m.picker.selected = max(0, m.picker.selected-1)
 			return nil
@@ -229,13 +318,13 @@ func (m *model) updatePicker(msg tea.Msg) tea.Cmd {
 				return nil
 			}
 			choice := choices[min(m.picker.selected, len(choices)-1)]
-			model, reasoning := m.cfg.Session.Model, m.cfg.Session.Reasoning
+			provider, model, reasoning := m.cfg.Session.Provider, m.cfg.Session.Model, m.cfg.Session.Reasoning
 			if m.picker.kind == "model" {
-				model = choice.value
+				provider, model = m.picker.provider, choice.value
 			} else {
 				reasoning = choice.value
 			}
-			if err := m.applySettings(model, reasoning); err != nil {
+			if err := m.applySettings(provider, model, reasoning); err != nil {
 				m.picker.err = oneLine(err.Error())
 				return nil
 			}
@@ -273,7 +362,7 @@ func (m *model) settingsCommand(prompt string) (bool, tea.Cmd) {
 		m.notice = "Reasoning controls are available with Codex."
 		return true, nil
 	}
-	model, reasoning := m.cfg.Session.Model, m.cfg.Session.Reasoning
+	provider, model, reasoning := m.cfg.Session.Provider, m.cfg.Session.Model, m.cfg.Session.Reasoning
 	if kind == "model" {
 		model = parts[1]
 	} else {
@@ -282,7 +371,7 @@ func (m *model) settingsCommand(prompt string) (bool, tea.Cmd) {
 			reasoning = ""
 		}
 	}
-	if err := m.applySettings(model, reasoning); err != nil {
+	if err := m.applySettings(provider, model, reasoning); err != nil {
 		m.notice = "Settings unchanged: " + oneLine(err.Error())
 		return true, nil
 	}
@@ -290,12 +379,14 @@ func (m *model) settingsCommand(prompt string) (bool, tea.Cmd) {
 	return true, nil
 }
 
-func (m *model) applySettings(model, reasoning string) error {
+func (m *model) applySettings(provider, model, reasoning string) error {
 	if m.busy || m.pending != nil {
 		return fmt.Errorf("wait for the active task before changing settings")
 	}
 	reset := false
-	if model != m.cfg.Session.Model {
+	if provider != "codex" {
+		reasoning = ""
+	} else if model != m.cfg.Session.Model || provider != m.cfg.Session.Provider {
 		for _, option := range m.models {
 			if option.ID == model && (reasoning == "" || (len(option.ReasoningEfforts) > 0 && !slices.Contains(option.ReasoningEfforts, reasoning))) {
 				reasoning, reset = option.DefaultReasoning, true
@@ -305,25 +396,34 @@ func (m *model) applySettings(model, reasoning string) error {
 	}
 	next := cloneSession(m.cfg.Session)
 	if m.cfg.Demo {
-		next.Model, next.Reasoning, next.ReasoningSet = model, reasoning, true
+		next.Provider, next.Model, next.Reasoning, next.ReasoningSet = provider, model, reasoning, true
 	} else {
 		if m.cfg.ApplySettings == nil {
 			return fmt.Errorf("settings are unavailable in this session")
 		}
-		if err := m.cfg.ApplySettings(next, model, reasoning); err != nil {
+		if err := m.cfg.ApplySettings(next, provider, model, reasoning); err != nil {
 			return err
 		}
 	}
+	newConversation := next.ID != m.cfg.Session.ID
 	*m.cfg.Session = *next
-	m.notice = "Next turn: " + model
-	if m.codexSettings() {
-		effort := reasoning
-		if effort == "" {
-			effort = "default"
+	if newConversation {
+		m.entries = nil
+		m.toolCount, m.inputTokens, m.outputTokens = 0, 0, 0
+		m.lastDuration = 0
+		m.refresh(true)
+		m.notice = "New " + m.modelProviderLabel(provider) + " conversation · " + model + ". Previous conversation saved."
+	} else {
+		m.notice = "Next turn: " + model
+		if provider == "codex" {
+			effort := reasoning
+			if effort == "" {
+				effort = "default"
+			}
+			m.notice += " · reasoning " + effort
 		}
-		m.notice += " · reasoning " + effort
 	}
-	if reset {
+	if reset && !newConversation {
 		m.notice = "Reasoning adjusted to " + reasoning + " for " + model + "."
 	}
 	if m.cfg.Demo {
@@ -332,12 +432,26 @@ func (m *model) applySettings(model, reasoning string) error {
 	return nil
 }
 
+func (m *model) modelProviderLabel(provider string) string {
+	switch provider {
+	case "codex":
+		return "Codex"
+	case "compatible":
+		if len(m.cfg.OpenRouterModels) > 0 {
+			return "OpenRouter"
+		}
+		return "Compatible"
+	default:
+		return provider
+	}
+}
+
 func oneLine(value string) string { return strings.Join(strings.Fields(sanitize(value)), " ") }
 
 func (m *model) pickerView() string {
 	p := m.picker
 	width := m.mainWidth
-	title, subtitle := "CHOOSE A MODEL", "Search by name or ID · applies to the next turn"
+	title, subtitle := "CHOOSE A MODEL · "+strings.ToUpper(m.modelProviderLabel(p.provider)), "Search · Tab switches provider · API changes start fresh"
 	if p.kind == "reasoning" {
 		name := m.cfg.Session.Model
 		if option := m.currentModelOption(); option != nil {

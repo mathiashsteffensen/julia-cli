@@ -258,12 +258,37 @@ func run() error {
 		return errors.Join(err, saveErr)
 	}
 	uiConfig := ui.Config{Session: s, Backend: runner, Mode: cfg.Mode, Save: store.Save, Approvals: approvals, ToolDefinitions: runner.Definitions()}
-	uiConfig.ApplySettings = func(current *core.Session, model, reasoning string) error {
-		return applySessionSettings(cfg, current, model, reasoning, store.Save)
+	uiConfig.ApplySettings = func(current *core.Session, selectedProvider, selectedModel, reasoning string) error {
+		if selectedProvider == "compatible" && len(cfg.OpenRouterModels) > 0 {
+			if cfg.BaseURL == "" {
+				return errors.New("configure base_url for the OpenRouter-compatible provider")
+			}
+			if os.Getenv(cfg.KeyEnv()) == "" {
+				return fmt.Errorf("set %s before switching to OpenRouter", cfg.KeyEnv())
+			}
+		}
+		return applySessionSettings(cfg, current, selectedProvider, selectedModel, reasoning, store.Save)
 	}
+	for _, id := range cfg.OpenRouterModels {
+		uiConfig.OpenRouterModels = append(uiConfig.OpenRouterModels, core.ModelOption{ID: id, Name: id, Description: "Saved OpenRouter model"})
+	}
+	codexBinary := cfg.CodexBinary
 	if codex, ok := raw.(*provider.Codex); ok {
-		uiConfig.Models = codex.Models
-		uiConfig.WeeklyUsage = codex.WeeklyUsage
+		codexBinary = codex.Binary
+	}
+	uiConfig.Models = func(ctx context.Context) ([]core.ModelOption, error) {
+		binary, err := findCodex(codexBinary)
+		if err != nil {
+			return nil, err
+		}
+		return (&provider.Codex{Binary: binary}).Models(ctx)
+	}
+	uiConfig.WeeklyUsage = func(ctx context.Context) (*core.WeeklyUsage, error) {
+		binary, err := findCodex(codexBinary)
+		if err != nil {
+			return nil, err
+		}
+		return (&provider.Codex{Binary: binary}).WeeklyUsage(ctx)
 	}
 	return ui.Run(uiConfig)
 }

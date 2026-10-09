@@ -15,8 +15,8 @@ import (
 func settingsConfig() Config {
 	return Config{
 		Session: &core.Session{ID: "test", Directory: "/workspace", Provider: "codex", Model: "current", Reasoning: "high"},
-		ApplySettings: func(s *core.Session, model, reasoning string) error {
-			s.Model, s.Reasoning, s.ReasoningSet = model, reasoning, true
+		ApplySettings: func(s *core.Session, provider, model, reasoning string) error {
+			s.Provider, s.Model, s.Reasoning, s.ReasoningSet = provider, model, reasoning, true
 			return nil
 		},
 		Models: func(context.Context) ([]core.ModelOption, error) {
@@ -82,6 +82,42 @@ func TestPickerPreservesDraftAndCancelsStaleCatalog(t *testing.T) {
 	}
 }
 
+func TestPickerSwitchesBetweenCodexAndSavedOpenRouter(t *testing.T) {
+	cfg := settingsConfig()
+	cfg.OpenRouterModels = []core.ModelOption{
+		{ID: "vendor/or-model-a", Name: "OpenRouter A", Description: "Saved model"},
+		{ID: "vendor/or-model-b", Name: "OpenRouter B"},
+	}
+	m := testModel(t, cfg)
+	fetchPicker(t, m, m.openPicker("model"))
+	if m.picker.provider != "codex" || len(m.pickerChoices()) != 2 {
+		t.Fatal("picker did not open the live Codex catalog")
+	}
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m.Update(cmd())
+	if m.picker.provider != "compatible" || len(m.pickerChoices()) != 2 {
+		t.Fatal("Tab did not switch to saved OpenRouter models")
+	}
+	m.input.SetValue("Keep this draft")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.picker != nil || m.cfg.Session.Provider != "compatible" || m.cfg.Session.Model != "vendor/or-model-a" || m.cfg.Session.Reasoning != "" {
+		t.Fatal("OpenRouter selection did not update provider/model or clear Codex reasoning")
+	}
+	if m.input.Value() != "Keep this draft" {
+		t.Fatal("provider selection discarded the draft")
+	}
+	fetchPicker(t, m, m.openPicker("model"))
+	_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m.Update(cmd())
+	if m.picker.provider != "codex" || len(m.pickerChoices()) != 2 {
+		t.Fatal("Tab did not switch back to Codex models")
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.cfg.Session.Provider != "codex" || m.cfg.Session.Model != "current" || m.cfg.Session.Reasoning != "medium" {
+		t.Fatal("Codex selection did not restore its model and default effort")
+	}
+}
+
 func TestPickerSearchAndApplySelectSupportedEffort(t *testing.T) {
 	for _, effort := range []string{"high", ""} {
 		m := testModel(t, settingsConfig())
@@ -102,10 +138,31 @@ func TestPickerSearchAndApplySelectSupportedEffort(t *testing.T) {
 	}
 }
 
+func TestProviderSwitchClearsVisibleHistoryAfterStartingNewSession(t *testing.T) {
+	cfg := settingsConfig()
+	cfg.Session.Messages = []core.Message{{Role: "user", Content: "old task"}}
+	cfg.ApplySettings = func(s *core.Session, provider, model, reasoning string) error {
+		*s = core.Session{ID: "new-session", Directory: s.Directory, Provider: provider, Model: model, Reasoning: reasoning, ReasoningSet: true}
+		return nil
+	}
+	m := testModel(t, cfg)
+	m.entries = []entry{{role: "user", text: "old task"}}
+	m.toolCount, m.inputTokens, m.outputTokens, m.lastDuration = 2, 10, 20, time.Minute
+	if err := m.applySettings("compatible", "vendor/model", ""); err != nil {
+		t.Fatal(err)
+	}
+	if m.cfg.Session.ID != "new-session" || m.cfg.Session.Provider != "compatible" || len(m.cfg.Session.Messages) != 0 || len(m.entries) != 0 || m.toolCount != 0 || m.inputTokens != 0 || m.outputTokens != 0 || m.lastDuration != 0 {
+		t.Fatal("provider switch did not isolate the new conversation")
+	}
+	if !strings.Contains(m.notice, "Previous conversation saved") {
+		t.Fatal("provider switch did not explain where the prior conversation went")
+	}
+}
+
 func TestPickerPersistenceErrorLeavesLiveSessionAndDraft(t *testing.T) {
 	cfg := settingsConfig()
-	cfg.ApplySettings = func(s *core.Session, model, reasoning string) error {
-		s.Model, s.Reasoning = model, reasoning // Even a callback failure cannot mutate live state.
+	cfg.ApplySettings = func(s *core.Session, provider, model, reasoning string) error {
+		s.Provider, s.Model, s.Reasoning = provider, model, reasoning // Even a callback failure cannot mutate live state.
 		s.Messages = append(s.Messages, core.Message{Content: "uncommitted"})
 		return errors.New("disk full")
 	}
@@ -189,7 +246,7 @@ func TestDemoSettingsNeverCallExternalCallbacks(t *testing.T) {
 	cfg := settingsConfig()
 	cfg.Demo = true
 	cfg.Models = func(context.Context) ([]core.ModelOption, error) { t.Fatal("demo fetched catalog"); return nil, nil }
-	cfg.ApplySettings = func(*core.Session, string, string) error { t.Fatal("demo persisted settings"); return nil }
+	cfg.ApplySettings = func(*core.Session, string, string, string) error { t.Fatal("demo persisted settings"); return nil }
 	m := testModel(t, cfg)
 	m.openPicker("model")
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})

@@ -18,6 +18,25 @@ func TestConfigRejectsUnknownAndUnsafeModes(t *testing.T) {
 	}
 }
 
+func TestOpenRouterModelConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	data := `{"openrouter_models":["anthropic/claude-sonnet", "openai/gpt-model"]}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil || len(cfg.OpenRouterModels) != 2 || cfg.OpenRouterModels[1] != "openai/gpt-model" {
+		t.Fatalf("saved OpenRouter models not loaded: %#v %v", cfg.OpenRouterModels, err)
+	}
+	for _, models := range [][]string{{""}, {" model"}, {"bad\nmodel"}, {"duplicate", "duplicate"}} {
+		cfg := Default()
+		cfg.OpenRouterModels = models
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("accepted invalid saved models %#v", models)
+		}
+	}
+}
+
 func TestModelAndReasoningConfiguration(t *testing.T) {
 	for _, effort := range []string{"", "none", "minimal", "medium", "xhigh", "future-effort_v2"} {
 		cfg := Default()
