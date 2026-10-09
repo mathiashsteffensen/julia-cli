@@ -1,0 +1,5 @@
+/bin/
+/jarvis
+*.log
+.DS_Store
+coverage.out

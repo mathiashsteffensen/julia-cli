@@ -1,0 +1,187 @@
+package tools
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"jarvis/internal/core"
+)
+
+func TestReviewFallsBackToHuman(t *testing.T) {
+	calls := 0
+	human := func(_ context.Context, a core.Approval) (core.Decision, error) {
+		calls++
+		if !a.Network || a.Task != "research" {
+			t.Errorf("lost approval context: %+v", a)
+		}
+		return core.Decision{Allow: false}, nil
+	}
+	e, _ := fixture(t, "auto", human)
+	e.SetTask("research")
+	e.config.Review = func(context.Context, core.Approval) (core.Decision, error) {
+		return core.Decision{}, errors.New("unavailable")
+	}
+	if r := invoke(e, "Bash", map[string]any{"command": "true", "network": true}); !r.IsError || calls != 1 {
+		t.Fatal(r, calls)
+	}
+}
+func TestSeatbeltProfile(t *testing.T) {
+	p := seatbeltProfile("/tmp/project", "/tmp/run", false)
+	if !strings.Contains(p, "(deny default)") || strings.Contains(p, "(allow network*)") || !strings.Contains(p, "(deny file-read* file-write*") {
+		t.Fatal(p)
+	}
+	p = seatbeltProfile("/tmp/project", "/tmp/run", true)
+	if !strings.Contains(p, "(allow network*)") {
+		t.Fatal("missing explicit network grant")
+	}
+}
+
+// Run with JARVIS_SANDBOX_TEST=1 on a host that permits launching an OS sandbox.
+// Some parent sandboxes forbid nested sandbox creation; default unit tests do not
+// mistake that environmental limitation for successful containment.
+func TestSandboxIntegration(t *testing.T) {
+	if os.Getenv("JARVIS_SANDBOX_TEST") != "1" {
+		t.Skip("set JARVIS_SANDBOX_TEST=1 for host sandbox integration")
+	}
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("unsupported OS")
+	}
+	e, dir := fixture(t, "auto", nil)
+	if err := e.CheckSandbox(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "secret")
+	os.WriteFile(outside, []byte("outside-secret"), 0600)
+	os.WriteFile(filepath.Join(dir, ".env"), []byte("inside-secret"), 0600)
+	tests := []struct {
+		name, command string
+		fail          bool
+	}{
+		{"workspace write", "printf allowed > allowed; cat allowed", false},
+		{"outside read", "cat " + outside, true},
+		{"secret read", "cat .env", true},
+		{"secret case alias", "cat .ENV", true},
+		{"secret symlink", "ln -s .env alias; cat alias", true},
+		{"secret hardlink", "ln .env hardalias; cat hardalias", true},
+		{"secret write", "printf forbidden > .env", true},
+		{"outside write", "printf forbidden > " + outside, true},
+		{"no network", "/usr/bin/curl --max-time 2 -I https://example.com", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := e.runSandbox(context.Background(), tt.command, false, 5*time.Second)
+			if (err != nil) != tt.fail {
+				t.Fatalf("output=%q err=%v", out, err)
+			}
+		})
+	}
+	start := time.Now()
+	_, err := e.runSandbox(context.Background(), "sleep 30 & wait", false, 150*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 3*time.Second {
+		t.Fatal("timeout failed", err, time.Since(start))
+	}
+	t.Setenv("JARVIS_TEST_SECRET", "must-not-leak")
+	out, err := e.runSandbox(context.Background(), "printf '%s' \"${JARVIS_TEST_SECRET-unset}\"", false, 5*time.Second)
+	if err != nil || out != "unset" {
+		t.Fatal("environment leaked", out, err)
+	}
+	if os.Getenv("JARVIS_NETWORK_TEST") == "1" {
+		out, err = e.runSandbox(context.Background(), "/usr/bin/curl --fail --silent --show-error --max-time 15 https://example.com", true, 20*time.Second)
+		if err != nil || !strings.Contains(out, "Example Domain") {
+			t.Fatal("authorized HTTPS request failed", out, err)
+		}
+	}
+}
+
+func TestSandboxGitStatus(t *testing.T) {
+	if os.Getenv("JARVIS_SANDBOX_TEST") != "1" || runtime.GOOS != "darwin" {
+		t.Skip("requires host macOS sandbox integration")
+	}
+	e, dir := fixture(t, "auto", nil)
+	e.config.Review = func(context.Context, core.Approval) (core.Decision, error) {
+		return core.Decision{Allow: true, Reason: "read repository state"}, nil
+	}
+	init := exec.Command("/usr/bin/git", "init", "--quiet", dir)
+	if output, err := init.CombinedOutput(); err != nil {
+		t.Fatalf("fixture git init: %v: %s", err, output)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("hello"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("before"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	add := exec.Command("/usr/bin/git", "-C", dir, "add", "tracked.txt")
+	if out, err := add.CombinedOutput(); err != nil {
+		t.Fatalf("fixture git add: %v: %s", err, out)
+	}
+	indexBefore, err := os.ReadFile(filepath.Join(dir, ".git", "index"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("after"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A repository-supplied fsmonitor hook must not run during ordinary status.
+	hook := filepath.Join(dir, "monitor.sh")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nprintf unsafe > monitor-ran\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	config := exec.Command("/usr/bin/git", "-C", dir, "config", "core.fsmonitor", hook)
+	if out, err := config.CombinedOutput(); err != nil {
+		t.Fatalf("fixture fsmonitor: %v: %s", err, out)
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+	t.Setenv("GIT_CONFIG_VALUE_0", hook)
+	result := invoke(e, "Bash", map[string]any{"command": "git status --short"})
+	if result.IsError || !strings.Contains(result.Content, "?? untracked.txt") || !strings.Contains(result.Content, "AM tracked.txt") {
+		t.Fatalf("git status through Bash failed: %s", result.Content)
+	}
+	indexAfter, err := os.ReadFile(filepath.Join(dir, ".git", "index"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(indexBefore, indexAfter) {
+		t.Fatal("git status changed repository index")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "monitor-ran")); !os.IsNotExist(err) {
+		t.Fatal("repository fsmonitor hook executed")
+	}
+	if result := invoke(e, "Bash", map[string]any{"command": "xcrun --find git"}); result.IsError || !strings.Contains(result.Content, "/git") {
+		t.Fatal("xcrun discovery failed", result.Content)
+	}
+	if result := invoke(e, "Bash", map[string]any{"command": "git diff --stat"}); result.IsError || !strings.Contains(result.Content, "tracked.txt") {
+		t.Fatal("git diff failed", result.Content)
+	}
+	for _, command := range []string{"git add untracked.txt", "git config --local jarvis.test denied", "printf denied > .git/HEAD", "ln .git/config config-alias && printf denied > config-alias"} {
+		if result := invoke(e, "Bash", map[string]any{"command": command}); !result.IsError {
+			t.Fatalf("git metadata mutation escaped sandbox: %s", command)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "credentials"), []byte("fixture-secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if result := invoke(e, "Bash", map[string]any{"command": "cat .git/credentials"}); !result.IsError {
+		t.Fatal("git credential data exposed", result.Content)
+	}
+	outside := filepath.Join(t.TempDir(), "included.conf")
+	if err := os.WriteFile(outside, []byte("[jarvis]\nsecret = outside-secret-fixture\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	include := exec.Command("/usr/bin/git", "-C", dir, "config", "include.path", outside)
+	if out, err := include.CombinedOutput(); err != nil {
+		t.Fatalf("fixture include: %v: %s", err, out)
+	}
+	if result := invoke(e, "Bash", map[string]any{"command": "git config --get jarvis.secret"}); !result.IsError || strings.Contains(result.Content, "outside-secret-fixture") {
+		t.Fatal("outside git-config include was readable", result.Content)
+	}
+}
