@@ -234,6 +234,7 @@ nonempty UTF-8 text, at most 64 KiB; up to eight files and 128 KiB combined.
 | Bash | Reviewed shell execution; sandboxed by default, explicit host escalation available |
 | Grep | Ripgrep search over confined text files |
 | List | Bounded workspace directory listing |
+| WebSearch | Keyless public search; compact titles, source URLs, and snippets, at most 4 KiB |
 | Subagent | Run 1–3 independent delegated tasks concurrently and collect their results |
 
 File operations use workspace-relative paths, reject symlinks and protected
@@ -251,6 +252,38 @@ all children before the tool returns. Results are bounded to 32 KiB per batch.
 Child transcripts are checkpointed as separate sessions with a `parent_id`; they
 are inspection records, excluded from `--continue` and cannot be resumed directly.
 There is no detached execution or messaging between running children.
+
+## Web search
+
+WebSearch is available out of the box for every provider and subagent. No search
+API key, account, configuration, browser, or extra executable is needed. It uses
+[DuckDuckGo's public HTML search](https://duckduckgo.com/duckduckgo-help-pages/features/non-javascript),
+not its instant-answer API and not Codex's native web tool.
+
+```json
+{"query": "Go net/http Client Timeout documentation", "limit": 3}
+```
+
+Only the query is sent to the fixed HTTPS search endpoint, after the normal
+isolated review in auto mode or human approval in ask mode. Never include secrets
+or private project content. Read-only mode rejects outbound search. Search runs
+in the harness's restricted HTTP client, not Bash's OS sandbox: no ambient proxy,
+cookies, credentials, redirects, or requests to result URLs.
+
+To keep agent context small, the default is three results (maximum five), with
+titles limited to 160 UTF-8 bytes and snippets to 240 bytes. The entire response
+is capped at 4 KiB; long URLs or excess results are omitted rather than returning
+broken links. Raw HTML and full pages never enter the conversation or transcript.
+Results are unverified web content, not instructions; source URLs support normal
+citations, but a snippet is not evidence that the agent read the source page.
+Duplicate URLs and advertisements are excluded.
+
+This is **best-effort public search**, not a supported search API or an availability
+guarantee. A response is limited to 1 MiB and 15 seconds. CAPTCHA, rate limiting,
+unexpected responses, and changed markup produce explicit tool errors, not false
+“no results” answers. JARVIS does not solve challenges, rotate identities, retry
+automatically, or silently fall back to another search provider. The default test
+suite uses synthetic HTTP responses and makes no live search requests.
 
 ## Go test environment
 
@@ -274,7 +307,7 @@ Quantrading requires `GO_ENV=test`.
 ## Permission model
 
 **Auto** is the default. Reads and ordinary workspace file edits proceed without
-interrupting you. Every Bash command is submitted to an isolated, tool-free model
+interrupting you. Every Bash command and WebSearch query is submitted to an isolated, tool-free model
 reviewer along with the user's task. A positive decision grants that exact command
 once. A denial, malformed answer, timeout, or unavailable reviewer asks you in the
 TUI; headless mode returns a denied tool result instead.
@@ -291,8 +324,8 @@ do not authorize source edits, discarding work, production changes, or publishin
 Review requests include verification and its ordinary build/test artifacts unless
 you explicitly forbid tests or filesystem writes.
 
-**Ask** requires a human decision for every file mutation and Bash command.
-**Read-only** permits Read, Grep, and List and rejects edits and Bash.
+**Ask** requires a human decision for every file mutation, Bash command, and WebSearch query.
+**Read-only** permits Read, Grep, and List and rejects edits, Bash, and outbound WebSearch.
 
 The reviewer always uses your Codex sign-in with `gpt-6-luna`, reasoning disabled
 (`none`), and priority service, including when the executing agent uses an API
@@ -366,8 +399,9 @@ conversation. Checkpoints sync both the file and its containing directory.
 ```
 
 Headless JSON mode emits newline-delimited events and a final session ID/status.
-Research currently uses Bash/curl with a reviewed network request; there is no
-separate browser or web-search tool in this release.
+Public web discovery uses the compact, keyless WebSearch tool. There is no browser
+or page-fetch tool; retrieving a source page still requires a reviewed network
+request through Bash/curl.
 
 ## Current boundaries
 

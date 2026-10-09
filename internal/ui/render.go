@@ -198,7 +198,7 @@ func toolSummary(call core.ToolCall) string {
 	if json.Unmarshal(call.Arguments, &args) != nil {
 		return string(call.Arguments)
 	}
-	for _, key := range []string{"path", "file_path", "command", "pattern", "directory"} {
+	for _, key := range []string{"path", "file_path", "command", "pattern", "directory", "query"} {
 		if raw, ok := args[key]; ok {
 			var value string
 			if json.Unmarshal(raw, &value) == nil {
@@ -332,8 +332,14 @@ func (m *model) sidebar() string {
 		"", label("ACTIVITY"), value(fmt.Sprintf("%d tool calls", m.toolCount)), mutedStyle.Render(fmt.Sprintf("%s in · %s out", compactNumber(m.inputTokens), compactNumber(m.outputTokens))),
 	)
 	if m.bodyHeight >= 27 && len(m.cfg.ToolDefinitions) > 0 {
-		lines = append(lines, "", faintStyle.Render(strings.Repeat("─", width)), "", label("THE ESSENTIALS"))
-		for _, row := range toolRows(m.cfg.ToolDefinitions, width) {
+		rows := toolRows(m.cfg.ToolDefinitions, width)
+		heading := []string{"", faintStyle.Render(strings.Repeat("─", width)), "", label("THE ESSENTIALS")}
+		if len(lines)+len(heading)+len(rows) > m.bodyHeight {
+			// Prefer tool names over decorative spacing when the catalog grows.
+			heading = []string{"", label("THE ESSENTIALS")}
+		}
+		lines = append(lines, heading...)
+		for _, row := range rows {
 			lines = append(lines, mutedStyle.Render(row))
 		}
 	}
