@@ -82,6 +82,61 @@ func TestPickerPreservesDraftAndCancelsStaleCatalog(t *testing.T) {
 	}
 }
 
+func TestShiftTabCyclesSupportedReasoningEffortsAndPreservesDraft(t *testing.T) {
+	m := testModel(t, settingsConfig())
+	m.input.SetValue("Keep this draft")
+	key := tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
+	want := []string{"", "medium", "high", ""}
+	for i, effort := range want {
+		_, cmd := m.Update(key)
+		if i == 0 {
+			if cmd == nil {
+				t.Fatal("first cycle did not load the Codex catalog")
+			}
+			_, cmd = m.Update(cmd())
+		} else if cmd != nil {
+			t.Fatal("cached catalog unexpectedly started another request")
+		}
+		if m.cfg.Session.Reasoning != effort || !m.cfg.Session.ReasoningSet {
+			t.Fatalf("cycle %d selected effort %q (set=%v), want %q", i+1, m.cfg.Session.Reasoning, m.cfg.Session.ReasoningSet, effort)
+		}
+		if m.cfg.Session.Model != "current" || m.input.Value() != "Keep this draft" {
+			t.Fatal("reasoning cycle changed the model or discarded the draft")
+		}
+	}
+}
+
+func TestShiftTabQueuesRepeatedPressesWhileCatalogLoads(t *testing.T) {
+	m := testModel(t, settingsConfig())
+	key := tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
+	_, cmd := m.Update(key)
+	if cmd == nil {
+		t.Fatal("missing catalog request")
+	}
+	if _, queued := m.Update(key); queued != nil {
+		t.Fatal("queued cycle started a duplicate catalog request")
+	}
+	m.Update(cmd())
+	if m.cfg.Session.Reasoning != "medium" {
+		t.Fatalf("queued cycles selected %q, want medium", m.cfg.Session.Reasoning)
+	}
+}
+
+func TestShiftTabReportsCatalogFailureWithoutChangingSettings(t *testing.T) {
+	cfg := settingsConfig()
+	cfg.Models = func(context.Context) ([]core.ModelOption, error) { return nil, errors.New("catalog unavailable") }
+	m := testModel(t, cfg)
+	m.input.SetValue("Keep this draft")
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if cmd == nil {
+		t.Fatal("missing catalog request")
+	}
+	m.Update(cmd())
+	if m.cfg.Session.Reasoning != "high" || !strings.Contains(m.notice, "catalog unavailable") || m.input.Value() != "Keep this draft" {
+		t.Fatal("catalog failure changed settings, lost feedback, or discarded the draft")
+	}
+}
+
 func TestPickerSwitchesBetweenCodexAndSavedOpenRouter(t *testing.T) {
 	cfg := settingsConfig()
 	cfg.OpenRouterModels = []core.ModelOption{
@@ -185,7 +240,8 @@ func TestBusyAndApprovalKeepSettingsKeysAwayFromComposer(t *testing.T) {
 	m.input.SetValue("/model next")
 	m.submit()
 	m.Update(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
-	if m.picker != nil || m.cfg.Session.Model != "current" || m.input.Value() != "/model next" || !strings.Contains(m.notice, "Draft kept") {
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if m.picker != nil || m.cfg.Session.Model != "current" || m.cfg.Session.Reasoning != "high" || m.input.Value() != "/model next" || !strings.Contains(m.notice, "Draft kept") {
 		t.Fatal("busy setting request changed state")
 	}
 	request := ApprovalRequest{Reply: make(chan core.Decision, 1)}

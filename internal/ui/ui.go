@@ -88,44 +88,47 @@ type approvalMsg struct{ request ApprovalRequest }
 type tickMsg time.Time
 
 type model struct {
-	cfg               Config
-	input             textarea.Model
-	viewport          viewport.Model
-	spinner           spinner.Model
-	width             int
-	height            int
-	mainWidth         int
-	bodyHeight        int
-	entries           []entry
-	markdown          *glamour.TermRenderer
-	renderWidth       int
-	busy              bool
-	quitting          bool
-	status            string
-	notice            string
-	started           time.Time
-	lastDuration      time.Duration
-	now               time.Time
-	inputTokens       int
-	outputTokens      int
-	toolCount         int
-	expandTools       bool
-	pending           *ApprovalRequest
-	approvalListening bool
-	stream            chan streamMsg
-	cancel            context.CancelFunc
-	lifetime          context.Context
-	stop              context.CancelFunc
-	wg                sync.WaitGroup
-	wordmarkEnabled   bool
-	wordmarkTrueColor bool
-	wordmarkPending   bool
-	wordmarkReady     bool
-	wordmarkStopping  bool
-	picker            *settingsPicker
-	pickerSequence    uint64
-	models            []core.ModelOption
-	weekly            weeklyUsageState
+	cfg                    Config
+	input                  textarea.Model
+	viewport               viewport.Model
+	spinner                spinner.Model
+	width                  int
+	height                 int
+	mainWidth              int
+	bodyHeight             int
+	entries                []entry
+	markdown               *glamour.TermRenderer
+	renderWidth            int
+	busy                   bool
+	quitting               bool
+	status                 string
+	notice                 string
+	started                time.Time
+	lastDuration           time.Duration
+	now                    time.Time
+	inputTokens            int
+	outputTokens           int
+	toolCount              int
+	expandTools            bool
+	pending                *ApprovalRequest
+	approvalListening      bool
+	stream                 chan streamMsg
+	cancel                 context.CancelFunc
+	lifetime               context.Context
+	stop                   context.CancelFunc
+	wg                     sync.WaitGroup
+	wordmarkEnabled        bool
+	wordmarkTrueColor      bool
+	wordmarkPending        bool
+	wordmarkReady          bool
+	wordmarkStopping       bool
+	picker                 *settingsPicker
+	pickerSequence         uint64
+	models                 []core.ModelOption
+	weekly                 weeklyUsageState
+	reasoningCycleSequence uint64
+	reasoningCyclePending  int
+	reasoningCycleCancel   context.CancelFunc
 	// compatibleModels is the switchable catalog for the compatible/OpenRouter
 	// provider. It starts from the saved openrouter_models and remembers any
 	// compatible model the session has used, so the provider stays reachable
@@ -242,6 +245,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case modelsMsg:
 		return m, m.receiveModels(msg)
+	case reasoningCycleMsg:
+		return m, m.receiveReasoningCycle(msg)
 	case tea.EnvMsg:
 		m.wordmarkEnabled = supportsWordmark(msg)
 		return m, m.requestWordmark()
@@ -367,6 +372,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+p" {
 			return m, m.openPicker("model")
 		}
+		if msg.String() == "shift+tab" {
+			return m, m.cycleReasoning()
+		}
 		if msg.String() == "enter" {
 			return m, m.submit()
 		}
@@ -438,7 +446,7 @@ func (m *model) submit() tea.Cmd {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results\n- **Ctrl+P** or `/model` opens model search · **Tab** switches Codex/OpenRouter catalogs\n- `/reasoning` chooses Codex reasoning effort\n- `/model ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results\n- **Ctrl+P** or `/model` opens model search · **Tab/Shift+Tab** switch catalogs in the picker\n- **Shift+Tab** outside the picker cycles Codex reasoning · `/reasoning` opens its picker\n- `/model ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
 		case "/clear":
 			next := sessions.New(m.cfg.Session.Directory, m.cfg.Session.Provider, m.cfg.Session.Model)
 			next.Reasoning = m.cfg.Session.Reasoning
@@ -473,6 +481,7 @@ func (m *model) submit() tea.Cmd {
 		m.notice = "Offline preview. Restart without --demo to begin a real session."
 		return nil
 	}
+	m.invalidateReasoningCycle()
 	m.input.Reset()
 	m.notice = ""
 	m.busy = true

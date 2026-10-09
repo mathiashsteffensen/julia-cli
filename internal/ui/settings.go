@@ -31,6 +31,14 @@ type modelsMsg struct {
 	err      error
 }
 
+type reasoningCycleMsg struct {
+	sequence  uint64
+	sessionID string
+	model     string
+	options   []core.ModelOption
+	err       error
+}
+
 type settingChoice struct {
 	value, label, detail string
 	active               bool
@@ -49,6 +57,7 @@ func (m *model) openPicker(kind string) tea.Cmd {
 		m.notice = "Settings are unavailable in this session."
 		return nil
 	}
+	m.invalidateReasoningCycle()
 	m.closePicker()
 	if m.cfg.Session.Provider == "compatible" {
 		m.rememberCompatibleModel(m.cfg.Session.Model)
@@ -76,10 +85,7 @@ func (m *model) openPicker(kind string) tea.Cmd {
 	m.input.Blur()
 	m.notice = ""
 	if m.cfg.Demo {
-		m.models = []core.ModelOption{
-			{ID: "preview-balanced", Name: "Balanced", Description: "Offline example · everyday coding and research", ReasoningEfforts: []string{"low", "medium", "high"}, DefaultReasoning: "medium", IsDefault: true},
-			{ID: "preview-deep", Name: "Deep reasoning", Description: "Offline example · demanding, extended tasks", ReasoningEfforts: []string{"medium", "high"}, DefaultReasoning: "high"},
-		}
+		m.models = previewModelOptions()
 		return textinput.Blink
 	}
 	return m.loadPickerModels(catalog, true)
@@ -230,13 +236,139 @@ func (m *model) receiveModels(msg modelsMsg) tea.Cmd {
 }
 
 func (m *model) currentModelOption() *core.ModelOption {
-	for i := range m.models {
-		option := &m.models[i]
-		if option.ID == m.cfg.Session.Model || (m.cfg.Session.Model == "" && option.IsDefault) {
-			return option
+	return modelOption(m.models, m.cfg.Session.Model)
+}
+
+func modelOption(options []core.ModelOption, model string) *core.ModelOption {
+	for i := range options {
+		if options[i].ID == model || (model == "" && options[i].IsDefault) {
+			return &options[i]
 		}
 	}
 	return nil
+}
+
+func previewModelOptions() []core.ModelOption {
+	return []core.ModelOption{
+		{ID: "preview-balanced", Name: "Balanced", Description: "Offline example · everyday coding and research", ReasoningEfforts: []string{"low", "medium", "high"}, DefaultReasoning: "medium", IsDefault: true},
+		{ID: "preview-deep", Name: "Deep reasoning", Description: "Offline example · demanding, extended tasks", ReasoningEfforts: []string{"medium", "high"}, DefaultReasoning: "high"},
+	}
+}
+
+func (m *model) cycleReasoning() tea.Cmd {
+	if m.busy {
+		m.notice = "Draft kept. Wait for this task, or Esc to interrupt before changing settings."
+		return nil
+	}
+	if !m.codexSettings() {
+		m.notice = "Reasoning controls are available with Codex."
+		return nil
+	}
+	if m.reasoningCyclePending > 0 {
+		m.reasoningCyclePending++
+		return nil
+	}
+	if m.cfg.Demo && modelOption(m.models, m.cfg.Session.Model) == nil {
+		m.models = previewModelOptions()
+	}
+	if option := modelOption(m.models, m.cfg.Session.Model); option != nil {
+		if len(option.ReasoningEfforts) == 0 {
+			m.notice = "No reasoning efforts are listed for this model. Use /reasoning LEVEL to set one directly."
+			return nil
+		}
+		if err := m.cycleReasoningBy(1); err != nil {
+			m.notice = "Settings unchanged: " + oneLine(err.Error())
+		}
+		return nil
+	}
+	if m.cfg.Models == nil {
+		m.notice = "Reasoning catalog unavailable. Use /reasoning LEVEL to set one directly."
+		return nil
+	}
+	if m.cfg.ApplySettings == nil && !m.cfg.Demo {
+		m.notice = "Settings are unavailable in this session."
+		return nil
+	}
+	m.reasoningCycleSequence++
+	sequence := m.reasoningCycleSequence
+	sessionID, modelID := m.cfg.Session.ID, m.cfg.Session.Model
+	m.reasoningCyclePending = 1
+	m.notice = "Loading reasoning options…"
+	ctx, cancel := context.WithTimeout(m.lifetime, 30*time.Second)
+	m.reasoningCycleCancel = cancel
+	return func() tea.Msg {
+		defer cancel()
+		options, err := m.cfg.Models(ctx)
+		options = append([]core.ModelOption(nil), options...)
+		for i := range options {
+			options[i].ReasoningEfforts = append([]string(nil), options[i].ReasoningEfforts...)
+		}
+		return reasoningCycleMsg{sequence: sequence, sessionID: sessionID, model: modelID, options: options, err: err}
+	}
+}
+
+func (m *model) receiveReasoningCycle(msg reasoningCycleMsg) tea.Cmd {
+	if msg.sequence != m.reasoningCycleSequence || m.reasoningCyclePending == 0 {
+		return nil
+	}
+	steps := m.reasoningCyclePending
+	m.reasoningCyclePending = 0
+	m.reasoningCycleCancel = nil
+	if m.quitting || m.busy || m.picker != nil || msg.sessionID != m.cfg.Session.ID || msg.model != m.cfg.Session.Model {
+		if m.notice == "Loading reasoning options…" {
+			m.notice = ""
+		}
+		return nil
+	}
+	if msg.err != nil {
+		m.notice = "Could not load reasoning options: " + oneLine(msg.err.Error())
+		return nil
+	}
+	m.models = msg.options
+	if modelOption(m.models, m.cfg.Session.Model) == nil {
+		m.notice = "Current model is missing from the reasoning catalog. Use /reasoning LEVEL to set one directly."
+		return nil
+	}
+	if err := m.cycleReasoningBy(steps); err != nil {
+		m.notice = "Settings unchanged: " + oneLine(err.Error())
+	}
+	return nil
+}
+
+func (m *model) cycleReasoningBy(steps int) error {
+	option := modelOption(m.models, m.cfg.Session.Model)
+	if option == nil || len(option.ReasoningEfforts) == 0 {
+		return fmt.Errorf("no reasoning efforts are listed for this model")
+	}
+	choices := []string{""}
+	seen := map[string]bool{"": true}
+	for _, effort := range option.ReasoningEfforts {
+		if effort != "" && !seen[effort] {
+			choices = append(choices, effort)
+			seen[effort] = true
+		}
+	}
+	if len(choices) < 2 {
+		return fmt.Errorf("no reasoning efforts are listed for this model")
+	}
+	current := slices.Index(choices, m.cfg.Session.Reasoning)
+	if current < 0 {
+		current = 0
+	}
+	next := choices[(current+steps%len(choices))%len(choices)]
+	return m.applySettings(m.cfg.Session.Provider, m.cfg.Session.Model, next)
+}
+
+func (m *model) invalidateReasoningCycle() {
+	m.reasoningCycleSequence++
+	m.reasoningCyclePending = 0
+	if m.reasoningCycleCancel != nil {
+		m.reasoningCycleCancel()
+		m.reasoningCycleCancel = nil
+	}
+	if m.notice == "Loading reasoning options…" {
+		m.notice = ""
+	}
 }
 
 func (m *model) pickerChoices() []settingChoice {
@@ -424,6 +556,7 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 			return err
 		}
 	}
+	m.invalidateReasoningCycle()
 	newConversation := next.ID != m.cfg.Session.ID
 	*m.cfg.Session = *next
 	if provider == "compatible" && !m.cfg.Demo {

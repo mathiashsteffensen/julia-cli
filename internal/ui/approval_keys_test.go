@@ -24,6 +24,7 @@ func TestPendingApprovalConsumesEveryKeyAndOnlyYOrEnterAllows(t *testing.T) {
 		{"uppercase Y", tea.KeyPressMsg{Code: 'Y'}, false},
 		{"space", tea.KeyPressMsg{Code: tea.KeySpace}, false},
 		{"tab", tea.KeyPressMsg{Code: tea.KeyTab}, false},
+		{"shift tab", tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}, false},
 		{"page up", tea.KeyPressMsg{Code: tea.KeyPgUp}, false},
 		{"page down", tea.KeyPressMsg{Code: tea.KeyPgDown}, false},
 		{"history end", tea.KeyPressMsg{Code: tea.KeyEnd, Mod: tea.ModCtrl}, false},

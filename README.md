@@ -61,6 +61,7 @@ Other providers do not display or query Codex usage.
 | Ctrl+End | Return to live output |
 | Ctrl+O | Expand/collapse tool results |
 | Ctrl+P / `/model` | Open the model picker |
+| Shift+Tab (outside the picker) | Cycle through Default and the model's supported Codex reasoning efforts |
 | `/reasoning` | Pick reasoning effort for the current model |
 | Ctrl+C | Stop the task and exit |
 | `/help` | Show shortcuts |
@@ -157,9 +158,11 @@ setting instead of silently ignoring it. `jarvis doctor` shows launch settings,
 and the conversation UI shows the selected model and effort.
 
 Inside the TUI, press **Ctrl+P** or enter `/model` for a searchable model picker.
-Use **Tab** (or **Shift+Tab**) to switch between the live Codex catalog and your saved
-OpenRouter list; arrow keys navigate, Enter selects, and Esc closes without changing
-settings or losing your message draft. Codex models are fetched from Codex without
+Inside the model picker, **Tab** (or **Shift+Tab**) switches between the live Codex
+catalog and your saved OpenRouter list; arrow keys navigate, Enter selects, and Esc
+closes without changing settings or losing your message draft. Outside the picker,
+**Shift+Tab** cycles through Default and the selected Codex model's advertised reasoning
+efforts, loading the catalog on first use. Codex models are fetched from Codex without
 starting a conversation or making an inference request. OpenRouter choices come from
 `openrouter_models` in your personal config, using the exact model IDs from OpenRouter.
 Use `/reasoning` to choose an effort supported by the selected Codex model. You can
