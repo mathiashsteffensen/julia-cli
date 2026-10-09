@@ -50,6 +50,9 @@ func (m *model) openPicker(kind string) tea.Cmd {
 		return nil
 	}
 	m.closePicker()
+	if m.cfg.Session.Provider == "compatible" {
+		m.rememberCompatibleModel(m.cfg.Session.Model)
+	}
 	search := textinput.New()
 	search.Prompt = "› "
 	search.Placeholder = "Search models by name or ID"
@@ -87,13 +90,29 @@ func (m *model) modelCatalogProviders() []string {
 	if m.cfg.Models != nil || m.cfg.Session.Provider == "codex" {
 		providers = append(providers, "codex")
 	}
-	if len(m.cfg.OpenRouterModels) > 0 || m.cfg.Session.Provider == "compatible" {
+	if len(m.compatibleModels) > 0 || m.cfg.Session.Provider == "compatible" {
 		providers = append(providers, "compatible")
 	}
 	if len(providers) == 0 {
 		providers = append(providers, m.cfg.Session.Provider)
 	}
 	return providers
+}
+
+// rememberCompatibleModel keeps a compatible/OpenRouter model in the switchable
+// catalog. Without it, a compatible session with no saved openrouter_models
+// would lose its only model as soon as the user moved to Codex, making the
+// compatible provider unreachable from the picker.
+func (m *model) rememberCompatibleModel(model string) {
+	if model == "" {
+		return
+	}
+	for _, option := range m.compatibleModels {
+		if option.ID == model {
+			return
+		}
+	}
+	m.compatibleModels = append(m.compatibleModels, core.ModelOption{ID: model, Name: model, Description: "Current compatible model"})
 }
 
 func (m *model) catalogFetch(provider string) (func(context.Context) ([]core.ModelOption, error), error) {
@@ -104,7 +123,7 @@ func (m *model) catalogFetch(provider string) (func(context.Context) ([]core.Mod
 		}
 		return m.cfg.Models, nil
 	case "compatible":
-		options := append([]core.ModelOption(nil), m.cfg.OpenRouterModels...)
+		options := append([]core.ModelOption(nil), m.compatibleModels...)
 		if m.cfg.Session.Provider == "compatible" && m.cfg.Session.Model != "" {
 			found := false
 			for _, option := range options {
@@ -407,6 +426,9 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 	}
 	newConversation := next.ID != m.cfg.Session.ID
 	*m.cfg.Session = *next
+	if provider == "compatible" && !m.cfg.Demo {
+		m.rememberCompatibleModel(model)
+	}
 	if newConversation {
 		m.entries = nil
 		m.toolCount, m.inputTokens, m.outputTokens = 0, 0, 0

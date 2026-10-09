@@ -126,6 +126,11 @@ type model struct {
 	pickerSequence    uint64
 	models            []core.ModelOption
 	weekly            weeklyUsageState
+	// compatibleModels is the switchable catalog for the compatible/OpenRouter
+	// provider. It starts from the saved openrouter_models and remembers any
+	// compatible model the session has used, so the provider stays reachable
+	// after the user switches to Codex and back.
+	compatibleModels []core.ModelOption
 }
 
 // Run owns terminal lifetime and waits for a cancelled backend before returning.
@@ -175,6 +180,7 @@ func newModel(cfg Config) *model {
 	m := &model{
 		cfg: cfg, input: input, viewport: viewport.New(), spinner: spin,
 		status: "Ready", lifetime: ctx, stop: stop, now: time.Now(),
+		compatibleModels: append([]core.ModelOption(nil), cfg.OpenRouterModels...),
 	}
 	m.viewport.FillHeight = true
 	m.loadHistory()
