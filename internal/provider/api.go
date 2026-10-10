@@ -142,7 +142,7 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt string, tools cor
 	}
 	// Rebuild this on every Run; a resumed session must not retain a stale
 	// environment or policy. Agent-level system instructions survive compaction.
-	agentOptions := []fantasy.AgentOption{fantasy.WithSystemPrompt(sessionInstructions(s)), fantasy.WithTools(wrapped...), fantasy.WithStopConditions(fantasy.StepCountIs(1)), fantasy.WithMaxRetries(2), fantasy.WithMaxOutputTokens(8192)}
+	agentOptions := []fantasy.AgentOption{fantasy.WithSystemPrompt(sessionInstructions(s)), fantasy.WithTools(wrapped...), fantasy.WithStopConditions(fantasy.StepCountIs(1)), fantasy.WithMaxRetries(2), fantasy.WithMaxOutputTokens(a.stepOutputTokens())}
 	if a.OpenRouter {
 		if effort := a.reasoningEffort(); effort != "" {
 			agentOptions = append(agentOptions, fantasy.WithProviderOptions(a.reasoningOptions(effort)))
@@ -245,7 +245,10 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt string, tools cor
 		}
 		switch completed.FinishReason {
 		case fantasy.FinishReasonLength:
-			return errors.New("model output limit reached; session saved, send a follow-up to continue")
+			if completed.Content.Text() == "" && len(completed.Content.ToolCalls()) == 0 {
+				return fmt.Errorf("model spent its whole %d-token output limit reasoning; session saved, send a follow-up to continue or lower the reasoning effort", a.stepOutputTokens())
+			}
+			return fmt.Errorf("model output limit of %d tokens reached; session saved, send a follow-up to continue", a.stepOutputTokens())
 		case fantasy.FinishReasonContentFilter, fantasy.FinishReasonError:
 			return fmt.Errorf("provider stopped: %s", completed.FinishReason)
 		}
@@ -258,6 +261,23 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt string, tools cor
 		emit(core.Event{Kind: "text", Text: "\n\n"})
 	}
 	return fmt.Errorf("reached %d steps; session saved, send a follow-up to continue", limit)
+}
+
+const (
+	minStepOutputTokens = 8192
+	maxStepOutputTokens = 32_768
+)
+
+// stepOutputTokens caps one step's response. Reasoning counts against it, and a
+// model on high effort can think for well over 8k tokens before answering. It
+// stays within the headroom above the compaction threshold, so a request near the
+// threshold still fits on servers that reject prompt plus limit beyond the window.
+func (a *API) stepOutputTokens() int64 {
+	window := a.ContextTokens
+	if window <= 0 {
+		window = core.DefaultContextWindow
+	}
+	return int64(min(maxStepOutputTokens, max(minStepOutputTokens, window/8)))
 }
 
 // normalizeUsage splits a provider's report into disjoint billing classes. Every

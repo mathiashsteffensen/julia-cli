@@ -777,3 +777,33 @@ func TestAPIReviewsNeverTouchSessionUsage(t *testing.T) {
 		t.Fatalf("approval review leaked into the conversation: usage %+v -> %+v, events %d -> %d", before, session.Usage, emitted, len(events))
 	}
 }
+
+func TestAPIStepOutputLimitLeavesRoomForReasoning(t *testing.T) {
+	for _, tc := range []struct {
+		window int
+		want   int64
+	}{{0, 32_000}, {1_000_000, maxStepOutputTokens}, {100_000, 12_500}, {32_000, minStepOutputTokens}} {
+		model := &scriptedAPIModel{parts: textStep("Done.", fantasy.Usage{InputTokens: 10, OutputTokens: 2})}
+		if err := (&API{Model: model, ContextTokens: tc.window}).Run(context.Background(), &core.Session{}, "Review", &testTools{}, func(core.Event) {}); err != nil {
+			t.Fatal(err)
+		}
+		if got := model.calls[0].MaxOutputTokens; got == nil || *got != tc.want {
+			t.Fatalf("window %d: max output %v, want %d", tc.window, got, tc.want)
+		}
+		if tc.want > int64(max(tc.window, core.DefaultContextWindow)-core.CompactionThreshold(tc.window)) {
+			t.Fatalf("window %d: limit %d exceeds the headroom above the compaction threshold", tc.window, tc.want)
+		}
+	}
+}
+
+func TestAPIReasoningOnlyTruncationSaysSo(t *testing.T) {
+	usage := fantasy.Usage{InputTokens: 10, OutputTokens: 32_000}
+	model := &scriptedAPIModel{parts: []fantasy.StreamPart{
+		{Type: fantasy.StreamPartTypeReasoningStart, ID: "r"}, {Type: fantasy.StreamPartTypeReasoningDelta, ID: "r", Delta: "Thinking"}, {Type: fantasy.StreamPartTypeReasoningEnd, ID: "r"},
+		{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonLength, Usage: usage},
+	}}
+	err := (&API{Model: model}).Run(context.Background(), &core.Session{}, "Review", &testTools{}, func(core.Event) {})
+	if err == nil || !strings.Contains(err.Error(), "reasoning") || !strings.Contains(err.Error(), "32000") {
+		t.Fatalf("reasoning-only truncation not explained: %v", err)
+	}
+}
