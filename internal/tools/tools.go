@@ -36,6 +36,14 @@ type Config struct {
 	Approve, Review core.Approver
 	Task            string
 	Emit            core.Emit
+	// SearchKey is the Firecrawl API key from the environment. Without it,
+	// WebSearch uses the key saved in SearchKeyFile or runs first-use setup to
+	// create that file; with neither, search is unavailable.
+	SearchKey, SearchKeyFile string
+	// ScratchDir is a session-lifetime directory outside the workspace, writable
+	// from Bash (sandboxed or not) and exposed as JARVIS_SCRATCH, so throwaway
+	// files that must outlive one call do not land in the repository.
+	ScratchDir string
 }
 type Executor struct {
 	config    Config
@@ -44,6 +52,11 @@ type Executor struct {
 	mu        sync.Mutex
 	goEnv     *goEnvironment
 	webClient *http.Client
+	envKey    string
+	// scratch is the resolved session scratch directory; ownScratch marks one
+	// this executor created itself and must remove.
+	scratch    string
+	ownScratch bool
 }
 
 func New(c Config) (*Executor, error) {
@@ -65,11 +78,14 @@ func New(c Config) (*Executor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open workspace: %w", err)
 	}
-	return &Executor{config: c, root: root, directory: dir}, nil
+	return &Executor{config: c, root: root, directory: dir, envKey: c.SearchKey}, nil
 }
 func (e *Executor) Close() error {
 	if e.webClient != nil {
 		e.webClient.CloseIdleConnections()
+	}
+	if e.ownScratch {
+		os.RemoveAll(e.scratch)
 	}
 	return e.root.Close()
 }
@@ -99,7 +115,7 @@ func Definitions(subagents bool) []core.ToolDefinition {
 		{Name: "Edit", Description: "Atomically replace one unique exact string in one file. Fails if old_string is absent or ambiguous. Maximum file size 4 MiB.", Parameters: schema(map[string]any{"path": path, "old_string": str("Nonempty exact text occurring once"), "new_string": str("Replacement text")}, "path", "old_string", "new_string")},
 		{Name: "Write", Description: "Atomically create or replace a UTF-8 file up to 4 MiB; creates parent directories.", Parameters: schema(map[string]any{"path": path, "content": str("Complete file contents")}, "path", "content")},
 		{Name: "MultiEdit", Description: "Apply ordered exact replacements to ONE file atomically. Every old_string must occur exactly once at its step; any failure leaves the file untouched.", Parameters: schema(map[string]any{"path": path, "edits": edits}, "path", "edits")},
-		{Name: "Bash", Description: "Run Bash in the workspace. Every call is reviewed or approved. Default execution uses the OS sandbox; explicit require_escalated execution requires a justification and separate approval for that exact command, then runs outside the sandbox with host-user filesystem and unrestricted network access. No automatic retry or added sudo. Both modes strip inherited credentials, cap output at 32 KiB, and stop the ordinary process group on completion or timeout.", Parameters: schema(map[string]any{"command": str("Bash command"), "timeout": integer("Seconds, default 120, maximum 600"), "network": map[string]any{"type": "boolean", "description": "Enable network for this sandboxed invocation only; default false. Without it every socket is denied, loopback included, so reaching a local database or service on localhost needs network=true. Outside the sandbox network is always unrestricted regardless of this flag."}, "sandbox_permissions": map[string]any{"type": "string", "enum": []string{"use_default", "require_escalated"}, "description": "Default use_default keeps the OS sandbox. require_escalated requests approval to run this exact command outside the OS sandbox, with normal host-user privileges."}, "justification": str("Required for require_escalated: why this exact command needs host access and how it follows the user's task. This explanation is not itself authorization.")}, "command")},
+		{Name: "Bash", Description: "Run Bash in the workspace. In auto mode, sandboxed calls without network run directly; network and escalated calls are reviewed, and ask mode approves every call. $JARVIS_SCRATCH is a session scratch directory outside the workspace for throwaway files that must survive between calls. Default execution uses the OS sandbox; explicit require_escalated execution requires a justification and separate approval for that exact command, then runs outside the sandbox with host-user filesystem and unrestricted network access. No automatic retry or added sudo. Both modes strip inherited credentials, cap output at 32 KiB, and stop the ordinary process group on completion or timeout.", Parameters: schema(map[string]any{"command": str("Bash command"), "timeout": integer("Seconds, default 120, maximum 600"), "network": map[string]any{"type": "boolean", "description": "Enable network for this sandboxed invocation only; default false. Without it every socket is denied, loopback included, so reaching a local database or service on localhost needs network=true. Outside the sandbox network is always unrestricted regardless of this flag."}, "sandbox_permissions": map[string]any{"type": "string", "enum": []string{"use_default", "require_escalated"}, "description": "Default use_default keeps the OS sandbox. require_escalated requests approval to run this exact command outside the OS sandbox, with normal host-user privileges."}, "justification": str("Required for require_escalated: why this exact command needs host access and how it follows the user's task. This explanation is not itself authorization.")}, "command")},
 		{Name: "Grep", Description: "Search text with ripgrep regex, without following symlinks or reading protected files. Scans up to 16 MiB of files, each at most 4 MiB; output capped at 32 KiB.", Parameters: schema(map[string]any{"pattern": str("Ripgrep regex"), "path": str("Workspace-relative file/directory, default ."), "glob": str("Optional filename glob such as *.go"), "ignore_case": map[string]any{"type": "boolean"}}, "pattern")},
 		webSearchDefinition(),
 		{Name: "List", Description: "List workspace entries, excluding symlinks and protected paths. Defaults to depth 1; maximum depth 5 and 2000 entries.", Parameters: schema(map[string]any{"path": str("Workspace-relative directory, default ."), "depth": integer("Depth 1–5, default 1")})},

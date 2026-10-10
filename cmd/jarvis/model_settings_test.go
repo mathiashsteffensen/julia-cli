@@ -182,7 +182,7 @@ func (b *settingsTurnBackend) Run(ctx context.Context, current *core.Session, _ 
 			b.t.Fatal("instructions do not describe selected settings", field)
 		}
 	}
-	result := executor.Execute(ctx, core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"printf must-not-execute"}`)})
+	result := executor.Execute(ctx, core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"printf must-not-execute","network":true}`)})
 	if !result.IsError {
 		b.t.Fatal("fake reviewer denial should stop actual execution")
 	}

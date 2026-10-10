@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -120,9 +121,32 @@ func TestGrepHidesSecrets(t *testing.T) {
 }
 func TestBashRequiresReviewOrApproval(t *testing.T) {
 	e, _ := fixture(t, "auto", nil)
-	r := invoke(e, "Bash", map[string]any{"command": "true"})
+	r := invoke(e, "Bash", map[string]any{"command": "true", "network": true})
 	if !r.IsError || !strings.Contains(r.Content, "approval") {
 		t.Fatal(r.Content)
+	}
+}
+func TestAutoRunsOfflineSandboxedBashWithoutReview(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandboxed Bash requires macOS")
+	}
+	e, _ := fixture(t, "auto", nil)
+	e.config.Review = func(context.Context, core.Approval) (core.Decision, error) {
+		t.Error("offline sandboxed Bash was sent to review")
+		return core.Decision{}, nil
+	}
+	if r := invoke(e, "Bash", map[string]any{"command": "true"}); r.IsError {
+		t.Fatal(r.Content)
+	}
+}
+func TestAskStillApprovesOfflineSandboxedBash(t *testing.T) {
+	humans := 0
+	e, _ := fixture(t, "ask", func(context.Context, core.Approval) (core.Decision, error) {
+		humans++
+		return core.Decision{Allow: false}, nil
+	})
+	if r := invoke(e, "Bash", map[string]any{"command": "true"}); !r.IsError || humans != 1 {
+		t.Fatal(r.Content, humans)
 	}
 }
 func TestBoundedBuffer(t *testing.T) {

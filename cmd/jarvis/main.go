@@ -105,8 +105,19 @@ func run() error {
 	if timeout != "" {
 		cfg.Timeout = timeout
 	}
+	// The last reasoning effort chosen for this provider replaces the configured
+	// default; an explicit flag is itself a choice and becomes the new default.
+	preferencesPath, preferencesErr := config.PreferencesPath()
+	if !reasoningSet && preferencesErr == nil {
+		if prefs, err := config.LoadPreferences(preferencesPath); err == nil {
+			cfg.ApplyRememberedReasoning(prefs)
+		}
+	}
 	if err = cfg.Validate(); err != nil {
 		return err
+	}
+	if reasoningSet && preferencesErr == nil && !demo && snapshot == 0 {
+		_ = config.RememberReasoning(preferencesPath, cfg.Provider, cfg.Reasoning)
 	}
 	store, err := session.Default()
 	if err != nil {
@@ -234,7 +245,7 @@ func run() error {
 		ask, questions = ui.NewAsker()
 	}
 	duration, _ := time.ParseDuration(cfg.Timeout)
-	runner := &runtimeBackend{backend: raw, cfg: cfg, approve: approve, review: review, ask: ask, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save}
+	runner := &runtimeBackend{backend: raw, cfg: cfg, approve: approve, review: review, ask: ask, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path)}
 	if prompt != "" {
 		s.Title = session.Title(prompt)
 		enc := json.NewEncoder(os.Stdout)
@@ -279,7 +290,16 @@ func run() error {
 				return fmt.Errorf("set %s before switching to the compatible provider", keyEnv)
 			}
 		}
-		return applySessionSettings(cfg, current, selectedProvider, selectedModel, reasoning, store.Save)
+		previousProvider := current.Provider
+		if err := applySessionSettings(cfg, current, selectedProvider, selectedModel, reasoning, store.Save); err != nil {
+			return err
+		}
+		// A provider switch resets the effort rather than choosing one, so it must
+		// not overwrite the destination provider's remembered choice.
+		if selectedProvider == previousProvider && preferencesErr == nil {
+			_ = config.RememberReasoning(preferencesPath, current.Provider, current.Reasoning)
+		}
+		return nil
 	}
 	for _, id := range cfg.CompatibleModels {
 		if config.IsDecisionsOnlyCompatibleModel(id) {
@@ -371,6 +391,8 @@ type runtimeBackend struct {
 	ask             core.Asker
 	timeout         time.Duration
 	parent          context.Context
+	// searchKeyFile holds the Firecrawl key saved by WebSearch's first-use setup.
+	searchKeyFile string
 }
 
 // headlessAsker answers for a run with no human: it skips the question at once.
@@ -421,7 +443,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt string
 		consumer(event)
 	}
 	task := newTaskContext(s.Messages, prompt)
-	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit})
+	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "jarvis-scratch", s.ID)})
 	if err != nil {
 		return err
 	}
@@ -544,6 +566,12 @@ func findCodex(binary string) (string, error) {
 	}
 	return "", errors.New("Codex CLI was not found; install it or set codex_binary in your config")
 }
+
+// searchKeyFile keeps the Firecrawl key beside the configuration file it serves.
+func searchKeyFile(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "firecrawl.json")
+}
+
 func doctor(ctx context.Context, c config.Config, path string) error {
 	fmt.Printf("JARVIS %s\nConfig    %s\nProvider  %s\nMode      %s\n", version, path, c.Provider, c.Mode)
 	model, reasoning := modelSettings(c)
@@ -552,6 +580,16 @@ func doctor(ctx context.Context, c config.Config, path string) error {
 		fmt.Println(line)
 	}
 	fmt.Printf("Reviewer  Codex %s · reasoning %s · priority\n", provider.CodexReviewerModel, provider.CodexReviewerReasoning)
+	keyFile := searchKeyFile(path)
+	if os.Getenv(tools.WebSearchKeyEnv) != "" {
+		fmt.Printf("Search    Firecrawl (%s)\n", tools.WebSearchKeyEnv)
+	} else if key, err := tools.LoadSearchKey(keyFile); err != nil {
+		fmt.Printf("Search    Firecrawl key unreadable: %s\n", safe(err.Error()))
+	} else if key != "" {
+		fmt.Printf("Search    Firecrawl (%s)\n", keyFile)
+	} else {
+		fmt.Println("Search    Firecrawl, set up on first WebSearch")
+	}
 	for _, name := range []string{"rg", "bash"} {
 		p, err := exec.LookPath(name)
 		if err != nil {

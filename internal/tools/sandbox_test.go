@@ -34,11 +34,11 @@ func TestReviewFallsBackToHuman(t *testing.T) {
 	}
 }
 func TestSeatbeltProfile(t *testing.T) {
-	p := seatbeltProfile("/tmp/project", "/tmp/run", false)
+	p := seatbeltProfile("/tmp/project", "/tmp/run", "/tmp/scratch", false)
 	if !strings.Contains(p, "(deny default)") || strings.Contains(p, "(allow network*)") || !strings.Contains(p, "(deny file-read* file-write*") {
 		t.Fatal(p)
 	}
-	p = seatbeltProfile("/tmp/project", "/tmp/run", true)
+	p = seatbeltProfile("/tmp/project", "/tmp/run", "/tmp/scratch", true)
 	if !strings.Contains(p, "(allow network*)") {
 		t.Fatal("missing explicit network grant")
 	}
@@ -183,5 +183,32 @@ func TestSandboxGitStatus(t *testing.T) {
 	}
 	if result := invoke(e, "Bash", map[string]any{"command": "git config --get jarvis.secret"}); !result.IsError || strings.Contains(result.Content, "outside-secret-fixture") {
 		t.Fatal("outside git-config include was readable", result.Content)
+	}
+}
+func TestScratchDirPersistsOutsideWorkspace(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandboxed Bash requires macOS")
+	}
+	e, dir := fixture(t, "auto", nil)
+	e.config.ScratchDir = filepath.Join(t.TempDir(), "session")
+	if r := invoke(e, "Bash", map[string]any{"command": `printf kept > "$JARVIS_SCRATCH/main.tf"`}); r.IsError {
+		t.Fatal(r.Content)
+	}
+	r := invoke(e, "Bash", map[string]any{"command": `cat "$JARVIS_SCRATCH/main.tf"`})
+	if r.IsError || !strings.Contains(r.Content, "kept") {
+		t.Fatal(r.Content)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if entry.Name() == "main.tf" {
+			t.Fatal("scratch file landed in the workspace")
+		}
+	}
+}
+func TestScratchDirRejectsWorkspace(t *testing.T) {
+	e, dir := fixture(t, "auto", nil)
+	e.config.ScratchDir = filepath.Join(dir, ".scratch")
+	if _, err := e.scratchDir(); err == nil {
+		t.Fatal("accepted a scratch directory inside the workspace")
 	}
 }

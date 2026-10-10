@@ -2,12 +2,16 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -27,9 +31,18 @@ func webResponse(status int, contentType, body string) *http.Response {
 	}
 }
 
-func webResultHTML(title, href, snippet string) string {
-	return fmt.Sprintf(`<div class="result results_links web-result"><h2><a class="result__a" href="%s">%s</a></h2><a class="result__snippet">%s</a></div>`, href, title, snippet)
+type webItem struct{ title, url, description string }
+
+func webResultJSON(items ...webItem) string {
+	web := make([]map[string]any, len(items))
+	for i, item := range items {
+		web[i] = map[string]any{"title": item.title, "url": item.url, "description": item.description, "position": i + 1}
+	}
+	b, _ := json.Marshal(map[string]any{"success": true, "data": map[string]any{"web": web}, "creditsUsed": 2})
+	return string(b)
 }
+
+const testSearchKey = "fc-test-key"
 
 func webFixture(t *testing.T, transport webRoundTrip) *Executor {
 	t.Helper()
@@ -37,6 +50,7 @@ func webFixture(t *testing.T, transport webRoundTrip) *Executor {
 	e.config.Review = func(context.Context, core.Approval) (core.Decision, error) {
 		return core.Decision{Allow: true, Reason: "public search"}, nil
 	}
+	e.config.SearchKey = testSearchKey
 	e.webClient = newWebSearchClient()
 	e.webClient.Transport = transport
 	return e
@@ -65,23 +79,27 @@ func TestWebSearchRequestAndCompactResults(t *testing.T) {
 	calls := 0
 	e := webFixture(t, func(req *http.Request) (*http.Response, error) {
 		calls++
-		if req.Method != http.MethodGet || req.URL.Scheme != "https" || req.URL.Host != "html.duckduckgo.com" || req.URL.Path != "/html/" {
+		if req.Method != http.MethodPost || req.URL.String() != webSearchEndpoint {
 			t.Fatalf("unexpected search destination: %s %s", req.Method, req.URL)
 		}
-		if req.URL.Query().Get("q") != "Go net/http & TLS" || len(req.URL.Query()) != 1 {
-			t.Fatalf("unexpected query: %s", req.URL.RawQuery)
+		if req.Header.Get("Authorization") != "Bearer "+testSearchKey || req.Header.Get("Content-Type") != "application/json" {
+			t.Fatal("missing Firecrawl authentication or content type")
 		}
-		if req.Body != nil || req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" || req.Header.Get("Referer") != "" {
-			t.Fatal("search sent state other than its query")
+		if req.Header.Get("Cookie") != "" || req.Header.Get("Referer") != "" || !strings.HasPrefix(req.Header.Get("User-Agent"), "JARVIS/") {
+			t.Fatal("search sent unexpected headers")
 		}
-		if req.Header.Get("Accept") != "text/html" || !strings.HasPrefix(req.Header.Get("User-Agent"), "JARVIS/") {
-			t.Fatal("missing request headers")
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatal(err)
 		}
-		var body strings.Builder
+		if body["query"] != "Go net/http & TLS" || body["scrapeOptions"] != nil {
+			t.Fatalf("unexpected request body: %v", body)
+		}
+		var items []webItem
 		for i := 1; i <= 10; i++ {
-			body.WriteString(webResultHTML(fmt.Sprintf("Result %d", i), fmt.Sprintf("https://example.com/%d", i), "A short <b>snippet</b>."))
+			items = append(items, webItem{fmt.Sprintf("Result %d", i), fmt.Sprintf("https://example.com/%d", i), "A short\nsnippet."})
 		}
-		return webResponse(200, "text/html; charset=UTF-8", body.String()), nil
+		return webResponse(200, "application/json; charset=utf-8", webResultJSON(items...)), nil
 	})
 	var approval core.Approval
 	e.config.Task = "Find Go's public HTTP documentation."
@@ -93,11 +111,14 @@ func TestWebSearchRequestAndCompactResults(t *testing.T) {
 	if r.IsError {
 		t.Fatal(r.Content)
 	}
-	if calls != 1 || !strings.Contains(r.Content, "3. Result 3") || strings.Contains(r.Content, "Result 4") || strings.Contains(r.Content, "<b>") {
+	if calls != 1 || !strings.Contains(r.Content, "3. Result 3") || strings.Contains(r.Content, "Result 4") {
 		t.Fatalf("unexpected result: calls=%d %s", calls, r.Content)
 	}
 	if len(r.Content) > maxWebSearchText || !strings.Contains(r.Content, "https://example.com/1") || !strings.Contains(r.Content, "A short snippet.") {
 		t.Fatal(r.Content)
+	}
+	if strings.Contains(r.Content, testSearchKey) {
+		t.Fatal("API key leaked into the tool result")
 	}
 	if approval.Call.Name != "WebSearch" || approval.ExecutionMode != "web-search" || !approval.Network || approval.Task != e.config.Task || approval.Directory != e.directory {
 		t.Fatalf("incorrect approval boundary: %+v", approval)
@@ -105,6 +126,22 @@ func TestWebSearchRequestAndCompactResults(t *testing.T) {
 	r = invoke(e, "WebSearch", map[string]any{"query": "Go net/http & TLS", "limit": 5})
 	if r.IsError || !strings.Contains(r.Content, "5. Result 5") || strings.Contains(r.Content, "Result 6") {
 		t.Fatal(r.Content)
+	}
+}
+
+func TestWebSearchRequiresAPIKey(t *testing.T) {
+	e := webFixture(t, func(*http.Request) (*http.Response, error) {
+		t.Fatal("unconfigured search connected")
+		return nil, nil
+	})
+	e.config.SearchKey = ""
+	e.config.Review = func(context.Context, core.Approval) (core.Decision, error) {
+		t.Fatal("unconfigured search prompted")
+		return core.Decision{}, nil
+	}
+	r := invoke(e, "WebSearch", map[string]any{"query": "Go docs"})
+	if !r.IsError || !strings.Contains(r.Content, WebSearchKeyEnv) {
+		t.Fatal(r)
 	}
 }
 
@@ -154,7 +191,7 @@ func TestWebSearchApprovalModes(t *testing.T) {
 			reviews, humans, network := 0, 0, 0
 			e := webFixture(t, func(*http.Request) (*http.Response, error) {
 				network++
-				return webResponse(200, "text/html", `<div class="no-results">No results</div>`), nil
+				return webResponse(200, "application/json", webResultJSON()), nil
 			})
 			e.config.Mode, e.config.Review, e.config.Approve = tc.mode, nil, nil
 			if tc.review != nil {
@@ -181,34 +218,32 @@ func ptrWebBool(b bool) *bool { return &b }
 
 func TestParseWebSearch(t *testing.T) {
 	target := "https://pkg.go.dev/net/http?tab=doc&x=1#Client"
-	wrapped := "//duckduckgo.com/l/?uddg=" + url.QueryEscape(target) + "&amp;rut=tracking"
-	body := `<html><body><nav>Navigation must stay out of results</nav>` +
-		webResultHTML("Go <b>net/http</b> &amp; TLS", wrapped, "  Read <b>the docs</b>. <script>hidden()</script>\n APIs.") +
-		webResultHTML("duplicate", target, "duplicate snippet") +
-		`<div class="result result--ad"><a class="result__a" href="https://ads.example/">Advertisement</a></div>` +
-		webResultHTML("second", "https://go.dev/", "a<br>b") +
-		webResultHTML("unsafe", "javascript:alert(1)", "bad") +
-		webResultHTML("credentials", "https://user:pass@example.com/", "bad") +
-		`</body></html>`
+	body := webResultJSON(
+		webItem{"Go <b>net/http</b> & TLS", target, "  Read the docs.\n APIs."},
+		webItem{"duplicate", target, "duplicate snippet"},
+		webItem{"", "https://go.dev/", "a\tb"},
+		webItem{"unsafe", "javascript:alert(1)", "bad"},
+		webItem{"credentials", "https://user:pass@example.com/", "bad"},
+	)
 	results, err := parseWebSearch([]byte(body))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 2 || results[0].url != target || results[0].title != "Go net/http & TLS" || results[0].snippet != "Read the docs. APIs." || results[1].snippet != "a b" {
+	if len(results) != 2 || results[0].url != target || results[0].title != "Go <b>net/http</b> & TLS" || results[0].snippet != "Read the docs. APIs." {
 		t.Fatalf("%+v", results)
+	}
+	if results[1].title != "https://go.dev/" || results[1].snippet != "a b" {
+		t.Fatalf("untitled result: %+v", results[1])
 	}
 }
 
 func TestWebSearchResultURLs(t *testing.T) {
 	for _, tc := range []struct{ input, want string }{
 		{"https://example.com/docs#section", "https://example.com/docs#section"},
-		{"//example.com/docs", "https://example.com/docs"},
-		{"/l/?uddg=https%3A%2F%2Fexample.com%2Fdocs", "https://example.com/docs"},
-		{"https://duckduckgo.com/l/?uddg=http%3A%2F%2Fexample.com", "http://example.com"},
-		{"https://evil.example/l/?uddg=https%3A%2F%2Fexample.com", "https://evil.example/l/?uddg=https%3A%2F%2Fexample.com"},
-		{"", ""}, {"/relative", ""}, {"javascript:alert(1)", ""}, {"file:///etc/passwd", ""},
+		{"http://example.com", "http://example.com"},
+		{"", ""}, {"/relative", ""}, {"//example.com/docs", ""}, {"javascript:alert(1)", ""}, {"file:///etc/passwd", ""},
 		{"https://user:secret@example.com", ""}, {"https:///empty", ""}, {"https://example.com/\n", ""},
-		{"https://example.com/\u202e", ""}, {"/l/?uddg=javascript%3Aalert%281%29", ""},
+		{"https://example.com/\u202e", ""},
 		{"https://example.com/" + strings.Repeat("x", 1024), ""},
 	} {
 		if got := webResultURL(tc.input); got != tc.want {
@@ -222,16 +257,18 @@ func TestWebSearchFailuresAreNotEmptyResults(t *testing.T) {
 		name, contentType, body, want string
 		status                        int
 	}{
-		{"challenge status", "text/html", "private challenge page", "bot challenge", 202},
-		{"forbidden", "text/html", "private challenge page", "bot challenge", 403},
-		{"rate limit", "text/html", "private rate limit page", "rate limit", 429},
-		{"server error", "text/html", "private server details", "HTTP 503", 503},
-		{"json", "application/json", `{"error":"private details"}`, "content type", 200},
-		{"oversized", "text/html", strings.Repeat("x", maxWebSearchBody+1), "exceeded 1 MiB", 200},
-		{"challenge html", "text/html", `<form id="challenge-form">private challenge</form>`, "bot challenge", 200},
-		{"challenge despite results", "text/html", `<div class="anomaly-modal"></div>` + webResultHTML("result", "https://example.com", "snippet"), "bot challenge", 200},
-		{"unknown markup", "text/html", "<html>private unknown page</html>", "page format", 200},
-		{"only invalid results", "text/html", webResultHTML("bad", "javascript:void(0)", "private"), "page format", 200},
+		{"unauthorized", "application/json", `{"error":"private details"}`, "rejected the API key", 401},
+		{"forbidden", "application/json", `{"error":"private details"}`, "HTTP 403", 403},
+		{"out of credits", "application/json", `{"error":"private details"}`, "out of credits", 402},
+		{"rate limit", "application/json", `{"error":"private details"}`, "rate limit", 429},
+		{"timeout", "application/json", `{"error":"private details"}`, "timed out", 408},
+		{"server error", "application/json", `{"error":"private details"}`, "HTTP 500", 500},
+		{"html", "text/html", "<html>private page</html>", "content type", 200},
+		{"oversized", "application/json", strings.Repeat("x", maxWebSearchBody+1), "exceeded 1 MiB", 200},
+		{"malformed", "application/json", `{"success":true,"data":`, "parse", 200},
+		{"unsuccessful", "application/json", `{"success":false,"error":"private details"}`, "unsuccessful", 200},
+		{"missing data", "application/json", `{"success":true}`, "format may have changed", 200},
+		{"only invalid results", "application/json", webResultJSON(webItem{"bad", "javascript:void(0)", "private"}), "no usable result URLs", 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
@@ -245,9 +282,9 @@ func TestWebSearchFailuresAreNotEmptyResults(t *testing.T) {
 			}
 		})
 	}
-	results, err := parseWebSearch([]byte(`<div class="result result--no-result"><div class="no-results"><div class="no-results__message">No results found</div></div></div>`))
+	results, err := parseWebSearch([]byte(webResultJSON()))
 	if err != nil || len(results) != 0 || !strings.Contains(formatWebSearch(results, 3), "found no results") {
-		t.Fatalf("valid empty page: %+v %v", results, err)
+		t.Fatalf("valid empty response: %+v %v", results, err)
 	}
 }
 
@@ -255,7 +292,7 @@ func TestWebSearchDoesNotFollowRedirects(t *testing.T) {
 	calls := 0
 	e := webFixture(t, func(*http.Request) (*http.Response, error) {
 		calls++
-		response := webResponse(302, "text/html", "")
+		response := webResponse(302, "application/json", "")
 		response.Header.Set("Location", "http://127.0.0.1/private")
 		return response, nil
 	})
@@ -265,7 +302,7 @@ func TestWebSearchDoesNotFollowRedirects(t *testing.T) {
 	}
 	client := newWebSearchClient()
 	defer client.CloseIdleConnections()
-	if client.Jar != nil || client.Timeout <= 0 || client.Timeout > 15*time.Second || client.Transport.(*http.Transport).Proxy != nil {
+	if client.Jar != nil || client.Timeout <= 0 || client.Timeout > 30*time.Second || client.Transport.(*http.Transport).Proxy != nil {
 		t.Fatal("client permits ambient cookies/proxies or unbounded requests")
 	}
 }
@@ -299,7 +336,7 @@ func (webBrokenBody) Close() error             { return nil }
 
 func TestWebSearchBodyReadFailure(t *testing.T) {
 	e := webFixture(t, func(*http.Request) (*http.Response, error) {
-		response := webResponse(200, "text/html", "")
+		response := webResponse(200, "application/json", "")
 		response.Body = webBrokenBody{}
 		return response, nil
 	})
@@ -310,15 +347,15 @@ func TestWebSearchBodyReadFailure(t *testing.T) {
 }
 
 func TestWebSearchOutputBoundAndSanitization(t *testing.T) {
-	var body strings.Builder
+	var items []webItem
 	for i := 0; i < 10; i++ {
-		body.WriteString(webResultHTML(
-			strings.Repeat("界", 100)+"\x1b\u202e",
+		items = append(items, webItem{
+			strings.Repeat("界", 100) + "\x1b\u202e",
 			fmt.Sprintf("https://example.com/%d/%s", i, strings.Repeat("x", 980)),
-			strings.Repeat("文", 200)+"\x00\u2066",
-		))
+			strings.Repeat("文", 200) + "\x00\u2066",
+		})
 	}
-	results, err := parseWebSearch([]byte(body.String()))
+	results, err := parseWebSearch([]byte(webResultJSON(items...)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,5 +375,193 @@ func TestWebSearchOutputBoundAndSanitization(t *testing.T) {
 				t.Fatalf("truncated source URL: %s", line)
 			}
 		}
+	}
+}
+
+// setupFixture has no API key, so WebSearch runs first-use setup against the
+// stubbed Firecrawl authorization and search endpoints.
+func setupFixture(t *testing.T, poll func(n int, body map[string]string) *http.Response) (*Executor, *[]string, *int) {
+	t.Helper()
+	interval, opener := webSearchAuthInterval, openBrowser
+	t.Cleanup(func() { webSearchAuthInterval, openBrowser = interval, opener })
+	webSearchAuthInterval = time.Millisecond
+	var opened []string
+	openBrowser = func(link string) error { opened = append(opened, link); return nil }
+	polls := 0
+	e := webFixture(t, func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case webSearchAuthPollURL:
+			polls++
+			var body map[string]string
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil || req.Header.Get("Authorization") != "" {
+				t.Fatalf("bad poll: %v %v", body, err)
+			}
+			return poll(polls, body), nil
+		case webSearchEndpoint:
+			if req.Header.Get("Authorization") != "Bearer fc-authorized123" {
+				t.Fatalf("search used key %q", req.Header.Get("Authorization"))
+			}
+			return webResponse(200, "application/json", webResultJSON(webItem{"Go", "https://go.dev/", "docs"})), nil
+		}
+		t.Fatalf("unexpected request to %s", req.URL)
+		return nil, nil
+	})
+	e.config.SearchKey = ""
+	e.config.SearchKeyFile = filepath.Join(t.TempDir(), "jarvis", "firecrawl.json")
+	e.config.Approve = func(context.Context, core.Approval) (core.Decision, error) {
+		return core.Decision{Allow: true}, nil
+	}
+	return e, &opened, &polls
+}
+
+func TestWebSearchFirstUseSetup(t *testing.T) {
+	var verifier string
+	e, opened, polls := setupFixture(t, func(n int, body map[string]string) *http.Response {
+		verifier = body["code_verifier"]
+		if n < 3 {
+			return webResponse(200, "application/json", `{"status":"pending"}`)
+		}
+		return webResponse(200, "application/json", `{"status":"complete","apiKey":"fc-authorized123","teamName":"t"}`)
+	})
+	var setup core.Approval
+	e.config.Approve = func(_ context.Context, a core.Approval) (core.Decision, error) {
+		if a.ExecutionMode == "firecrawl-setup" {
+			setup = a
+		}
+		return core.Decision{Allow: true}, nil
+	}
+	e.config.Review = func(_ context.Context, a core.Approval) (core.Decision, error) {
+		if a.ExecutionMode != "web-search" {
+			t.Fatalf("setup went to the automatic reviewer: %+v", a)
+		}
+		return core.Decision{Allow: true}, nil
+	}
+	r := invoke(e, "WebSearch", map[string]any{"query": "Go docs"})
+	if r.IsError || !strings.Contains(r.Content, "https://go.dev/") || strings.Contains(r.Content, "fc-authorized123") {
+		t.Fatal(r)
+	}
+	if setup.Call.Name != "WebSearch" || !strings.Contains(setup.Reason, e.config.SearchKeyFile) || *polls != 3 || len(*opened) != 1 {
+		t.Fatalf("setup=%+v polls=%d opened=%v", setup, *polls, *opened)
+	}
+	link, err := url.Parse((*opened)[0])
+	if err != nil || link.Host != "www.firecrawl.dev" || link.Path != "/cli-auth" || !strings.HasPrefix(link.Fragment, "session_id=") {
+		t.Fatalf("bad authorization link %q", (*opened)[0])
+	}
+	sum := sha256.Sum256([]byte(verifier))
+	if link.Query().Get("code_challenge") != base64.RawURLEncoding.EncodeToString(sum[:]) || strings.Contains((*opened)[0], verifier) {
+		t.Fatal("authorization link does not carry only the PKCE challenge")
+	}
+	info, err := os.Stat(e.config.SearchKeyFile)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("saved key file: %v %v", info, err)
+	}
+	if key, err := LoadSearchKey(e.config.SearchKeyFile); err != nil || key != "fc-authorized123" {
+		t.Fatalf("saved key %q %v", key, err)
+	}
+	// Later calls, and fresh executors reading the same file, skip setup.
+	if r = invoke(e, "WebSearch", map[string]any{"query": "Go docs"}); r.IsError || *polls != 3 {
+		t.Fatal(r)
+	}
+	e.config.SearchKey = ""
+	if r = invoke(e, "WebSearch", map[string]any{"query": "Go docs"}); r.IsError || *polls != 3 || len(*opened) != 1 {
+		t.Fatal(r)
+	}
+}
+
+func TestWebSearchSetupDeniedOrHeadless(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		approve core.Approver
+	}{
+		{"denied", func(context.Context, core.Approval) (core.Decision, error) { return core.Decision{Reason: "no"}, nil }},
+		{"headless", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, opened, polls := setupFixture(t, func(int, map[string]string) *http.Response {
+				t.Fatal("polled without consent")
+				return nil
+			})
+			e.config.Approve = tc.approve
+			r := invoke(e, "WebSearch", map[string]any{"query": "Go docs"})
+			if !r.IsError || !strings.Contains(r.Content, WebSearchKeyEnv) || *polls != 0 || len(*opened) != 0 {
+				t.Fatal(r)
+			}
+			if _, err := os.Stat(e.config.SearchKeyFile); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("key file written without setup")
+			}
+		})
+	}
+}
+
+func TestWebSearchSetupPollFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, want string
+		status     int
+		body       string
+		polls      int
+	}{
+		{"rejected", "HTTP 400", 400, `{"error":"private"}`, 1},
+		{"busy", "busy", 503, ``, 5},
+		{"rate limited", "busy", 429, ``, 5},
+		{"malformed key", "malformed API key", 200, `{"status":"complete","apiKey":"sk-wrong"}`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, _, polls := setupFixture(t, func(int, map[string]string) *http.Response {
+				return webResponse(tc.status, "application/json", tc.body)
+			})
+			r := invoke(e, "WebSearch", map[string]any{"query": "Go docs"})
+			if !r.IsError || !strings.Contains(r.Content, tc.want) || strings.Contains(r.Content, "private") || *polls != tc.polls {
+				t.Fatalf("polls=%d result=%+v", *polls, r)
+			}
+		})
+	}
+}
+
+func TestWebSearchSetupCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	e, _, _ := setupFixture(t, func(n int, _ map[string]string) *http.Response {
+		if n == 2 {
+			cancel()
+		}
+		return webResponse(200, "application/json", `{"status":"pending"}`)
+	})
+	r := e.Execute(ctx, core.ToolCall{Name: "WebSearch", Arguments: json.RawMessage(`{"query":"Go docs"}`)})
+	if !r.IsError || !strings.Contains(r.Content, "context canceled") {
+		t.Fatal(r)
+	}
+}
+
+func TestWebSearchRevokedSavedKeyIsRemoved(t *testing.T) {
+	e := webFixture(t, func(*http.Request) (*http.Response, error) {
+		return webResponse(401, "application/json", `{"error":"private"}`), nil
+	})
+	e.config.SearchKey = ""
+	e.config.SearchKeyFile = filepath.Join(t.TempDir(), "firecrawl.json")
+	if err := saveSearchKey(e.config.SearchKeyFile, "fc-revoked123"); err != nil {
+		t.Fatal(err)
+	}
+	r := invoke(e, "WebSearch", map[string]any{"query": "Go docs"})
+	if !r.IsError || !strings.Contains(r.Content, "set up Firecrawl again") || e.config.SearchKey != "" {
+		t.Fatal(r)
+	}
+	if _, err := os.Stat(e.config.SearchKeyFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("revoked key file kept")
+	}
+	// An environment key is the user's to fix; it is never discarded.
+	e.config.SearchKey, e.envKey = "fc-envkey123", "fc-envkey123"
+	if r = invoke(e, "WebSearch", map[string]any{"query": "Go docs"}); !r.IsError || !strings.Contains(r.Content, WebSearchKeyEnv) || e.config.SearchKey == "" {
+		t.Fatal(r)
+	}
+}
+
+func TestLoadSearchKey(t *testing.T) {
+	dir := t.TempDir()
+	if key, err := LoadSearchKey(filepath.Join(dir, "missing.json")); key != "" || err != nil {
+		t.Fatal(key, err)
+	}
+	bad := filepath.Join(dir, "bad.json")
+	os.WriteFile(bad, []byte(`{"api_key":"fc-has spaces"}`), 0600)
+	if _, err := LoadSearchKey(bad); err == nil {
+		t.Fatal("accepted malformed key")
 	}
 }

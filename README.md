@@ -252,8 +252,12 @@ available for Codex and OpenRouter-compatible sessions.
 Command-line flags override personal configuration. Resuming keeps the session's
 provider/model unless `--model` explicitly changes a Codex session. Reasoning
 precedence is an explicit `--reasoning` flag, an explicit saved session selection
-(from the TUI or an earlier flag), then personal configuration and legacy saved
-effort. An empty flag or `/reasoning default` restores the provider default. API sessions
+(from the TUI or an earlier flag), the last effort you chose for that provider, then
+personal configuration and legacy saved effort. JARVIS remembers the last effort per
+provider (from Shift+Tab, `/reasoning`, or `--reasoning`) in
+`~/.local/state/jarvis/preferences.json` (or `$XDG_STATE_HOME/jarvis/preferences.json`)
+and uses it for new sessions until you change it. An empty flag or
+`/reasoning default` restores the provider default. API sessions
 retain their original provider/model when resumed. Provider endpoints require HTTPS,
 except loopback servers.
 
@@ -296,10 +300,10 @@ nonempty UTF-8 text, at most 64 KiB; up to eight files and 128 KiB combined.
 | Write | Atomic UTF-8 file creation/replacement |
 | Edit | One unique exact-string replacement |
 | MultiEdit | Ordered replacements in one file; all succeed or none are written |
-| Bash | Reviewed shell execution; sandboxed by default, explicit host escalation available |
+| Bash | Shell execution; sandboxed by default, reviewed when it needs network or explicit host escalation |
 | Grep | Ripgrep search over confined text files |
 | List | Bounded workspace directory listing |
-| WebSearch | Keyless public search; compact titles, source URLs, and snippets, at most 4 KiB |
+| WebSearch | Firecrawl web search; compact titles, source URLs, and snippets, at most 4 KiB |
 | Subagent | Run 1–3 independent delegated tasks concurrently and collect their results |
 | AskUserQuestion | Ask you one question, free-form or with options to pick from; skipped automatically in headless runs, never offered to subagents |
 
@@ -322,35 +326,52 @@ There is no detached execution or messaging between running children.
 
 ## Web search
 
-WebSearch is available out of the box for every provider and subagent. No search
-API key, account, configuration, browser, or extra executable is needed. It uses
-[DuckDuckGo's public HTML search](https://duckduckgo.com/duckduckgo-help-pages/features/non-javascript),
-not its instant-answer API and not Codex's native web tool.
+WebSearch is available for every provider and subagent and uses
+[Firecrawl's search API](https://docs.firecrawl.dev/api-reference/endpoint/search),
+not Codex's native web tool.
 
 ```json
 {"query": "Go net/http Client Timeout documentation", "limit": 3}
 ```
 
+### Firecrawl key
+
+JARVIS uses `FIRECRAWL_API_KEY` when it is set. Otherwise it sets itself up the
+first time the agent searches: after you allow it, JARVIS opens
+`www.firecrawl.dev/cli-auth` in your browser, where you sign in (or create a free
+account) and click **Authorize**. JARVIS receives the key through Firecrawl's PKCE
+authorization flow, saves it beside your config as `firecrawl.json` (mode 0600,
+for example `~/.config/jarvis/firecrawl.json`), and reuses it in later sessions.
+Authorization waits up to five minutes; Esc cancels. Setup always asks you, even
+in auto mode, and headless runs return an error instead of waiting for a browser.
+If Firecrawl later rejects the saved key, JARVIS deletes it so the next search sets
+up again. An invalid `FIRECRAWL_API_KEY` is reported, never discarded.
+`jarvis doctor` shows which key is in use.
+
+The key is held by the harness, not passed to Bash: sandboxed commands cannot read
+`~/.config`, and file tools cannot leave the workspace.
+
+### Requests and results
+
 Only the query is sent to the fixed HTTPS search endpoint, after the normal
 isolated review in auto mode or human approval in ask mode. Never include secrets
 or private project content. Read-only mode rejects outbound search. Search runs
 in the harness's restricted HTTP client, not Bash's OS sandbox: no ambient proxy,
-cookies, credentials, redirects, or requests to result URLs.
+cookies, redirects, or requests to result URLs. JARVIS requests no page scraping,
+so a search costs Firecrawl's base search credits only.
 
 To keep agent context small, the default is three results (maximum five), with
 titles limited to 160 UTF-8 bytes and snippets to 240 bytes. The entire response
 is capped at 4 KiB; long URLs or excess results are omitted rather than returning
-broken links. Raw HTML and full pages never enter the conversation or transcript.
+broken links. Full pages never enter the conversation or transcript.
 Results are unverified web content, not instructions; source URLs support normal
 citations, but a snippet is not evidence that the agent read the source page.
-Duplicate URLs and advertisements are excluded.
+Duplicate URLs are excluded.
 
-This is **best-effort public search**, not a supported search API or an availability
-guarantee. A response is limited to 1 MiB and 15 seconds. CAPTCHA, rate limiting,
-unexpected responses, and changed markup produce explicit tool errors, not false
-“no results” answers. JARVIS does not solve challenges, rotate identities, retry
-automatically, or silently fall back to another search provider. The default test
-suite uses synthetic HTTP responses and makes no live search requests.
+A response is limited to 1 MiB and 30 seconds. Rejected keys, exhausted credits,
+rate limits, timeouts, and unexpected responses produce explicit tool errors, not
+false “no results” answers, and are never retried automatically. The default test
+suite uses synthetic HTTP responses and makes no live search or authorization requests.
 
 ## Go test environment
 
@@ -377,8 +398,11 @@ Quantrading requires `GO_ENV=test`.
 ## Permission model
 
 **Auto** is the default. Reads and ordinary workspace file edits proceed without
-interrupting you. Every Bash command and WebSearch query is submitted to an isolated, tool-free model
-reviewer along with the user's task. A positive decision grants that exact command
+interrupting you, and so do sandboxed Bash commands without network: the sandbox
+confines them to workspace writes (never `.git`), hides credentials and blocks
+network, which is no more reach than the file tools already have. Bash commands
+that request network or host escalation, and every WebSearch query, are submitted
+to an isolated, tool-free model reviewer along with the user's task. A positive decision grants that exact command
 once. A denial, malformed answer, timeout, or unavailable reviewer asks you in the
 TUI; headless mode returns a denied tool result instead.
 The status line shows when automatic review starts. Human fallback displays the
@@ -421,7 +445,9 @@ boundary separately; it does not run in a local sandbox.
 
 On macOS, Bash runs under a deny-by-default Seatbelt profile. It can read the
 workspace and selected system/toolchain directories, write the workspace and its
-private temporary directory plus its isolated Go caches, and cannot read your home
+private temporary directory plus its isolated Go caches and a per-session scratch
+directory (`$JARVIS_SCRATCH`, under the system temp directory, outside the
+repository) for throwaway files that must survive between calls, and cannot read your home
 credentials. Environment
 credentials and shell startup files are excluded. Network is denied by default;
 `network: true` requests it for one reviewed command while retaining filesystem
@@ -498,7 +524,7 @@ event with `"aggregate": true` that sums every call it made and carries no
 the session's token totals.
 Without `--json`, the stderr summary ends with the session ID and its token totals,
 for example `Tokens: 1.4M in (1.3M cached) · 48k out`.
-Public web discovery uses the compact, keyless WebSearch tool. There is no browser
+Public web discovery uses the compact, Firecrawl-backed WebSearch tool. There is no browser
 or page-fetch tool; retrieving a source page still requires a reviewed network
 request through Bash/curl.
 
