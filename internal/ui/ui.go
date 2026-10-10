@@ -77,7 +77,7 @@ type entry struct {
 	cachedRevision uint64
 	cachedWidth    int
 	cachedExpanded bool
-	cached         string
+	layout         entryLayout
 }
 
 type streamMsg struct {
@@ -91,16 +91,25 @@ type approvalMsg struct{ request ApprovalRequest }
 type tickMsg time.Time
 
 type model struct {
-	cfg                    Config
-	input                  textarea.Model
-	viewport               viewport.Model
-	spinner                spinner.Model
-	width                  int
-	height                 int
-	mainWidth              int
-	bodyHeight             int
-	entries                []entry
-	markdown               *glamour.TermRenderer
+	cfg        Config
+	input      textarea.Model
+	viewport   viewport.Model
+	spinner    spinner.Model
+	width      int
+	height     int
+	mainWidth  int
+	bodyHeight int
+	entries    []entry
+	markdown   *glamour.TermRenderer
+	lines      []string // the conversation as rendered, one per row
+	rows       []rowRef // what each of those rows shows, for copying
+	selection  *selection
+	lastClick  struct {
+		at  time.Time
+		row int
+	}
+	flashSeq               uint64
+	clipboard              func(string) error
 	renderWidth            int
 	busy                   bool
 	quitting               bool
@@ -190,7 +199,7 @@ func newModel(cfg Config) *model {
 	spin.Style = coralStyle
 	m := &model{
 		cfg: cfg, input: input, viewport: viewport.New(), spinner: spin,
-		status: "Ready", lifetime: ctx, stop: stop, now: time.Now(),
+		status: "Ready", lifetime: ctx, stop: stop, now: time.Now(), clipboard: systemClipboard,
 		compatibleModels: append([]core.ModelOption(nil), cfg.CompatibleModels...),
 	}
 	m.viewport.FillHeight = true
@@ -283,6 +292,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.resize(msg.Width, msg.Height)
 		return m, m.requestWordmark()
+	case copiedMsg:
+		return m, m.receiveCopied(msg)
+	case copyNoticeDoneMsg:
+		if m.notice == msg.notice {
+			m.notice = ""
+		}
+		return m, nil
+	case flashDoneMsg:
+		if m.selection != nil && m.selection.flash != nil && m.selection.flashSeq == msg.seq {
+			m.selection = nil
+		}
+		return m, nil
 	case tickMsg:
 		m.now = time.Time(msg)
 		return m, tea.Batch(nextTick(), m.refreshWeeklyUsage(false))
@@ -359,6 +380,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, waitStream(m.stream, m.lifetime)
 	case tea.KeyPressMsg:
+		if m.selection != nil && !m.selection.dragging {
+			m.selection = nil
+		}
 		if m.pending != nil {
 			if msg.String() != "ctrl+c" {
 				return m, m.decide(msg.String() == "y" || msg.String() == "enter")
@@ -421,6 +445,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.question != nil && m.pending == nil {
 			return m, m.clickQuestion(msg)
 		}
+		return m, m.mouseDown(msg)
+	case tea.MouseMotionMsg:
+		return m, m.mouseDrag(msg)
+	case tea.MouseReleaseMsg:
+		return m, m.mouseUp(msg)
 	case tea.MouseWheelMsg:
 		if m.picker != nil && m.pending == nil {
 			return m, nil
@@ -481,6 +510,9 @@ func (m *model) submit() tea.Cmd {
 	if prompt == "" {
 		return nil
 	}
+	if handled, cmd := m.copyCommand(prompt); handled {
+		return cmd // copying never waits for the task
+	}
 	if m.busy {
 		m.notice = "Draft kept. Send when the task finishes, or Esc to interrupt."
 		return nil
@@ -493,7 +525,7 @@ func (m *model) submit() tea.Cmd {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results\n- **Ctrl+P** or `/model` opens model search · **Tab/Shift+Tab** switch catalogs in the picker\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results\n- **Drag** to copy a selection · **click** a code block to copy it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- **Ctrl+P** or `/model` opens model search · **Tab/Shift+Tab** switch catalogs in the picker\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
 		case "/ask", "/ask text":
 			if !m.cfg.Demo {
 				m.notice = "Unknown command. /help lists the essentials."

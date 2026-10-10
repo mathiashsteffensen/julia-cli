@@ -124,8 +124,18 @@ func (m *model) refresh(forceBottom bool) {
 		m.renderWidth = m.mainWidth
 	}
 	var blocks []string
+	m.lines, m.rows = m.lines[:0], m.rows[:0]
 	for i := range m.entries {
-		blocks = append(blocks, m.renderEntry(&m.entries[i]))
+		layout := m.renderEntry(&m.entries[i])
+		if i > 0 {
+			m.lines = append(m.lines, "")
+			m.rows = append(m.rows, rowRef{entry: -1})
+		}
+		blocks = append(blocks, layout.text)
+		m.lines = append(m.lines, strings.Split(layout.text, "\n")...)
+		for _, row := range layout.rows {
+			m.rows = append(m.rows, rowRef{entry: i, rowMeta: row})
+		}
 	}
 	m.viewport.SetContent(strings.Join(blocks, "\n\n"))
 	if forceBottom || atBottom {
@@ -135,34 +145,88 @@ func (m *model) refresh(forceBottom bool) {
 
 func str(value string) *string { return &value }
 
-func (m *model) renderEntry(item *entry) string {
-	if item.cached != "" && item.cachedRevision == item.revision && item.cachedWidth == m.mainWidth && item.cachedExpanded == m.expandTools {
-		return item.cached
+func (m *model) renderEntry(item *entry) entryLayout {
+	if item.layout.text != "" && item.cachedRevision == item.revision && item.cachedWidth == m.mainWidth && item.cachedExpanded == m.expandTools {
+		return item.layout
 	}
-	item.cached = m.renderEntryContent(*item)
+	item.layout = m.layoutEntry(*item)
 	item.cachedRevision, item.cachedWidth, item.cachedExpanded = item.revision, m.mainWidth, m.expandTools
-	return item.cached
+	return item.layout
 }
 
-func (m *model) renderEntryContent(item entry) string {
+func (m *model) renderEntryContent(item entry) string { return m.layoutEntry(item).text }
+
+// layoutEntry renders an entry together with the map from its rows back to the
+// text they show, which is what selection and copying work from.
+func (m *model) layoutEntry(item entry) entryLayout {
 	w := max(10, m.mainWidth-4)
-	switch item.role {
-	case "user":
-		label := coralStyle.Bold(true).Render("YOU")
-		text := creamStyle.Render(ansi.Hardwrap(sanitize(item.text), w, false))
-		return lipgloss.NewStyle().BorderLeft(true).BorderStyle(lipgloss.ThickBorder()).BorderForeground(coral).PaddingLeft(1).Width(m.mainWidth - 2).Render(label + "\n" + text)
-	case "assistant":
-		text := sanitize(item.text)
-		if m.markdown != nil {
-			if rendered, err := m.markdown.Render(text); err == nil {
-				text = strings.TrimSpace(rendered)
+	var out entryLayout
+	add := func(line string, row rowMeta) {
+		out.text += line + "\n"
+		out.rows = append(out.rows, row)
+	}
+	// wrapped adds text hard-wrapped to width, marking the rows a wrap created.
+	wrapped := func(text string, width int, row rowMeta, render func(string) string) {
+		for _, line := range strings.Split(text, "\n") {
+			for i, part := range strings.Split(ansi.Hardwrap(line, width, false), "\n") {
+				row.cont = i > 0
+				add(render(part), row)
 			}
 		}
-		return " " + violetStyle.Bold(true).Render("✦ JARVIS") + "\n" + lipgloss.NewStyle().PaddingLeft(1).Render(text)
+	}
+	switch item.role {
+	case "user":
+		out.targets = []copyTarget{{"your message", item.text}}
+		bar := lipgloss.NewStyle().Foreground(coral).Render("┃") + " "
+		add(bar+coralStyle.Bold(true).Render("YOU"), rowMeta{gutter: 2, skip: true})
+		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string { return bar + creamStyle.Render(s) })
+	case "assistant":
+		out.targets = []copyTarget{{"reply", item.text}}
+		add(" "+violetStyle.Bold(true).Render("✦ JARVIS"), rowMeta{gutter: 1, skip: true})
+		for i, segment := range splitFences(sanitize(item.text)) {
+			if i > 0 {
+				add("", rowMeta{gutter: 1})
+			}
+			if segment.code {
+				target := len(out.targets)
+				label := "code"
+				if segment.language != "" {
+					label = segment.language + " code"
+				}
+				out.targets = append(out.targets, copyTarget{label, segment.text})
+				width := max(codeGutter+8, m.mainWidth-2)
+				rows, continued := renderCodeBlock(segment.text, segment.language, width)
+				for j, row := range rows {
+					edge := j <= 1 || j == len(rows)-1 // header and padding rows
+					add(" "+row, rowMeta{gutter: 1 + codeGutter, end: width, cont: continued[j], skip: edge, target: target, code: true})
+				}
+				continue
+			}
+			text := segment.text
+			if m.markdown != nil {
+				if rendered, err := m.markdown.Render(text); err == nil {
+					text = trimTrailing(strings.Trim(rendered, "\n"))
+				}
+			}
+			lines := strings.Split(text, "\n")
+			for len(lines) > 0 && strings.TrimSpace(ansi.Strip(lines[0])) == "" {
+				lines = lines[1:]
+			}
+			for len(lines) > 0 && strings.TrimSpace(ansi.Strip(lines[len(lines)-1])) == "" {
+				lines = lines[:len(lines)-1]
+			}
+			for _, line := range lines {
+				add(" "+line, rowMeta{gutter: 1})
+			}
+		}
 	case "tool":
+		out.targets = toolTargets(item)
 		if item.call != nil && item.call.Name == core.QuestionTool {
 			if rendered, ok := m.renderQuestionEntry(item, w); ok {
-				return rendered
+				for _, line := range strings.Split(rendered, "\n") {
+					add(line, rowMeta{gutter: 2})
+				}
+				break
 			}
 		}
 		name, detail := "Tool", item.text
@@ -176,11 +240,12 @@ func (m *model) renderEntryContent(item entry) string {
 		if item.result != nil && item.result.IsError {
 			icon = coralStyle.Render("!")
 		}
+		bar := faintStyle.Render("│") + " "
 		title := icon + " " + creamStyle.Render(sanitize(name))
 		if detail != "" {
 			title += "  " + mutedStyle.Render(ansi.Truncate(sanitize(detail), max(6, w-ansi.StringWidth(name)-5), "…"))
 		}
-		lines := []string{title}
+		add(bar+title, rowMeta{gutter: 2})
 		if item.result != nil {
 			result := strings.TrimSpace(sanitize(item.result.Content))
 			if m.expandTools {
@@ -189,19 +254,46 @@ func (m *model) renderEntryContent(item entry) string {
 					parts = append(parts[:100], "… output truncated in the display")
 				}
 				for _, line := range parts {
-					lines = append(lines, mutedStyle.Render("  "+line))
+					add(bar+mutedStyle.Render("  "+line), rowMeta{gutter: 4, target: 1})
 				}
 			} else if result != "" {
 				first, _, _ := strings.Cut(result, "\n")
-				lines = append(lines, faintStyle.Render("  "+ansi.Truncate(first, w-2, "…")))
+				add(bar+faintStyle.Render("  "+ansi.Truncate(first, w-2, "…")), rowMeta{gutter: 4, target: 1})
 			}
 		}
-		return lipgloss.NewStyle().BorderLeft(true).BorderStyle(lipgloss.NormalBorder()).BorderForeground(faint).PaddingLeft(1).Render(strings.Join(lines, "\n"))
 	case "warning":
-		return coralStyle.Render("! " + ansi.Hardwrap(sanitize(item.text), w, false))
+		out.targets = []copyTarget{{"warning", item.text}}
+		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string { return coralStyle.Render("! " + s) })
 	default:
-		return mutedStyle.Italic(true).Render("· " + ansi.Hardwrap(sanitize(item.text), w, false))
+		out.targets = []copyTarget{{"note", item.text}}
+		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string { return mutedStyle.Italic(true).Render("· " + s) })
 	}
+	out.text = strings.TrimSuffix(out.text, "\n")
+	return out
+}
+
+// toolTargets are what a double-click copies: the call's main argument (the
+// command, path, or pattern) on its title row, and the output below it.
+func toolTargets(item entry) []copyTarget {
+	label, text := "tool call", ""
+	if item.call != nil {
+		label, text = "arguments", string(item.call.Arguments)
+		var args map[string]json.RawMessage
+		if json.Unmarshal(item.call.Arguments, &args) == nil {
+			for _, key := range []string{"command", "path", "file_path", "pattern", "query", "directory"} {
+				var value string
+				if json.Unmarshal(args[key], &value) == nil {
+					label, text = key, value
+					break
+				}
+			}
+		}
+	}
+	output := ""
+	if item.result != nil {
+		output = item.result.Content
+	}
+	return []copyTarget{{label, text}, {"output", output}}
 }
 
 func toolSummary(call core.ToolCall) string {
@@ -244,7 +336,7 @@ func (m *model) View() tea.View {
 	header := brand + caption
 	header += strings.Repeat(" ", max(1, contentWidth-ansi.StringWidth(header)-ansi.StringWidth(right))) + right
 	header = "\n" + ansi.Truncate(header, contentWidth, "") + "\n" + faintStyle.Render(strings.Repeat("─", contentWidth))
-	body := m.viewport.View()
+	body := m.highlightSelection(m.viewport.View())
 	if m.picker != nil && m.pending == nil {
 		body = m.pickerView()
 	} else if m.question != nil && m.pending == nil {
@@ -511,6 +603,9 @@ func (m *model) footer() string {
 	}
 	if m.width >= 74 {
 		left += faintStyle.Render("  ctrl+p ") + mutedStyle.Render("models")
+	}
+	if m.width >= 100 {
+		left += faintStyle.Render("  drag ") + mutedStyle.Render("copy")
 	}
 	return left
 }
