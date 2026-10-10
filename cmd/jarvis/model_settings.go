@@ -12,7 +12,7 @@ import (
 	sessions "jarvis/internal/session"
 )
 
-// The executing model follows session settings; approval always uses Codex Luna.
+// The executing model follows session settings; approval uses the configured reviewer.
 func newBackend(ctx context.Context, cfg config.Config, checkpoint func(*core.Session) error) (core.Backend, core.Approver, error) {
 	if cfg.Provider == "codex" {
 		binary, err := findCodex(cfg.CodexBinary)
@@ -20,17 +20,20 @@ func newBackend(ctx context.Context, cfg config.Config, checkpoint func(*core.Se
 			return nil, nil, err
 		}
 		backend := &provider.Codex{Binary: binary, Model: cfg.Model, Reasoning: cfg.Reasoning, ReadOnly: cfg.Mode == "read-only", Checkpoint: checkpoint}
+		if hasCompatibleApprovalModel(cfg) {
+			return backend, compatibleModelApprovalReviewer(cfg), nil
+		}
 		return backend, backend.Review, nil
 	}
 	key := os.Getenv(cfg.KeyEnv())
-	if key == "" && (cfg.Provider != "compatible" || len(cfg.OpenRouterModels) > 0) {
+	if key == "" && (cfg.Provider != "compatible" || len(cfg.CompatibleModels) > 0) {
 		return nil, nil, fmt.Errorf("set %s for the %s provider", cfg.KeyEnv(), cfg.Provider)
 	}
-	backend, err := provider.NewAPI(ctx, provider.APIConfig{Provider: cfg.Provider, Model: cfg.Model, BaseURL: cfg.BaseURL, APIKey: key, MaxSteps: cfg.MaxSteps, ContextBytes: cfg.ContextBytes, Checkpoint: checkpoint})
+	backend, err := provider.NewAPI(ctx, provider.APIConfig{Provider: cfg.Provider, Model: cfg.Model, BaseURL: cfg.BaseURL, APIKey: key, Reasoning: cfg.Reasoning, MaxSteps: cfg.MaxSteps, ContextTokens: cfg.ContextTokens, Checkpoint: checkpoint})
 	if err != nil {
 		return nil, nil, err
 	}
-	return backend, codexApprovalReviewer(cfg.CodexBinary), nil
+	return backend, approvalReviewer(cfg), nil
 }
 
 // Resolve lazily so API sessions can still use reads and human approval when
@@ -45,9 +48,59 @@ func codexApprovalReviewer(binary string) core.Approver {
 	}
 }
 
+const compatibleApprovalModel = config.CompatibleDecisionsModel
+
+func hasCompatibleApprovalModel(cfg config.Config) bool {
+	for _, model := range cfg.CompatibleModels {
+		if model == compatibleApprovalModel {
+			return true
+		}
+	}
+	return false
+}
+
+func approvalReviewer(cfg config.Config) core.Approver {
+	if hasCompatibleApprovalModel(cfg) {
+		return compatibleModelApprovalReviewer(cfg)
+	}
+	return codexApprovalReviewer(cfg.CodexBinary)
+}
+
+func compatibleModelApprovalReviewer(cfg config.Config) core.Approver {
+	return func(ctx context.Context, approval core.Approval) (core.Decision, error) {
+		keyEnv := compatibleAPIKeyEnv(cfg)
+		key := os.Getenv(keyEnv)
+		if key == "" {
+			return core.Decision{}, fmt.Errorf("set %s for the compatible approval reviewer", keyEnv)
+		}
+		return provider.ReviewDecisionAPI(ctx, provider.APIConfig{
+			Provider: "compatible",
+			Model:    compatibleApprovalModel,
+			BaseURL:  cfg.BaseURL,
+			APIKey:   key,
+		}, approval)
+	}
+}
+
+// compatibleAPIKeyEnv names the key for the compatible endpoint. api_key_env is
+// honored only when no other API provider owns it: Codex has no key of its own,
+// so there it describes the compatible endpoint, but under openai, anthropic or
+// google it belongs to that provider and must not be sent elsewhere.
+func compatibleAPIKeyEnv(cfg config.Config) string {
+	if cfg.APIKeyEnv != "" && (cfg.Provider == "compatible" || cfg.Provider == "codex") {
+		return cfg.APIKeyEnv
+	}
+	cfg.Provider, cfg.APIKeyEnv = "compatible", ""
+	return cfg.KeyEnv()
+}
+
 // Save before publishing the new settings. Failed validation or persistence must
 // leave the live conversation and its continuation state untouched.
 func applySessionSettings(cfg config.Config, current *core.Session, selectedProvider, model, reasoning string, save func(*core.Session) error) error {
+	if selectedProvider != current.Provider {
+		// Efforts belong to a provider; do not carry them across providers.
+		reasoning = ""
+	}
 	candidate := *current
 	candidate.Provider = selectedProvider
 	candidate.Model, candidate.Reasoning, candidate.ReasoningSet = model, reasoning, true

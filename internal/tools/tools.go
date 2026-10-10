@@ -518,7 +518,7 @@ func (e *Executor) authorizeRequest(ctx context.Context, a core.Approval, review
 			if err != nil {
 				a.Reason += " Automatic review failed: " + bounded(err.Error())
 			} else {
-				a.Reason += " Automatic review deferred or denied: " + bounded(decision.Reason)
+				a.Reason += " Automatic approval not granted: " + bounded(decision.Reason)
 			}
 		}
 	}

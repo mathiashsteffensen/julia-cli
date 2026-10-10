@@ -5,30 +5,47 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
+
+	"jarvis/internal/core"
 )
+
+const CompatibleDecisionsModel = "typesafe/jev-1.13"
+
+// MinContextTokens is the smallest accepted context_tokens. The system prompt
+// and tool schemas alone use several thousand tokens and compaction fires at 85%
+// of the window, so anything smaller would compact on nearly every turn.
+const MinContextTokens = 32000
 
 type Config struct {
 	SkillPaths       []string `json:"skill_paths,omitempty"`
 	Provider         string   `json:"provider"`
 	Model            string   `json:"model,omitempty"`
-	OpenRouterModels []string `json:"openrouter_models,omitempty"`
+	CompatibleModels []string `json:"compatible_models,omitempty"`
 	BaseURL          string   `json:"base_url,omitempty"`
 	APIKeyEnv        string   `json:"api_key_env,omitempty"`
 	Mode             string   `json:"mode"`
 	CodexBinary      string   `json:"codex_binary,omitempty"`
 	Reasoning        string   `json:"reasoning,omitempty"`
 	MaxSteps         int      `json:"max_steps"`
-	ContextBytes     int      `json:"context_bytes"`
-	Timeout          string   `json:"timeout"`
+	// ContextTokens is the context window assumed for every model; compaction
+	// triggers at a fraction of it.
+	ContextTokens int `json:"context_tokens"`
+	// ContextBytes is deprecated and ignored: compaction is driven by
+	// ContextTokens. The field stays only because configs are decoded with
+	// DisallowUnknownFields and earlier 'config init' runs wrote context_bytes
+	// into every user's config, which must keep loading.
+	ContextBytes int    `json:"context_bytes,omitempty"`
+	Timeout      string `json:"timeout"`
 }
 
 func Default() Config {
-	return Config{Provider: "codex", Mode: "auto", CodexBinary: "codex", MaxSteps: 256, ContextBytes: 160000, Timeout: "4h"}
+	return Config{Provider: "codex", Mode: "auto", CodexBinary: "codex", MaxSteps: 256, ContextTokens: core.DefaultContextWindow, Timeout: "4h"}
 }
 func Path() (string, error) {
 	d := os.Getenv("XDG_CONFIG_HOME")
@@ -78,25 +95,34 @@ func (c Config) Validate() error {
 	if c.Model != strings.TrimSpace(c.Model) || strings.IndexFunc(c.Model, unicode.IsControl) >= 0 {
 		return errors.New("model must be a provider model ID without surrounding whitespace or control characters")
 	}
-	if len(c.OpenRouterModels) > 100 {
-		return errors.New("openrouter_models may contain at most 100 model IDs")
+	if c.Provider == "compatible" && IsDecisionsOnlyCompatibleModel(c.Model) {
+		return fmt.Errorf("model %q is decisions-only and cannot generate chat responses; choose a chat model (it can remain in compatible_models for approval reviews)", c.Model)
 	}
-	seenOpenRouterModels := make(map[string]bool, len(c.OpenRouterModels))
-	for _, model := range c.OpenRouterModels {
+	if c.BaseURL == "" && containsDecisionsModel(c.CompatibleModels) {
+		return fmt.Errorf("compatible_models contains the decisions-only model %q, which reviews actions through base_url; set base_url to the compatible API endpoint", CompatibleDecisionsModel)
+	}
+	if len(c.CompatibleModels) > 100 {
+		return errors.New("compatible_models may contain at most 100 model IDs")
+	}
+	seenCompatibleModels := make(map[string]bool, len(c.CompatibleModels))
+	for _, model := range c.CompatibleModels {
 		if model == "" || len(model) > 512 || model != strings.TrimSpace(model) || strings.IndexFunc(model, unicode.IsControl) >= 0 {
-			return errors.New("openrouter_models must contain model IDs without surrounding whitespace or control characters")
+			return errors.New("compatible_models must contain model IDs without surrounding whitespace or control characters")
 		}
-		if seenOpenRouterModels[model] {
-			return fmt.Errorf("openrouter_models contains duplicate model ID %q", model)
+		if seenCompatibleModels[model] {
+			return fmt.Errorf("compatible_models contains duplicate model ID %q", model)
 		}
-		seenOpenRouterModels[model] = true
+		seenCompatibleModels[model] = true
 	}
 	if c.Reasoning != "" {
-		if c.Provider != "codex" {
-			return errors.New("reasoning is configurable for the codex provider only; clear reasoning for other providers")
+		if !SupportsReasoning(c.Provider, c.BaseURL) {
+			return errors.New("reasoning is configurable for Codex and OpenRouter-compatible sessions only")
 		}
-		// Codex advertises effort names per model as an open string, not a
-		// fixed enum. Keep future names valid; the provider checks support.
+		// Codex advertises effort names per model as an open string. OpenRouter
+		// documents this shared set for its reasoning_effort request parameter.
+		if c.Provider == "compatible" && !contains(OpenRouterReasoningEfforts(), c.Reasoning) {
+			return errors.New("OpenRouter reasoning must be one of none, minimal, low, medium, high, xhigh, or max")
+		}
 		if len(c.Reasoning) > 64 || strings.IndexFunc(c.Reasoning, func(r rune) bool {
 			return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_')
 		}) >= 0 {
@@ -111,8 +137,8 @@ func (c Config) Validate() error {
 	if c.MaxSteps < 1 || c.MaxSteps > 10000 {
 		return errors.New("max_steps must be between 1 and 10000")
 	}
-	if c.ContextBytes < 16000 {
-		return errors.New("context_bytes must be at least 16000")
+	if c.ContextTokens < MinContextTokens {
+		return fmt.Errorf("context_tokens must be at least %d", MinContextTokens)
 	}
 	d, err := time.ParseDuration(c.Timeout)
 	if err != nil || d <= 0 {
@@ -120,6 +146,47 @@ func (c Config) Validate() error {
 	}
 	return nil
 }
+
+func IsDecisionsOnlyCompatibleModel(model string) bool {
+	return model == CompatibleDecisionsModel
+}
+
+func containsDecisionsModel(models []string) bool {
+	return contains(models, CompatibleDecisionsModel)
+}
+
+// SupportsReasoning reports providers where JARVIS can send a mapped effort
+// setting instead of silently ignoring it.
+func SupportsReasoning(provider, baseURL string) bool {
+	if provider == "codex" {
+		return true
+	}
+	if provider != "compatible" {
+		return false
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "openrouter.ai" || strings.HasSuffix(host, ".openrouter.ai")
+}
+
+// OpenRouterReasoningEfforts returns the reasoning_effort values accepted by
+// OpenRouter's chat-completions API. Model-specific support can still vary.
+func OpenRouterReasoningEfforts() []string {
+	return []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+}
+
+func contains(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+
 func (c Config) KeyEnv() string {
 	if c.APIKeyEnv != "" {
 		return c.APIKeyEnv

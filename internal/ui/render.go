@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -76,7 +77,11 @@ func (m *model) resize(width, height int) {
 		m.picker.search.SetWidth(max(8, m.mainWidth-8))
 	}
 	m.viewport.SetWidth(m.mainWidth)
-	m.viewport.SetHeight(m.bodyHeight)
+	if m.question == nil {
+		// An open question keeps its own height until relayoutQuestion resizes it,
+		// so the follow decision above is not made against a taller viewport.
+		m.viewport.SetHeight(m.bodyHeight)
+	}
 	m.refresh(wasFollowing)
 }
 
@@ -90,6 +95,7 @@ func (m *model) margin() int {
 func (m *model) hasSidebar() bool { return m.width >= 108 }
 
 func (m *model) refresh(forceBottom bool) {
+	m.relayoutQuestion()
 	atBottom := m.viewport.AtBottom()
 	if m.pending != nil {
 		m.viewport.SetContent(m.approvalView())
@@ -154,6 +160,11 @@ func (m *model) renderEntryContent(item entry) string {
 		}
 		return " " + violetStyle.Bold(true).Render("✦ JARVIS") + "\n" + lipgloss.NewStyle().PaddingLeft(1).Render(text)
 	case "tool":
+		if item.call != nil && item.call.Name == core.QuestionTool {
+			if rendered, ok := m.renderQuestionEntry(item, w); ok {
+				return rendered
+			}
+		}
 		name, detail := "Tool", item.text
 		if item.call != nil {
 			name, detail = item.call.Name, toolSummary(*item.call)
@@ -236,6 +247,8 @@ func (m *model) View() tea.View {
 	body := m.viewport.View()
 	if m.picker != nil && m.pending == nil {
 		body = m.pickerView()
+	} else if m.question != nil && m.pending == nil {
+		body = m.questionBody()
 	} else if len(m.entries) == 0 && m.pending == nil {
 		body = m.welcome()
 	}
@@ -253,6 +266,9 @@ func (m *model) View() tea.View {
 	}
 	if m.busy {
 		composerTitle = mutedStyle.Render("DRAFT · retained while JARVIS works")
+	}
+	if m.question != nil {
+		composerTitle = mutedStyle.Render("DRAFT · kept while you answer")
 	}
 	if m.pending != nil {
 		composerTitle = coralStyle.Render("APPROVAL · y / Enter")
@@ -294,8 +310,22 @@ func (m *model) welcome() string {
 	return lipgloss.Place(w, m.bodyHeight, lipgloss.Center, lipgloss.Center, content)
 }
 
+func showsReasoning(provider string, compatibleReasoning bool) bool {
+	return provider == "codex" || (provider == "compatible" && compatibleReasoning)
+}
+
+func reasoningDisplay(provider, effort string) string {
+	if effort != "" {
+		return effort
+	}
+	if provider == "compatible" {
+		return "provider default"
+	}
+	return "inherited"
+}
+
 func (m *model) sidebar() string {
-	width := 23
+	const width = 23
 	label := func(s string) string { return faintStyle.Bold(true).Render(s) }
 	value := func(s string) string { return creamStyle.Render(ansi.Truncate(sanitize(s), width, "…")) }
 	provider, modelName, reasoning, directory, id := "—", "default", "", "", "new conversation"
@@ -306,43 +336,57 @@ func (m *model) sidebar() string {
 	if modelName == "" {
 		modelName = "provider default"
 	}
-	if reasoning == "" {
-		reasoning = "inherited"
-	}
+	reasoning = reasoningDisplay(provider, reasoning)
 	if directory != "" {
 		directory = filepath.Clean(directory)
 	}
-	lines := []string{
-		"", label("WORKSPACE"), value(filepath.Base(directory)), mutedStyle.Render(ansi.Truncate(directory, width, "…")),
-		"", label("CONNECTION"), violetStyle.Render(sanitize(provider)), value(modelName),
-	}
-	if provider == "codex" {
-		lines = append(lines, mutedStyle.Render(ansi.Truncate("reasoning: "+sanitize(reasoning), width, "…")))
-		lines = append(lines, m.weeklyUsageLine())
-		if m.bodyHeight < 12 {
-			lines = []string{label("CONNECTION"), value(modelName), m.weeklyUsageLine()}
-			if m.bodyHeight >= 5 {
-				lines = append(lines, mutedStyle.Render(ansi.Truncate("reasoning: "+sanitize(reasoning), width, "…")))
-			}
+	// Variants run from fullest to most compact. Without room for the provider
+	// row the model alone identifies the connection, and the reasoning effort and
+	// weekly allowance are the next to go.
+	title, name := label("CONNECTION"), value(modelName)
+	providerRow := violetStyle.Render(ansi.Truncate(sanitize(provider), width, "…"))
+	connection := [][]string{{title, providerRow, name}, {title, name}}
+	if showsReasoning(provider, m.cfg.CompatibleReasoning) {
+		effort := []string{mutedStyle.Render(ansi.Truncate("reasoning: "+sanitize(reasoning), width, "…"))}
+		if provider == "compatible" && reasoning == "provider default" {
+			effort = []string{mutedStyle.Render("reasoning:"), mutedStyle.Render("provider default")}
+		}
+		var weekly []string
+		if provider == "codex" {
+			weekly = []string{m.weeklyUsageLine()}
+		}
+		// The weekly allowance stays in every variant: it is why Codex users look here.
+		connection = [][]string{
+			slices.Concat([]string{title, providerRow, name}, effort, weekly),
+			slices.Concat([]string{title, name}, weekly, effort),
+			slices.Concat([]string{title, name}, weekly),
 		}
 	}
-	lines = append(lines,
-		"", label("PERMISSIONS"), lipgloss.NewStyle().Foreground(green).Render("◈ "+sanitize(m.cfg.Mode)), mutedStyle.Render(permissionCaption(m.cfg.Mode)),
-		"", label("SESSION"), value(id),
-		"", label("ACTIVITY"), value(fmt.Sprintf("%d tool calls", m.toolCount)), mutedStyle.Render(fmt.Sprintf("%s in · %s out", compactNumber(m.inputTokens), compactNumber(m.outputTokens))),
-	)
-	if m.bodyHeight >= 27 && len(m.cfg.ToolDefinitions) > 0 {
-		rows := toolRows(m.cfg.ToolDefinitions, width)
-		heading := []string{"", faintStyle.Render(strings.Repeat("─", width)), "", label("THE ESSENTIALS")}
-		if len(lines)+len(heading)+len(rows) > m.bodyHeight {
-			// Prefer tool names over decorative spacing when the catalog grows.
-			heading = []string{"", label("THE ESSENTIALS")}
-		}
-		lines = append(lines, heading...)
+	// The per-call figures describe the last model call only; the session totals
+	// and the context estimate have their own sections.
+	activity := []string{label("ACTIVITY"), value(fmt.Sprintf("%d tool calls", m.toolCount)), mutedStyle.Render("last call"), mutedStyle.Render(ansi.Truncate(fmt.Sprintf("%s in · %s out", core.CompactTokens(m.inputTokens), core.CompactTokens(m.outputTokens)), width, "…"))}
+	var essentials [][]string
+	if rows := toolRows(m.cfg.ToolDefinitions, width); len(rows) > 0 {
+		lines := []string{faintStyle.Render(strings.Repeat("─", width)), "", label("THE ESSENTIALS")}
 		for _, row := range rows {
 			lines = append(lines, mutedStyle.Render(row))
 		}
+		for n := len(lines); n > 3; n-- {
+			essentials = append(essentials, lines[:n])
+		}
 	}
+	// Rank is survival order on a short terminal (1 is dropped last). The context
+	// gauge outlives everything: it is the figure that decides when to start over.
+	lines := fitSidebar([]sidebarBlock{
+		{4, [][]string{{label("WORKSPACE"), value(filepath.Base(directory)), mutedStyle.Render(ansi.Truncate(directory, width, "…"))}}},
+		{2, connection},
+		{1, m.contextVariants(label, width)},
+		{3, m.tokenVariants(label, width)},
+		{6, [][]string{activity}},
+		{5, [][]string{{label("PERMISSIONS"), lipgloss.NewStyle().Foreground(green).Render(ansi.Truncate("◈ "+sanitize(m.cfg.Mode), width, "…")), mutedStyle.Render(ansi.Truncate(permissionCaption(m.cfg.Mode), width, "…"))}}},
+		{7, [][]string{{label("SESSION"), value(id)}}},
+		{8, essentials},
+	}, m.bodyHeight)
 	if len(lines) > m.bodyHeight {
 		lines = lines[:m.bodyHeight]
 	}
@@ -384,7 +428,7 @@ func permissionCaption(mode string) string {
 	case "ask":
 		return "Ask before changes"
 	default:
-		return "Policy enforced per action"
+		return "Enforced per action" // must fit the 23-column sidebar on one row
 	}
 }
 
@@ -401,28 +445,39 @@ func (m *model) statusLine() string {
 			model = "provider default"
 		}
 		settings := model
-		if m.cfg.Session.Provider == "codex" {
-			reasoning := m.cfg.Session.Reasoning
-			if reasoning == "" {
-				reasoning = "inherited"
-			}
-			settings += " · " + reasoning
+		if showsReasoning(m.cfg.Session.Provider, m.cfg.CompatibleReasoning) {
+			settings += " · " + reasoningDisplay(m.cfg.Session.Provider, m.cfg.Session.Reasoning)
 		}
 		status += faintStyle.Render(" · " + sanitize(settings))
 	}
 	if m.pending != nil {
 		status = coralStyle.Render("◆ Waiting for your approval")
 	}
+	if m.question != nil {
+		status = violetStyle.Render("◆ Waiting for your answer")
+	}
 	if m.notice != "" {
 		status = mutedStyle.Render(sanitize(m.notice))
 	}
-	if !m.viewport.AtBottom() && len(m.entries) > 0 && m.pending == nil && m.picker == nil && m.notice == "" {
+	if !m.viewport.AtBottom() && len(m.entries) > 0 && m.pending == nil && m.question == nil && m.picker == nil && m.notice == "" {
 		status = violetStyle.Render("↑ Reading history") + mutedStyle.Render(" · Ctrl+End to follow output")
 	}
 	return ansi.Truncate(status, m.mainWidth, "…")
 }
 
 func (m *model) footer() string {
+	if m.question != nil && m.pending == nil {
+		if m.width < 36 {
+			return mutedStyle.Render("ctrl+c stops")
+		}
+		if m.width < 62 {
+			return mutedStyle.Render("answer above · ctrl+c stops")
+		}
+		if m.width < 78 {
+			return violetStyle.Render("answering") + mutedStyle.Render("  ctrl+c stops the task")
+		}
+		return violetStyle.Render("answering") + mutedStyle.Render("  ctrl+c stops the task  mouse wheel scrolls the conversation")
+	}
 	if m.pending != nil {
 		if m.width < 40 {
 			return mutedStyle.Render("y/enter allow · others deny")
@@ -442,7 +497,7 @@ func (m *model) footer() string {
 		text := "↑↓ choose  enter apply  esc back"
 		if m.picker.kind == "model" && len(m.modelCatalogProviders()) > 1 {
 			text += "  tab provider"
-		} else if m.picker.kind == "reasoning" && m.codexSettings() {
+		} else if m.picker.kind == "reasoning" && len(m.modelCatalogProviders()) > 1 {
 			text += "  tab models"
 		}
 		return mutedStyle.Render(text)
@@ -484,13 +539,6 @@ func (m *model) approvalView() string {
 	return lipgloss.NewStyle().Width(m.mainWidth - 4).Border(lipgloss.RoundedBorder()).BorderForeground(coral).Padding(1).Render(text)
 }
 
-func compactNumber(n int) string {
-	if n >= 1000 {
-		return fmt.Sprintf("%.1fk", float64(n)/1000)
-	}
-	return fmt.Sprint(n)
-}
-
 func elapsed(d time.Duration) string {
 	seconds := max(0, int(d.Seconds()))
 	if seconds >= 60 {
@@ -519,6 +567,12 @@ func renderPreview(width, height int, demo bool, definitions []core.ToolDefiniti
 	defer m.stop()
 	m.resize(width, height)
 	return m.View().Content
+}
+
+// demoUsage is a plausible mid-session snapshot: a context well below the
+// compaction threshold and most of the input served from the prompt cache.
+func demoUsage() core.SessionUsage {
+	return core.SessionUsage{Total: core.TokenUsage{Input: 38_400, CacheRead: 412_000, CacheWrite: 61_300, Output: 6_840}, Context: 118_600}
 }
 
 func demoEntries() []entry {

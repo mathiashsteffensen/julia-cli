@@ -1024,3 +1024,261 @@ func TestCodexReviewerRejectsSubstitutedModelBeforeInference(t *testing.T) {
 		}
 	}
 }
+
+// codexCounts builds a TokenUsageBreakdown by hand, so the tests also pin the wire field names.
+type codexCounts struct{ input, cached, written, output int }
+
+func (c codexCounts) wire() map[string]any {
+	return map[string]any{"inputTokens": c.input, "cachedInputTokens": c.cached, "cacheWriteInputTokens": c.written, "outputTokens": c.output, "reasoningOutputTokens": c.output / 2, "totalTokens": c.input + c.output}
+}
+
+func (c codexCounts) breakdown() codexTokenBreakdown {
+	return codexTokenBreakdown{Input: c.input, Cached: c.cached, CacheWrite: c.written, Output: c.output}
+}
+
+func (f *codexFixture) pushUsageFor(thread, turn string, last, total codexCounts) {
+	f.push(map[string]any{"method": "thread/tokenUsage/updated", "params": map[string]any{"threadId": thread, "turnId": turn, "tokenUsage": map[string]any{"last": last.wire(), "total": total.wire(), "modelContextWindow": 1_000_000}}})
+}
+
+func (f *codexFixture) pushUsage(last, total codexCounts) {
+	f.pushUsageFor("thread-1", "turn-1", last, total)
+}
+
+func TestCodexTokenBreakdownNormalization(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		in   codexTokenBreakdown
+		want core.TokenUsage
+	}{
+		{"cached and written tokens are subsets of the prompt", codexTokenBreakdown{Input: 1000, Cached: 800, CacheWrite: 50, Output: 70}, core.TokenUsage{Input: 150, CacheRead: 800, CacheWrite: 50, Output: 70}},
+		{"nothing cached", codexTokenBreakdown{Input: 300, Output: 20}, core.TokenUsage{Input: 300, Output: 20}},
+		{"fully cached prompt", codexTokenBreakdown{Input: 500, Cached: 500, Output: 1}, core.TokenUsage{CacheRead: 500, Output: 1}},
+		{"cache counts beyond the prompt never go negative", codexTokenBreakdown{Input: 100, Cached: 150, CacheWrite: 10, Output: 5}, core.TokenUsage{CacheRead: 150, CacheWrite: 10, Output: 5}},
+		{"negative counts are clamped", codexTokenBreakdown{Input: -1, Cached: -2, CacheWrite: -3, Output: -4}, core.TokenUsage{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.in.usage(); got != tt.want {
+				t.Fatalf("usage() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+	// Reasoning tokens are a subset of output tokens; decoding must not add them.
+	data, err := json.Marshal(codexCounts{input: 100, cached: 60, output: 40}.wire())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded codexTokenBreakdown
+	if err = json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := decoded.usage(), (core.TokenUsage{Input: 40, CacheRead: 60, Output: 40}); got != want {
+		t.Fatalf("decoded %+v -> %+v, want %+v", decoded, got, want)
+	}
+}
+
+func TestCodexUsageTracker(t *testing.T) {
+	var tracker codexUsageTracker
+	step := func(last, total codexTokenBreakdown) (core.Event, bool) { return tracker.update(last, total) }
+	if _, ok := step(codexTokenBreakdown{}, codexTokenBreakdown{}); ok {
+		t.Fatal("an empty update must record nothing")
+	}
+	first := codexTokenBreakdown{Input: 400, Cached: 100, Output: 25}
+	thread := codexTokenBreakdown{Input: 9000, Cached: 6000, Output: 900}
+	event, ok := step(first, thread)
+	if want := core.UsageEvent(core.TokenUsage{Input: 300, CacheRead: 100, Output: 25}, 425); !ok || event != want {
+		t.Fatalf("the first update must contribute its own call, not the thread total: %+v %v", event, ok)
+	}
+	if _, ok = step(first, thread); ok {
+		t.Fatal("a replayed total must record nothing")
+	}
+	event, ok = step(codexTokenBreakdown{Output: 7}, codexTokenBreakdown{Input: 9500, Cached: 6200, Output: 930})
+	if want := core.UsageEvent(core.TokenUsage{Input: 300, CacheRead: 200, Output: 30}, 0); !ok || event != want {
+		t.Fatalf("later updates contribute the growth of the total, and no context without a prompt: %+v %v", event, ok)
+	}
+	reset := codexTokenBreakdown{Input: 50, Output: 5}
+	event, ok = step(reset, reset)
+	if want := core.UsageEvent(core.TokenUsage{Input: 50, Output: 5}, 55); !ok || event != want {
+		t.Fatalf("a reset counter must contribute the last call: %+v %v", event, ok)
+	}
+	event, ok = step(codexTokenBreakdown{Input: 60, Output: 6}, codexTokenBreakdown{Input: 110, Output: 11})
+	if want := core.UsageEvent(core.TokenUsage{Input: 60, Output: 6}, 66); !ok || event != want {
+		t.Fatalf("the rebased total must be the new baseline: %+v %v", event, ok)
+	}
+}
+
+func TestCodexRecordsEachCallOfATurnOnce(t *testing.T) {
+	f := newCodexFixture(t)
+	f.turn = func(f *codexFixture) {
+		// The thread already holds earlier turns, so the first total is much larger than its last call.
+		f.pushUsage(codexCounts{1000, 800, 0, 50}, codexCounts{5000, 4000, 0, 300})
+		// Updates for other turns or threads are not this run's usage.
+		f.pushUsageFor("thread-1", "other-turn", codexCounts{9999, 0, 0, 9999}, codexCounts{19999, 0, 0, 19999})
+		f.pushUsageFor("other-thread", "turn-1", codexCounts{9999, 0, 0, 9999}, codexCounts{19999, 0, 0, 19999})
+		// The growth of the total counts, even when last disagrees; last only sizes the context.
+		f.pushUsage(codexCounts{1300, 900, 0, 90}, codexCounts{6100, 4900, 100, 360})
+		f.pushUsage(codexCounts{1300, 900, 0, 90}, codexCounts{6100, 4900, 100, 360})
+		f.pushUsage(codexCounts{}, codexCounts{})
+		// A total that went backwards means the counters were reset.
+		f.pushUsage(codexCounts{800, 500, 0, 40}, codexCounts{800, 500, 0, 40})
+		f.pushUsage(codexCounts{1100, 700, 0, 60}, codexCounts{1900, 1200, 0, 100})
+		f.finish("completed")
+	}
+	session := &core.Session{Directory: t.TempDir(), Usage: core.SessionUsage{Total: core.TokenUsage{Input: 1, CacheRead: 2, CacheWrite: 3, Output: 4}, Context: 5}}
+	var events []core.Event
+	if err := (&Codex{start: f.start}).Run(context.Background(), session, "Inspect", &codexTestExecutor{}, func(e core.Event) { events = append(events, e) }); err != nil {
+		t.Fatal(err)
+	}
+	want := []core.Event{
+		core.UsageEvent(core.TokenUsage{Input: 200, CacheRead: 800, Output: 50}, 1050),
+		core.UsageEvent(core.TokenUsage{Input: 100, CacheRead: 900, CacheWrite: 100, Output: 60}, 1390),
+		core.UsageEvent(core.TokenUsage{Input: 300, CacheRead: 500, Output: 40}, 840),
+		core.UsageEvent(core.TokenUsage{Input: 400, CacheRead: 700, Output: 60}, 1160),
+	}
+	got := usageEvents(events)
+	if len(got) != len(want) {
+		t.Fatalf("usage events %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("usage event %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if got[1].InputTokens != 1100 || got[1].CachedInputTokens != 900 || got[1].CacheWriteTokens != 100 {
+		t.Fatalf("event must carry the whole prompt with cached portions: %+v", got[1])
+	}
+	// The session started with its own totals, which this run adds to.
+	if wantTotal := (core.TokenUsage{Input: 1001, CacheRead: 2902, CacheWrite: 103, Output: 214}); session.Usage.Total != wantTotal || session.Usage.Context != 1160 {
+		t.Fatalf("session usage %+v, want total %+v context 1160", session.Usage, wantTotal)
+	}
+}
+
+func TestCodexNextRunDiffsAgainstTheSavedThreadTotal(t *testing.T) {
+	// Each run starts a fresh app-server on the same thread. What the first update
+	// of a run means depends on what the previous run already counted.
+	earlier := codexCounts{5000, 4000, 0, 300}
+	for _, tt := range []struct {
+		name string
+		// savedThread is the thread the baseline was saved for; empty means this run's.
+		savedThread string
+		turn        func(*codexFixture)
+		want        core.TokenUsage // what the run adds to the session
+		events      int
+	}{
+		{"a replay of the previous total is not a new call", "", func(f *codexFixture) {
+			f.pushUsage(codexCounts{1000, 800, 0, 50}, earlier)
+			f.pushUsage(codexCounts{1300, 900, 0, 90}, codexCounts{6300, 4900, 0, 390})
+		}, core.TokenUsage{Input: 400, CacheRead: 900, Output: 90}, 1},
+		{"updates lost at the end of the previous run are recovered", "", func(f *codexFixture) {
+			f.pushUsage(codexCounts{1400, 1000, 0, 60}, codexCounts{7800, 5900, 0, 450})
+		}, core.TokenUsage{Input: 900, CacheRead: 1900, Output: 150}, 1},
+		{"a baseline from another thread is ignored", "older-thread", func(f *codexFixture) {
+			f.pushUsage(codexCounts{1000, 800, 0, 50}, earlier)
+		}, core.TokenUsage{Input: 200, CacheRead: 800, Output: 50}, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newCodexFixture(t)
+			f.turn = func(f *codexFixture) {
+				f.pushUsage(codexCounts{1000, 800, 0, 50}, earlier)
+				f.finish("completed")
+			}
+			session := &core.Session{Directory: t.TempDir()}
+			backend := &Codex{start: f.start}
+			if err := backend.Run(context.Background(), session, "First", &codexTestExecutor{}, nil); err != nil {
+				t.Fatal(err)
+			}
+			journal, err := loadCodexJournal(session.State)
+			if err != nil || journal.Usage == nil || journal.Usage.Thread != "thread-1" || journal.Usage.Total != earlier.breakdown() {
+				t.Fatalf("the run did not save its thread total: %+v %v", journal.Usage, err)
+			}
+			if tt.savedThread != "" {
+				journal.Usage.Thread = tt.savedThread
+				if err = saveCodexJournal(session, journal, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := session.Usage.Total
+			second := newCodexFixture(t)
+			second.turn = func(f *codexFixture) {
+				tt.turn(f)
+				f.finish("completed")
+			}
+			var events []core.Event
+			if err = (&Codex{start: second.start}).Run(context.Background(), session, "Second", &codexTestExecutor{}, func(e core.Event) { events = append(events, e) }); err != nil {
+				t.Fatal(err)
+			}
+			want := before
+			want.Add(tt.want)
+			if session.Usage.Total != want || len(usageEvents(events)) != tt.events {
+				t.Fatalf("total %+v with %d usage events, want %+v with %d", session.Usage.Total, len(usageEvents(events)), want, tt.events)
+			}
+		})
+	}
+}
+
+func TestCodexUsageIsCheckpointedWithTheTurn(t *testing.T) {
+	for _, status := range []string{"completed", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			f := newCodexFixture(t)
+			f.turn = func(f *codexFixture) {
+				f.pushUsage(codexCounts{100, 0, 0, 20}, codexCounts{100, 0, 0, 20})
+				f.push(map[string]any{"id": "tool-1", "method": "item/tool/call", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "callId": "call-1", "tool": "Read", "arguments": map[string]any{"path": "README.md"}}})
+				f.pushUsage(codexCounts{150, 100, 0, 30}, codexCounts{250, 100, 0, 50})
+				f.finish(status)
+			}
+			var snapshots []core.SessionUsage
+			backend := &Codex{start: f.start, Checkpoint: func(s *core.Session) error { snapshots = append(snapshots, s.Usage); return nil }}
+			session := &core.Session{Directory: t.TempDir()}
+			err := backend.Run(context.Background(), session, "Read the readme", &codexTestExecutor{}, func(core.Event) {})
+			if (err != nil) != (status == "failed") {
+				t.Fatalf("status %s returned %v", status, err)
+			}
+			wantTotal := core.TokenUsage{Input: 150, CacheRead: 100, Output: 50}
+			if session.Usage.Total != wantTotal || session.Usage.Context != 180 {
+				t.Fatalf("usage after a multi-call turn = %+v, want total %+v context 180", session.Usage, wantTotal)
+			}
+			if last := snapshots[len(snapshots)-1]; last != session.Usage {
+				t.Fatalf("the checkpoint ending the turn lost usage: %+v, want %+v", last, session.Usage)
+			}
+			sawFirstCall := false
+			for _, s := range snapshots {
+				sawFirstCall = sawFirstCall || (s.Total == core.TokenUsage{Input: 100, Output: 20} && s.Context == 120)
+			}
+			if !sawFirstCall {
+				t.Fatalf("the tool-result checkpoint should hold the first call's usage: %+v", snapshots)
+			}
+		})
+	}
+}
+
+func TestCodexReviewerNeverRecordsUsage(t *testing.T) {
+	updates := func(f *codexFixture) {
+		f.pushUsage(codexCounts{2000, 1500, 0, 80}, codexCounts{2000, 1500, 0, 80})
+		f.push(map[string]any{"method": "item/completed", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "item": map[string]any{"id": "final", "type": "agentMessage", "text": `{"allow":true,"reason":"Bounded authorized command"}`}}})
+		f.pushUsage(codexCounts{2100, 1500, 0, 90}, codexCounts{4100, 3000, 0, 170})
+		f.finish("completed")
+	}
+	t.Run("run", func(t *testing.T) {
+		f := newCodexFixture(t)
+		f.turn = updates
+		session := &core.Session{Directory: t.TempDir(), Usage: core.SessionUsage{Total: core.TokenUsage{Input: 7}, Context: 9}}
+		var events []core.Event
+		if err := (&Codex{start: f.start}).run(context.Background(), session, "{}", nil, func(e core.Event) { events = append(events, e) }, true, nil); err != nil {
+			t.Fatal(err)
+		}
+		if session.Usage != (core.SessionUsage{Total: core.TokenUsage{Input: 7}, Context: 9}) {
+			t.Fatalf("reviewer usage was recorded: %+v", session.Usage)
+		}
+		if usage := usageEvents(events); len(usage) != 0 {
+			t.Fatalf("reviewer usage was emitted: %+v", usage)
+		}
+	})
+	t.Run("Review", func(t *testing.T) {
+		f := newCodexFixture(t)
+		f.turn = updates
+		backend := &Codex{start: f.start, Checkpoint: func(*core.Session) error { t.Fatal("review persisted as a conversation"); return nil }}
+		decision, err := backend.Review(context.Background(), core.Approval{Task: "Inspect fixture", Call: core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
+		if err != nil || !decision.Allow {
+			t.Fatalf("usage notifications disturbed the review: %+v %v", decision, err)
+		}
+	})
+}

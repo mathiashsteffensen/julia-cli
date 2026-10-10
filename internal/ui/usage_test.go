@@ -188,7 +188,7 @@ func TestWeeklyUsageDoesNotMutateConversationOrProviderValue(t *testing.T) {
 }
 
 func TestWeeklyUsageDemoIsOfflineAndFitsLayouts(t *testing.T) {
-	for _, size := range [][2]int{{30, 15}, {50, 20}, {128, 15}, {128, 20}, {128, 40}} {
+	for _, size := range [][2]int{{30, 15}, {50, 20}, {128, 15}, {128, 16}, {128, 18}, {128, 20}, {128, 40}} {
 		cfg := usageConfig(func(context.Context) (*core.WeeklyUsage, error) {
 			t.Fatal("demo requested account usage")
 			return nil, nil
@@ -200,7 +200,8 @@ func TestWeeklyUsageDemoIsOfflineAndFitsLayouts(t *testing.T) {
 			t.Fatal("demo scheduled account usage read")
 		}
 		view := m.View().Content
-		if m.hasSidebar() != strings.Contains(ansi.Strip(view), "Weekly · 61% left") {
+		// On a very short sidebar the context gauge outranks the connection rows.
+		if (m.hasSidebar() && m.bodyHeight >= 6) != strings.Contains(ansi.Strip(view), "Weekly · 61% left") {
 			t.Fatalf("%v: allowance visibility differs from sidebar", size)
 		}
 		lines := strings.Split(view, "\n")

@@ -364,6 +364,26 @@ func TestModelAndReasoningVisibleAcrossLayouts(t *testing.T) {
 	}
 }
 
+func TestCompatibleReasoningVisibleAcrossLayouts(t *testing.T) {
+	for _, size := range [][2]int{{100, 30}, {128, 40}} {
+		m := testModel(t, Config{
+			Session:             &core.Session{ID: "test", Provider: "compatible", Model: "vendor/model", Reasoning: "high"},
+			CompatibleReasoning: true,
+		})
+		m.resize(size[0], size[1])
+		view := ansi.Strip(m.View().Content)
+		if !strings.Contains(view, "high") {
+			t.Fatalf("compatible effort hidden at %v", size)
+		}
+
+		m.cfg.Session.Reasoning = ""
+		view = ansi.Strip(m.View().Content)
+		if !strings.Contains(view, "provider default") || strings.Contains(view, "inherited") {
+			t.Fatalf("compatible default label is wrong at %v: %s", size, view)
+		}
+	}
+}
+
 func TestClearKeepsConversationWhenSavingFails(t *testing.T) {
 	m := testModel(t, Config{Save: func(*core.Session) error { return errors.New("disk full") }})
 	m.cfg.Session.Messages = []core.Message{{Role: "user", Content: "keep this"}}

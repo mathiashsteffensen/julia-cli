@@ -94,7 +94,9 @@ func TestWebSearchCollapsedRow(t *testing.T) {
 
 func TestSidebarFitsRegisteredTools(t *testing.T) {
 	for _, provider := range []string{"codex", "anthropic"} {
-		for _, height := range []int{38, 39, 40} {
+		// The essentials rank below every other sidebar section, so they need a
+		// terminal tall enough for the context, token and activity sections too.
+		for _, height := range []int{48, 49, 50} {
 			definitions := tools.Definitions(true)
 			m := testModel(t, Config{
 				Session:         &core.Session{Provider: provider},
@@ -113,7 +115,7 @@ func TestSidebarFitsRegisteredTools(t *testing.T) {
 
 func TestSidebarUsesSuppliedRegistry(t *testing.T) {
 	m := testModel(t, Config{ToolDefinitions: []core.ToolDefinition{{Name: "CustomSearch"}, {Name: "Delegate"}}})
-	m.resize(128, 40)
+	m.resize(128, 52) // the essentials rank below every other section, so they need a tall terminal
 	view := ansi.Strip(m.sidebar())
 	for _, name := range []string{"CustomSearch", "Delegate"} {
 		if !strings.Contains(view, name) {

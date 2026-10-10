@@ -19,8 +19,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// EnvironmentInfo describes host-measured Go paths and workspace-isolated caches.
-// Host credentials and the host's writable caches are never passed to commands.
+// EnvironmentInfo describes host-measured Go paths and workspace-isolated caches
+// used by sandboxed commands. Host credentials and the host's writable caches are
+// not passed to sandboxed commands.
 type EnvironmentInfo struct {
 	GoRoot        string `json:"go_root,omitempty"`
 	GoBuildCache  string `json:"go_build_cache,omitempty"`
@@ -43,7 +44,11 @@ func (e *Executor) EnvironmentInfo(ctx context.Context) (EnvironmentInfo, error)
 	}
 	return env.Info, nil
 }
-func (e *Executor) prepareGoEnvironment(ctx context.Context) (*goEnvironment, error) {
+
+// discoverGo locates the installed Go toolchain once and measures its GOROOT and
+// host module cache. It does no workspace cache work, so escalated commands,
+// which use the host's own caches, need nothing more than this.
+func (e *Executor) discoverGo(ctx context.Context) (*goEnvironment, error) {
 	if e.goEnv == nil {
 		env := &goEnvironment{}
 		binary, err := exec.LookPath("go")
@@ -86,7 +91,14 @@ func (e *Executor) prepareGoEnvironment(ctx context.Context) (*goEnvironment, er
 		env.HostModuleCache = measured.GOMODCACHE
 		e.goEnv = env
 	}
-	env := e.goEnv
+	return e.goEnv, nil
+}
+
+func (e *Executor) prepareGoEnvironment(ctx context.Context) (*goEnvironment, error) {
+	env, err := e.discoverGo(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if env.CacheRoot != "" {
 		if err := validateGoCacheRoots(env); err != nil {
 			return nil, err

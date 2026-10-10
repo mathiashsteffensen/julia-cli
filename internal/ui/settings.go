@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"jarvis/internal/config"
 	"jarvis/internal/core"
 )
 
@@ -49,8 +50,8 @@ func (m *model) openPicker(kind string) tea.Cmd {
 		m.notice = "Draft kept. Wait for this task, or Esc to interrupt before changing settings."
 		return nil
 	}
-	if kind == "reasoning" && !m.codexSettings() {
-		m.notice = "Reasoning controls are available with Codex."
+	if kind == "reasoning" && !m.reasoningSettings() {
+		m.notice = "Reasoning controls are unavailable with this provider."
 		return nil
 	}
 	if m.cfg.ApplySettings == nil && !m.cfg.Demo {
@@ -75,6 +76,9 @@ func (m *model) openPicker(kind string) tea.Cmd {
 	catalog := m.cfg.Session.Provider
 	if kind == "reasoning" {
 		catalog = "codex"
+		if m.cfg.Session.Provider == "compatible" && m.cfg.CompatibleReasoning {
+			catalog = "compatible"
+		}
 	} else if catalog != "codex" && catalog != "compatible" {
 		catalogs := m.modelCatalogProviders()
 		if len(catalogs) > 0 {
@@ -105,10 +109,9 @@ func (m *model) modelCatalogProviders() []string {
 	return providers
 }
 
-// rememberCompatibleModel keeps a compatible/OpenRouter model in the switchable
-// catalog. Without it, a compatible session with no saved openrouter_models
-// would lose its only model as soon as the user moved to Codex, making the
-// compatible provider unreachable from the picker.
+// rememberCompatibleModel keeps a compatible model in the switchable catalog.
+// Without a saved compatible_models entry, a session that used an unsaved model
+// would lose that model after switching providers.
 func (m *model) rememberCompatibleModel(model string) {
 	if model == "" {
 		return
@@ -118,7 +121,8 @@ func (m *model) rememberCompatibleModel(model string) {
 			return
 		}
 	}
-	m.compatibleModels = append(m.compatibleModels, core.ModelOption{ID: model, Name: model, Description: "Current compatible model"})
+	option := core.ModelOption{ID: model, Name: model, Description: "Current compatible model"}
+	m.compatibleModels = append(m.compatibleModels, option)
 }
 
 func (m *model) catalogFetch(provider string) (func(context.Context) ([]core.ModelOption, error), error) {
@@ -139,11 +143,12 @@ func (m *model) catalogFetch(provider string) (func(context.Context) ([]core.Mod
 				}
 			}
 			if !found {
-				options = append(options, core.ModelOption{ID: m.cfg.Session.Model, Name: m.cfg.Session.Model, Description: "Current OpenRouter model · not in the saved list"})
+				option := core.ModelOption{ID: m.cfg.Session.Model, Name: m.cfg.Session.Model, Description: "Current compatible model · not in the saved list"}
+				options = append(options, option)
 			}
 		}
 		if len(options) == 0 {
-			return nil, fmt.Errorf("no saved OpenRouter models; add IDs to openrouter_models in your JARVIS config")
+			return nil, fmt.Errorf("no saved compatible models; add IDs to compatible_models in your JARVIS config")
 		}
 		return func(context.Context) ([]core.ModelOption, error) { return options, nil }, nil
 	default:
@@ -200,8 +205,12 @@ func (m *model) loadPickerModels(provider string, blink bool) tea.Cmd {
 	return load
 }
 
-func (m *model) codexSettings() bool {
-	return m.cfg.Demo || m.cfg.Session.Provider == "codex"
+func (m *model) reasoningSettings() bool {
+	return m.reasoningSettingsFor(m.cfg.Session.Provider)
+}
+
+func (m *model) reasoningSettingsFor(provider string) bool {
+	return m.cfg.Demo || provider == "codex" || (provider == "compatible" && m.cfg.CompatibleReasoning)
 }
 
 func (m *model) closePicker() {
@@ -260,8 +269,8 @@ func (m *model) cycleReasoning() tea.Cmd {
 		m.notice = "Draft kept. Wait for this task, or Esc to interrupt before changing settings."
 		return nil
 	}
-	if !m.codexSettings() {
-		m.notice = "Reasoning controls are available with Codex."
+	if !m.reasoningSettings() {
+		m.notice = "Reasoning controls are unavailable with this provider."
 		return nil
 	}
 	if m.reasoningCyclePending > 0 {
@@ -270,6 +279,12 @@ func (m *model) cycleReasoning() tea.Cmd {
 	}
 	if m.cfg.Demo && modelOption(m.models, m.cfg.Session.Model) == nil {
 		m.models = previewModelOptions()
+	}
+	if m.cfg.Session.Provider == "compatible" && m.cfg.CompatibleReasoning {
+		if err := m.cycleReasoningBy(1); err != nil {
+			m.notice = "Settings unchanged: " + oneLine(err.Error())
+		}
+		return nil
 	}
 	if option := modelOption(m.models, m.cfg.Session.Model); option != nil {
 		if len(option.ReasoningEfforts) == 0 {
@@ -336,13 +351,18 @@ func (m *model) receiveReasoningCycle(msg reasoningCycleMsg) tea.Cmd {
 }
 
 func (m *model) cycleReasoningBy(steps int) error {
-	option := modelOption(m.models, m.cfg.Session.Model)
-	if option == nil || len(option.ReasoningEfforts) == 0 {
+	var efforts []string
+	if m.cfg.Session.Provider == "compatible" && m.cfg.CompatibleReasoning {
+		efforts = config.OpenRouterReasoningEfforts()
+	} else if option := modelOption(m.models, m.cfg.Session.Model); option != nil {
+		efforts = option.ReasoningEfforts
+	}
+	if len(efforts) == 0 {
 		return fmt.Errorf("no reasoning efforts are listed for this model")
 	}
 	choices := []string{""}
 	seen := map[string]bool{"": true}
-	for _, effort := range option.ReasoningEfforts {
+	for _, effort := range efforts {
 		if effort != "" && !seen[effort] {
 			choices = append(choices, effort)
 			seen[effort] = true
@@ -377,17 +397,19 @@ func (m *model) pickerChoices() []settingChoice {
 	}
 	var choices []settingChoice
 	if m.picker.kind == "reasoning" {
-		detail := "Use the provider's configured default"
-		if option := m.currentModelOption(); option != nil {
-			if option.DefaultReasoning != "" {
-				detail += " · model default: " + option.DefaultReasoning
-			}
+		detail := "Use the provider/model default"
+		if option := m.currentModelOption(); option != nil && option.DefaultReasoning != "" {
+			detail += " · model default: " + option.DefaultReasoning
 		}
 		choices = append(choices, settingChoice{value: "", label: "Default", detail: detail, active: m.cfg.Session.Reasoning == ""})
-		if option := m.currentModelOption(); option != nil {
+		if m.cfg.Session.Provider == "compatible" && m.cfg.CompatibleReasoning {
+			for _, effort := range config.OpenRouterReasoningEfforts() {
+				choices = append(choices, settingChoice{value: effort, label: effort, detail: "OpenRouter effort · model support unverified", active: effort == m.cfg.Session.Reasoning})
+			}
+		} else if option := m.currentModelOption(); option != nil {
 			for _, effort := range option.ReasoningEfforts {
 				if effort != "" {
-					choices = append(choices, settingChoice{value: effort, label: effort, detail: "Reasoning effort", active: effort == m.cfg.Session.Reasoning})
+					choices = append(choices, settingChoice{value: effort, label: effort, detail: "Model-supported reasoning effort", active: effort == m.cfg.Session.Reasoning})
 				}
 			}
 		}
@@ -509,8 +531,8 @@ func (m *model) settingsCommand(prompt string) (bool, tea.Cmd) {
 		m.notice = "Use /model ID or /reasoning LEVEL|default."
 		return true, nil
 	}
-	if kind == "reasoning" && !m.codexSettings() {
-		m.notice = "Reasoning controls are available with Codex."
+	if kind == "reasoning" && !m.reasoningSettings() {
+		m.notice = "Reasoning controls are unavailable with this provider."
 		return true, nil
 	}
 	provider, model, reasoning := m.cfg.Session.Provider, m.cfg.Session.Model, m.cfg.Session.Reasoning
@@ -535,9 +557,18 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 		return fmt.Errorf("wait for the active task before changing settings")
 	}
 	reset := false
-	if provider != "codex" {
+	providerChanged := provider != m.cfg.Session.Provider
+	modelChanged := model != m.cfg.Session.Model
+	if !m.reasoningSettingsFor(provider) || providerChanged {
+		// Never carry an effort across providers. A destination model's default
+		// can be restored below from its own catalog entry.
 		reasoning = ""
-	} else if model != m.cfg.Session.Model || provider != m.cfg.Session.Provider {
+	}
+	if provider == "compatible" && modelChanged {
+		// Compatible model support is not in the catalog, so do not carry a
+		// potentially unsupported effort to a different model.
+		reasoning = ""
+	} else if provider == "codex" && (modelChanged || providerChanged) {
 		for _, option := range m.models {
 			if option.ID == model && (reasoning == "" || (len(option.ReasoningEfforts) > 0 && !slices.Contains(option.ReasoningEfforts, reasoning))) {
 				reasoning, reset = option.DefaultReasoning, true
@@ -564,13 +595,12 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 	}
 	if newConversation {
 		m.entries = nil
-		m.toolCount, m.inputTokens, m.outputTokens = 0, 0, 0
-		m.lastDuration = 0
+		m.resetCounters()
 		m.refresh(true)
 		m.notice = "New " + m.modelProviderLabel(provider) + " conversation · " + model + ". Previous conversation saved."
 	} else {
 		m.notice = "Next turn: " + model
-		if provider == "codex" {
+		if m.reasoningSettingsFor(provider) {
 			effort := reasoning
 			if effort == "" {
 				effort = "default"
@@ -592,9 +622,6 @@ func (m *model) modelProviderLabel(provider string) string {
 	case "codex":
 		return "Codex"
 	case "compatible":
-		if len(m.cfg.OpenRouterModels) > 0 {
-			return "OpenRouter"
-		}
 		return "Compatible"
 	default:
 		return provider

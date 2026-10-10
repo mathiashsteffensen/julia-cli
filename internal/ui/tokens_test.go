@@ -1,0 +1,524 @@
+package ui
+
+import (
+	"context"
+	"math"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+	"jarvis/internal/core"
+)
+
+func TestCompactWhole(t *testing.T) {
+	for _, tc := range []struct {
+		in   int
+		want string
+	}{
+		{-1, "0"},
+		{0, "0"},
+		{999, "999"},
+		{1000, "1k"},
+		{1499, "1k"},
+		{1500, "2k"},
+		{118_600, "119k"},
+		{138_412, "138k"},
+		{256_000, "256k"},
+		{999_499, "999k"},
+		{999_500, "1M"},
+		{1_000_000, "1M"},
+		{1_250_000, "1.3M"},
+		{2_000_000, "2M"},
+	} {
+		if got := compactWhole(tc.in); got != tc.want {
+			t.Errorf("compactWhole(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if got := compactWhole(math.MaxInt); strings.HasPrefix(got, "-") {
+		t.Errorf("compactWhole(MaxInt) = %q", got)
+	}
+}
+
+func TestUsageBar(t *testing.T) {
+	const width = 23
+	for _, tc := range []struct {
+		used, window, filled int
+	}{
+		{0, 256_000, 0},
+		{-5, 256_000, 0},
+		{1, 256_000, 1}, // any usage is visible
+		{128_000, 256_000, 12},
+		{255_999, 256_000, 23},
+		{256_000, 256_000, 23},
+		{900_000, 256_000, 23}, // the bar is clamped; the printed figure is not
+		{5, 0, 23},
+		{0, 0, 0},
+		{0, -1, 0},
+		{5, -1, 23},
+	} {
+		bar := ansi.Strip(usageBar(tc.used, tc.window, width, violetStyle))
+		if got := strings.Count(bar, "━"); got != tc.filled || ansi.StringWidth(bar) != width {
+			t.Errorf("usageBar(%d, %d) = %q, want %d filled cells of %d", tc.used, tc.window, bar, tc.filled, width)
+		}
+	}
+}
+
+var negativeNumber = regexp.MustCompile(`-\d`)
+
+// sidebarText is the sidebar with styling removed, one entry per row.
+func sidebarText(m *model) []string {
+	var rows []string
+	for _, row := range strings.Split(ansi.Strip(m.sidebar()), "\n") {
+		rows = append(rows, strings.TrimSpace(strings.TrimPrefix(row, "│")))
+	}
+	return rows
+}
+
+func hasRow(rows []string, want string) bool {
+	for _, row := range rows {
+		if row == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSidebarShowsContextAndSessionTotals(t *testing.T) {
+	// A resumed session: the saved totals must show before any run starts.
+	saved := core.SessionUsage{Total: core.TokenUsage{Input: 20_000, CacheRead: 900_000, CacheWrite: 30_000, Output: 12_300}, Context: 138_000}
+	m := testModel(t, Config{Session: &core.Session{ID: "resumed", Directory: "/tmp/jarvis", Provider: "fake", Usage: saved}})
+	m.resize(128, 60)
+	rows := sidebarText(m)
+	for _, want := range []string{"CONTEXT", "53% · 138k / 256k", "TOKENS", "950k in · 12.3k out", "900k cached · 50k new", "ACTIVITY", "0 tool calls", "last call", "0 in · 0 out"} {
+		if !hasRow(rows, want) {
+			t.Errorf("sidebar is missing %q:\n%s", want, strings.Join(rows, "\n"))
+		}
+	}
+	// Per-call figures are the last model call only, never the session totals.
+	m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 1_200, CacheRead: 10_000, Output: 410}, 0))
+	if rows = sidebarText(m); !hasRow(rows, "11.2k in · 410 out") || !hasRow(rows, "961.2k in · 12.7k out") {
+		t.Errorf("last call and totals diverged:\n%s", strings.Join(rows, "\n"))
+	}
+}
+
+func TestSubagentAggregateAddsToTotalsButIsNotTheLastCall(t *testing.T) {
+	m := testModel(t, Config{Session: &core.Session{ID: "s", Provider: "fake"}})
+	m.resize(128, 60)
+	m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 1_200, CacheRead: 10_000, Output: 410}, 12_000))
+	// A subagent's whole spend arrives as one event, far larger than any single call.
+	m.applyEvent(core.AggregateUsageEvent(core.TokenUsage{Input: 200_000, CacheRead: 1_000_000, Output: 40_000}))
+	rows := sidebarText(m)
+	if m.inputTokens != 11_200 || m.outputTokens != 410 {
+		t.Errorf("last call = %d in · %d out, want the parent's own call", m.inputTokens, m.outputTokens)
+	}
+	for _, want := range []string{"11.2k in · 410 out", "1.2M in · 40.4k out", "4% · 12k / 256k"} {
+		if !hasRow(rows, want) {
+			t.Errorf("sidebar is missing %q:\n%s", want, strings.Join(rows, "\n"))
+		}
+	}
+}
+
+func TestSidebarZeroState(t *testing.T) {
+	m := testModel(t, Config{})
+	m.resize(128, 60)
+	rows := sidebarText(m)
+	for _, want := range []string{"0% · 0 / 256k", "0 in · 0 out", "0 cached · 0 new"} {
+		if !hasRow(rows, want) {
+			t.Errorf("zero state is missing %q:\n%s", want, strings.Join(rows, "\n"))
+		}
+	}
+	if !hasRow(rows, strings.Repeat("─", 23)) {
+		t.Errorf("context bar is not empty:\n%s", strings.Join(rows, "\n"))
+	}
+	if negativeNumber.MatchString(strings.Join(rows, "\n")) {
+		t.Error("zero state rendered a negative number")
+	}
+}
+
+func TestContextWindowIsConfigurable(t *testing.T) {
+	for _, tc := range []struct {
+		window int
+		want   string
+	}{
+		{0, "50% · 128k / 256k"},
+		{-100, "50% · 128k / 256k"},
+		{core.DefaultContextWindow, "50% · 128k / 256k"},
+		{512_000, "25% · 128k / 512k"},
+		{1_000_000, "12% · 128k / 1M"},
+	} {
+		session := &core.Session{ID: "w", Provider: "fake", Usage: core.SessionUsage{Context: 128_000}}
+		m := testModel(t, Config{Session: session, ContextWindow: tc.window})
+		m.resize(128, 40)
+		if rows := sidebarText(m); !hasRow(rows, tc.want) {
+			t.Errorf("window %d: want %q in\n%s", tc.window, tc.want, strings.Join(rows, "\n"))
+		}
+	}
+}
+
+// usageBackend records usage into the session before emitting it, as the real
+// providers do, so the session it returns already holds every event of the run.
+type usageBackend struct{ events []core.Event }
+
+func (usageBackend) Name() string { return "fake" }
+func (b usageBackend) Run(_ context.Context, s *core.Session, _ string, _ core.ToolExecutor, emit core.Emit) error {
+	for _, event := range b.events {
+		s.RecordUsage(event)
+		emit(event)
+	}
+	return nil
+}
+
+func nextStreamMsg(t *testing.T, m *model) streamMsg {
+	t.Helper()
+	select {
+	case msg := <-m.stream:
+		return msg
+	case <-time.After(2 * time.Second):
+		t.Fatal("no stream message")
+		return streamMsg{}
+	}
+}
+
+func TestRunUsageShowsLiveAndIsCountedOnce(t *testing.T) {
+	prior := core.SessionUsage{Total: core.TokenUsage{Input: 1000, CacheRead: 4000, CacheWrite: 500, Output: 300}, Context: 5500}
+	events := []core.Event{
+		core.UsageEvent(core.TokenUsage{Input: 200, CacheRead: 5500, Output: 80}, 6000),
+		core.UsageEvent(core.TokenUsage{Input: 50, CacheRead: 5700, CacheWrite: 400, Output: 120}, 6600),
+		core.UsageEvent(core.TokenUsage{}, 7000), // a context update after tool results
+	}
+	session := &core.Session{ID: "live", Directory: "/tmp/jarvis", Provider: "fake", Usage: prior}
+	m := testModel(t, Config{Session: session, Backend: usageBackend{events}})
+	m.resize(128, 60)
+	m.input.SetValue("go")
+	m.submit()
+
+	want := prior
+	for i, event := range events {
+		msg := nextStreamMsg(t, m)
+		if msg.event == nil || msg.finished {
+			t.Fatalf("event %d: got %+v", i, msg)
+		}
+		m.Update(msg)
+		want.Total.Add(event.Usage())
+		want.Context = event.ContextTokens
+		if got := m.usage(); got != want {
+			t.Fatalf("after event %d: displayed %+v, want %+v", i, got, want)
+		}
+		if m.cfg.Session.Usage != prior {
+			t.Fatalf("after event %d: the run leaked into the session before it finished: %+v", i, m.cfg.Session.Usage)
+		}
+	}
+	if m.inputTokens != 6150 || m.outputTokens != 120 {
+		t.Errorf("a context-only update replaced the last-call figures: %d in, %d out", m.inputTokens, m.outputTokens)
+	}
+	if rows := sidebarText(m); !hasRow(rows, "2% · 7k / 256k") || !hasRow(rows, "17.4k in · 500 out") {
+		t.Errorf("live sidebar is stale:\n%s", strings.Join(rows, "\n"))
+	}
+
+	msg := nextStreamMsg(t, m)
+	if !msg.finished {
+		t.Fatalf("expected the run to finish, got %+v", msg)
+	}
+	m.Update(msg)
+	if got := m.usage(); got != want {
+		t.Errorf("finished run double counted or lost usage: displayed %+v, want %+v", got, want)
+	}
+	if m.cfg.Session.Usage != want || m.live != (core.SessionUsage{}) {
+		t.Errorf("finished run left state behind: session %+v, live %+v", m.cfg.Session.Usage, m.live)
+	}
+	// A second run starts from the settled totals.
+	m.input.SetValue("again")
+	m.submit()
+	m.Update(nextStreamMsg(t, m))
+	want.Total.Add(events[0].Usage())
+	want.Context = events[0].ContextTokens
+	if got := m.usage(); got != want {
+		t.Errorf("second run: displayed %+v, want %+v", got, want)
+	}
+	for m.busy {
+		m.Update(nextStreamMsg(t, m))
+	}
+}
+
+func TestFinishedRunWithoutSessionKeepsWhatWasShown(t *testing.T) {
+	m := testModel(t, Config{Session: &core.Session{ID: "nil", Provider: "fake", Usage: core.SessionUsage{Total: core.TokenUsage{Input: 10}, Context: 10}}})
+	m.busy = true
+	m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 5, CacheRead: 20, Output: 3}, 400))
+	shown := m.usage()
+	m.Update(streamMsg{finished: true})
+	if m.usage() != shown || m.cfg.Session.Usage != shown || m.live != (core.SessionUsage{}) {
+		t.Errorf("usage changed when a run finished without a session: shown %+v, now %+v / %+v", shown, m.usage(), m.live)
+	}
+}
+
+func TestContextShrinksAfterCompaction(t *testing.T) {
+	m := testModel(t, Config{})
+	m.resize(128, 60)
+	m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 190_000, Output: 10_000}, 200_000))
+	if rows := sidebarText(m); !hasRow(rows, "78% · 200k / 256k") {
+		t.Fatalf("context did not grow:\n%s", strings.Join(rows, "\n"))
+	}
+	// The summarization call is billed in full, but the history it leaves is small.
+	m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 205_000, Output: 3_000}, 90_000))
+	rows := sidebarText(m)
+	if !hasRow(rows, "35% · 90k / 256k") {
+		t.Errorf("context did not shrink after compaction:\n%s", strings.Join(rows, "\n"))
+	}
+	if !hasRow(rows, "395k in · 13k out") {
+		t.Errorf("session totals must keep the compaction call:\n%s", strings.Join(rows, "\n"))
+	}
+}
+
+func TestClearResetsUsage(t *testing.T) {
+	session := &core.Session{ID: "old", Directory: "/tmp/jarvis", Provider: "fake", Usage: core.SessionUsage{Total: core.TokenUsage{Input: 1, CacheRead: 2, CacheWrite: 3, Output: 4}, Context: 50_000}}
+	m := testModel(t, Config{Session: session})
+	m.resize(128, 60)
+	m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 7, Output: 8}, 60_000))
+	m.input.SetValue("/clear")
+	m.submit()
+	if m.usage() != (core.SessionUsage{}) || m.inputTokens != 0 || m.outputTokens != 0 {
+		t.Fatalf("/clear kept usage: %+v last call %d/%d", m.usage(), m.inputTokens, m.outputTokens)
+	}
+	rows := sidebarText(m)
+	for _, want := range []string{"0% · 0 / 256k", "0 in · 0 out", "0 cached · 0 new"} {
+		if !hasRow(rows, want) {
+			t.Errorf("/clear sidebar is missing %q:\n%s", want, strings.Join(rows, "\n"))
+		}
+	}
+}
+
+func TestSettingsChangeInSameConversationKeepsUsage(t *testing.T) {
+	m := testModel(t, Config{Demo: true, Session: &core.Session{ID: "same", Directory: "/tmp/jarvis", Provider: "codex", Model: "preview-balanced"}})
+	before := m.usage()
+	if before == (core.SessionUsage{}) {
+		t.Fatal("demo session has no usage")
+	}
+	if err := m.applySettings("codex", "preview-deep", ""); err != nil {
+		t.Fatal(err)
+	}
+	if m.usage() != before {
+		t.Errorf("a model switch within one conversation changed usage: %+v -> %+v", before, m.usage())
+	}
+}
+
+func TestDemoPreviewsShowUsage(t *testing.T) {
+	demo := ansi.Strip(RenderDemo(128, 40))
+	for _, want := range []string{"CONTEXT", "46% · 119k / 256k", "TOKENS", "511.7k in · 6.8k out", "412k cached · 100k new", "117.3k in · 1.3k out"} {
+		if !strings.Contains(demo, want) {
+			t.Errorf("demo preview is missing %q", want)
+		}
+	}
+	if welcome := ansi.Strip(RenderWelcome(128, 40)); !strings.Contains(welcome, "0% · 0 / 256k") || !strings.Contains(welcome, "0 in · 0 out") {
+		t.Error("welcome preview should show the zero state")
+	}
+	// Usage the caller supplied is never replaced by the sample figures.
+	m := testModel(t, Config{Demo: true, Session: &core.Session{ID: "kept", Provider: "codex", Usage: core.SessionUsage{Context: 1000}}})
+	if m.usage().Context != 1000 {
+		t.Errorf("demo overwrote supplied usage: %+v", m.usage())
+	}
+}
+
+// styleSequence is the escape sequence a style opens with.
+func styleSequence(style lipgloss.Style) string {
+	return strings.SplitN(style.Render("x"), "x", 2)[0]
+}
+
+func TestContextTurnsCoralAtCompactionThreshold(t *testing.T) {
+	coralOpen := styleSequence(coralStyle)
+	if coralOpen == "" || coralOpen == styleSequence(mutedStyle) {
+		t.Fatalf("cannot distinguish coral output: %q", coralOpen)
+	}
+	for _, window := range []int{0, 100_000, 512_000} {
+		effective := window
+		if effective <= 0 {
+			effective = core.DefaultContextWindow
+		}
+		threshold := core.CompactionThreshold(effective)
+		for _, tc := range []struct {
+			context int
+			coral   bool
+		}{{0, false}, {threshold - 1, false}, {threshold, true}, {threshold + 1, true}, {threshold * 2, true}} {
+			session := &core.Session{ID: "c", Provider: "fake", Usage: core.SessionUsage{Context: tc.context}}
+			m := testModel(t, Config{Session: session, ContextWindow: window})
+			m.resize(128, 60)
+			if got := strings.Contains(m.sidebar(), coralOpen); got != tc.coral {
+				t.Errorf("window %d context %d: coral = %v, want %v", window, tc.context, got, tc.coral)
+			}
+		}
+	}
+	// Beyond the window the figure keeps counting while the bar stays full.
+	over := testModel(t, Config{Session: &core.Session{ID: "o", Provider: "fake", Usage: core.SessionUsage{Context: 300_000}}})
+	over.resize(128, 60)
+	rows := sidebarText(over)
+	if !hasRow(rows, "117% · 300k / 256k") || !hasRow(rows, strings.Repeat("━", 23)) {
+		t.Errorf("over-window context is wrong:\n%s", strings.Join(rows, "\n"))
+	}
+}
+
+func TestSidebarNeverOverflowsItsColumn(t *testing.T) {
+	long := strings.Repeat("界", 40)
+	usages := []core.SessionUsage{
+		{},
+		{Total: core.TokenUsage{Input: 123_456_789, CacheRead: 987_654_321, CacheWrite: 55_555, Output: 999_999}, Context: 255_999},
+		{Total: core.TokenUsage{Input: math.MaxInt / 4, CacheRead: math.MaxInt / 4, CacheWrite: math.MaxInt / 4, Output: math.MaxInt / 4}, Context: math.MaxInt},
+		{Total: core.TokenUsage{Input: -5, CacheRead: -5, CacheWrite: -5, Output: -5}, Context: -10},
+	}
+	for _, provider := range []string{"fake", "codex", "compatible", long} {
+		for i, usage := range usages {
+			for _, window := range []int{-1, 0, 1, 256_000, math.MaxInt} {
+				session := &core.Session{ID: long, Directory: "/" + long, Provider: provider, Model: long, Reasoning: long, Usage: usage}
+				m := testModel(t, Config{Session: session, Mode: long, ContextWindow: window, CompatibleReasoning: true, ToolDefinitions: []core.ToolDefinition{{Name: "Read"}, {Name: long}, {Name: "Bash"}}})
+				m.inputTokens, m.outputTokens = math.MaxInt, -1
+				for height := 1; height <= 70; height++ {
+					m.bodyHeight = height
+					lines := strings.Split(m.sidebar(), "\n")
+					if len(lines) != height {
+						t.Fatalf("%.8s usage %d window %d: %d rows at height %d", provider, i, window, len(lines), height)
+					}
+					for _, line := range lines {
+						if ansi.StringWidth(line) > 26 {
+							t.Fatalf("%.8s usage %d window %d height %d: row exceeds the sidebar: %q", provider, i, window, height, ansi.Strip(line))
+						}
+					}
+					if negativeNumber.MatchString(ansi.Strip(strings.Join(lines, "\n"))) {
+						t.Fatalf("%.8s usage %d window %d height %d: negative number rendered", provider, i, window, height)
+					}
+				}
+			}
+		}
+	}
+	// The same figures must also fit the whole screen at awkward sizes.
+	for _, size := range [][2]int{{20, 8}, {60, 20}, {107, 30}, {108, 9}, {108, 23}, {128, 40}, {160, 80}} {
+		m := testModel(t, Config{Session: &core.Session{ID: "v", Provider: "codex", Usage: usages[2]}})
+		m.resize(size[0], size[1])
+		lines := strings.Split(m.View().Content, "\n")
+		if len(lines) > size[1] {
+			t.Fatalf("%v: %d rows", size, len(lines))
+		}
+		for _, line := range lines {
+			if ansi.StringWidth(line) > size[0] {
+				t.Fatalf("%v: row too wide: %q", size, ansi.Strip(line))
+			}
+		}
+	}
+}
+
+func TestSidebarDegradesInOrderOfValue(t *testing.T) {
+	m := testModel(t, Config{
+		Session:         &core.Session{ID: "deg", Directory: "/tmp/jarvis", Provider: "codex", Model: "selected", Reasoning: "high", Usage: core.SessionUsage{Context: 1000}},
+		ToolDefinitions: []core.ToolDefinition{{Name: "Read"}},
+	})
+	// Most valuable first. A section may only appear when every one before it does.
+	order := []struct{ name, marker string }{
+		{"context", "/ 256k"}, {"connection", "selected"}, {"tokens", "TOKENS"}, {"workspace", "WORKSPACE"},
+		{"permissions", "PERMISSIONS"}, {"activity", "ACTIVITY"}, {"session", "SESSION"}, {"essentials", "THE ESSENTIALS"},
+	}
+	complete := false
+	for height := 8; height <= 80; height++ {
+		m.resize(128, height)
+		text := ansi.Strip(m.sidebar())
+		missing := ""
+		for _, section := range order {
+			shown := strings.Contains(text, section.marker)
+			switch {
+			case shown && missing != "":
+				t.Fatalf("height %d (body %d): %s is shown while %s is not:\n%s", height, m.bodyHeight, section.name, missing, text)
+			case !shown && missing == "":
+				missing = section.name
+			}
+		}
+		if missing == "" {
+			complete = true
+		}
+	}
+	if !complete {
+		t.Error("no height shows every section")
+	}
+}
+
+func TestShortSidebarKeepsContextGaugeFirst(t *testing.T) {
+	for height := 8; height <= 18; height++ {
+		m := testModel(t, Config{Session: &core.Session{ID: "short", Directory: "/tmp/jarvis", Provider: "codex", Model: "selected", Usage: core.SessionUsage{Context: 128_000}}})
+		m.resize(128, height)
+		rows := sidebarText(m)
+		if !hasRow(rows, "50% · 128k / 256k") {
+			t.Errorf("height %d (body %d): context line was dropped:\n%s", height, m.bodyHeight, strings.Join(rows, "\n"))
+		}
+	}
+	m := testModel(t, Config{Session: &core.Session{ID: "tiny", Provider: "fake", Usage: core.SessionUsage{Context: 128_000}}})
+	m.resize(128, 8)
+	if rows := sidebarText(m); len(rows) != 1 || rows[0] != "50% · 128k / 256k" {
+		t.Errorf("a one-row sidebar should be the context line alone: %q", rows)
+	}
+}
+
+func TestShortSidebarFitsSectionsBeforeDetail(t *testing.T) {
+	// Spare rows buy detail only after every section that fits has its compact form,
+	// so a rich CONNECTION never crowds out the weekly allowance or the session
+	// totals the user asked to see. The gauge keeps its label at every height and
+	// its bar from 8 sidebar rows up.
+	for _, tt := range []struct {
+		provider string
+		height   int // terminal rows; the sidebar gets 11 fewer
+		want     []string
+	}{
+		{"codex", 17, []string{"CONTEXT", "Weekly · unavailable", "50% · 128k / 256k"}},
+		{"codex", 21, []string{"CONTEXT", "Weekly · unavailable", "50% · 128k / 256k", "TOKENS", "0 in · 0 out"}},
+		{"codex", 22, []string{"CONTEXT", "Weekly · unavailable", "50% · 128k / 256k", "TOKENS", "0 in · 0 out"}},
+		{"anthropic", 20, []string{"CONTEXT", "50% · 128k / 256k", "TOKENS", "0 in · 0 out"}},
+		{"anthropic", 40, []string{"CONTEXT", "50% · 128k / 256k", "TOKENS", "0 in · 0 out", "last call"}},
+	} {
+		m := testModel(t, Config{Session: &core.Session{ID: "short", Directory: "/tmp/jarvis", Provider: tt.provider, Model: "selected", Reasoning: "high", Usage: core.SessionUsage{Context: 128_000}}})
+		m.resize(128, tt.height)
+		rows := sidebarText(m)
+		for _, want := range tt.want {
+			if !hasRow(rows, want) {
+				t.Errorf("%s at %d rows (body %d): missing %q:\n%s", tt.provider, tt.height, m.bodyHeight, want, strings.Join(rows, "\n"))
+			}
+		}
+	}
+	// Detail still comes back as room allows: the whole gauge, then the reasoning row.
+	m := testModel(t, Config{Session: &core.Session{ID: "roomy", Directory: "/tmp/jarvis", Provider: "codex", Model: "selected", Reasoning: "high", Usage: core.SessionUsage{Context: 128_000}}})
+	m.resize(128, 40)
+	for _, want := range []string{"CONTEXT", "reasoning: high"} {
+		if rows := sidebarText(m); !hasRow(rows, want) {
+			t.Errorf("a tall sidebar is missing %q:\n%s", want, strings.Join(rows, "\n"))
+		}
+	}
+}
+
+func TestContextGaugeIsLabelledAtEveryHeightAndKeepsItsBar(t *testing.T) {
+	// The gauge once degraded to an anonymous "46% · 119k / 256k" under CONNECTION
+	// at a 40-row terminal, because lower-ranked sections soaked up the rows its
+	// bar needed. It must always sit under its own label, and keep its bar once
+	// the sidebar is tall enough for more than a glance.
+	for _, provider := range []string{"codex", "anthropic"} {
+		for height := 13; height <= 70; height++ {
+			m := testModel(t, Config{
+				Session:         &core.Session{ID: "gauge", Directory: "/tmp/jarvis", Provider: provider, Model: "selected", Reasoning: "high", Usage: core.SessionUsage{Context: 119_000}},
+				ToolDefinitions: []core.ToolDefinition{{Name: "Read"}},
+			})
+			m.resize(128, height)
+			rows := sidebarText(m)
+			label := -1
+			for i, row := range rows {
+				if row == "CONTEXT" {
+					label = i
+				}
+			}
+			if label < 0 {
+				t.Fatalf("%s at %d rows (body %d): the gauge lost its label:\n%s", provider, height, m.bodyHeight, strings.Join(rows, "\n"))
+			}
+			next := rows[label+1]
+			if m.bodyHeight >= 8 && !strings.HasPrefix(next, "━") {
+				t.Errorf("%s at %d rows (body %d): the gauge lost its bar (%q):\n%s", provider, height, m.bodyHeight, next, strings.Join(rows, "\n"))
+			}
+			if !strings.Contains(next, "46% · 119k / 256k") && !strings.Contains(rows[label+min(2, len(rows)-label-1)], "46% · 119k / 256k") {
+				t.Errorf("%s at %d rows (body %d): the figure is not under the CONTEXT label:\n%s", provider, height, m.bodyHeight, strings.Join(rows, "\n"))
+			}
+		}
+	}
+}

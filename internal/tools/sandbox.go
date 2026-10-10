@@ -136,14 +136,27 @@ func (e *Executor) runBash(ctx context.Context, command string, network bool, ti
 		return "", err
 	}
 	home := filepath.Join(tmp, "home")
-	if err := os.Mkdir(home, 0700); err != nil {
-		return "", err
+	if escalated {
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve host home for escalated command: %w", err)
+		}
+	} else {
+		if err := os.Mkdir(home, 0700); err != nil {
+			return "", err
+		}
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	development, prepareErr := e.prepareGoEnvironment(runCtx)
 	var goInfo EnvironmentInfo
-	if prepareErr != nil {
+	if escalated {
+		// Host caches are used, so only the toolchain location matters here.
+		if development, err := e.discoverGo(runCtx); err != nil {
+			e.emit("warning", "Go toolchain discovery unavailable; escalated command will use host Go defaults: "+err.Error())
+		} else {
+			goInfo.GoRoot = development.Info.GoRoot
+		}
+	} else if development, prepareErr := e.prepareGoEnvironment(runCtx); prepareErr != nil {
 		e.emit("warning", "Go cache preparation unavailable; using temporary caches: "+prepareErr.Error())
 		if e.goEnv != nil {
 			goInfo.GoRoot = e.goEnv.Info.GoRoot
@@ -164,17 +177,40 @@ func (e *Executor) runBash(ctx context.Context, command string, network bool, ti
 	}
 	cmd := exec.CommandContext(runCtx, executable, args...)
 	cmd.Dir = e.directory
-	cmd.Env = []string{"PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + home, "TMPDIR=" + tmp, "TMP=" + tmp, "TEMP=" + tmp, "XDG_CONFIG_HOME=" + filepath.Join(tmp, "config"), "XDG_CACHE_HOME=" + filepath.Join(tmp, "cache"), "XDG_DATA_HOME=" + filepath.Join(tmp, "data"), "GOCACHE=" + filepath.Join(tmp, "go-cache"), "GOMODCACHE=" + filepath.Join(tmp, "go-mod"), "GOPATH=" + filepath.Join(tmp, "go"), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8", "TERM=dumb", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.fsmonitor", "GIT_CONFIG_VALUE_0=false"}
+	cmd.Env = []string{"PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + home, "TMPDIR=" + tmp, "TMP=" + tmp, "TEMP=" + tmp, "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8", "TERM=dumb", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.fsmonitor", "GIT_CONFIG_VALUE_0=false"}
+	if escalated {
+		// Keep the environment curated, but let host tools use their normal
+		// persistent configuration and cache locations when explicitly approved.
+		for _, key := range []string{"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "GOPATH", "GOBIN", "GOCACHE", "GOMODCACHE", "GOENV"} {
+			if value := os.Getenv(key); value != "" {
+				cmd.Env = append(cmd.Env, key+"="+value)
+			}
+		}
+	} else {
+		cmd.Env = append(cmd.Env,
+			"XDG_CONFIG_HOME="+filepath.Join(tmp, "config"),
+			"XDG_CACHE_HOME="+filepath.Join(tmp, "cache"),
+			"XDG_DATA_HOME="+filepath.Join(tmp, "data"),
+			"GOCACHE="+filepath.Join(tmp, "go-cache"),
+			"GOMODCACHE="+filepath.Join(tmp, "go-mod"),
+			"GOPATH="+filepath.Join(tmp, "go"),
+		)
+	}
 	if goInfo.GoRoot != "" {
-		cmd.Env = append(cmd.Env, "GOROOT="+goInfo.GoRoot, "GOENV=off")
+		cmd.Env = append(cmd.Env, "GOROOT="+goInfo.GoRoot)
+		if !escalated {
+			cmd.Env = append(cmd.Env, "GOENV=off")
+		}
 		cmd.Env[0] = "PATH=" + filepath.Join(goInfo.GoRoot, "bin") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 	}
-	for i, value := range cmd.Env {
-		if strings.HasPrefix(value, "GOCACHE=") && goInfo.GoBuildCache != "" {
-			cmd.Env[i] = "GOCACHE=" + goInfo.GoBuildCache
-		}
-		if strings.HasPrefix(value, "GOMODCACHE=") && goInfo.GoModuleCache != "" {
-			cmd.Env[i] = "GOMODCACHE=" + goInfo.GoModuleCache
+	if !escalated {
+		for i, value := range cmd.Env {
+			if strings.HasPrefix(value, "GOCACHE=") && goInfo.GoBuildCache != "" {
+				cmd.Env[i] = "GOCACHE=" + goInfo.GoBuildCache
+			}
+			if strings.HasPrefix(value, "GOMODCACHE=") && goInfo.GoModuleCache != "" {
+				cmd.Env[i] = "GOMODCACHE=" + goInfo.GoModuleCache
+			}
 		}
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

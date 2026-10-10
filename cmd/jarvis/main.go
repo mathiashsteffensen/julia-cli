@@ -51,7 +51,7 @@ func run() error {
 	flags.StringVar(&prompt, "prompt", "", "run one task without the TUI")
 	flags.StringVar(&backend, "provider", "", "codex, openai, anthropic, google, compatible")
 	flags.StringVar(&model, "model", "", "provider model ID (Codex defaults to your configured model)")
-	flags.StringVar(&reasoning, "reasoning", "", "Codex reasoning effort supported by the model; an empty value inherits Codex settings")
+	flags.StringVar(&reasoning, "reasoning", "", "Reasoning effort (Codex model-supported value or OpenRouter value; model support varies)")
 	flags.StringVar(&mode, "mode", "", "auto, ask, or read-only")
 	flags.StringVar(&endpoint, "base-url", "", "custom API endpoint")
 	flags.StringVar(&keyEnv, "api-key-env", "", "environment variable containing API key")
@@ -160,8 +160,9 @@ func run() error {
 			return fmt.Errorf("unknown command %q (use --prompt for a headless task)", args[0])
 		}
 	}
+	demoTools := append(tools.Definitions(true), tools.QuestionDefinition())
 	if snapshot > 0 {
-		fmt.Print(ui.RenderDemo(snapshot, 40, tools.Definitions(true)...))
+		fmt.Print(ui.RenderDemo(snapshot, 40, demoTools...))
 		return nil
 	}
 	s := session.New(dir, cfg.Provider, cfg.Model)
@@ -180,7 +181,9 @@ func run() error {
 		if err := selectSessionModel(&cfg, s, dir, backend, model, reasoningSet, resume != "" || cont); err != nil {
 			return err
 		}
-		return ui.Run(ui.Config{Session: s, Mode: cfg.Mode, Demo: true, ToolDefinitions: tools.Definitions(true)})
+		preview := baseUIConfig(s, cfg, demoTools)
+		preview.Demo = true
+		return ui.Run(preview)
 	}
 	if err := store.Lock(s.ID); err != nil {
 		return err
@@ -224,8 +227,14 @@ func run() error {
 			return core.Decision{}, ctx.Err()
 		}
 	}
+	// The tool is registered in every run so a session's tool catalog is the same
+	// in the TUI and headless; with nobody to answer, a headless question is skipped.
+	ask, questions := headlessAsker, (<-chan ui.QuestionRequest)(nil)
+	if prompt == "" {
+		ask, questions = ui.NewAsker()
+	}
 	duration, _ := time.ParseDuration(cfg.Timeout)
-	runner := &runtimeBackend{backend: raw, cfg: cfg, approve: approve, review: review, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save}
+	runner := &runtimeBackend{backend: raw, cfg: cfg, approve: approve, review: review, ask: ask, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save}
 	if prompt != "" {
 		s.Title = session.Title(prompt)
 		enc := json.NewEncoder(os.Stdout)
@@ -254,24 +263,31 @@ func run() error {
 		} else {
 			fmt.Println()
 			fmt.Fprintln(os.Stderr, "Session:", s.ID)
+			fmt.Fprintln(os.Stderr, "Tokens:", tokenSummary(s.Usage.Total))
 		}
 		return errors.Join(err, saveErr)
 	}
-	uiConfig := ui.Config{Session: s, Backend: runner, Mode: cfg.Mode, Save: store.Save, Approvals: approvals, ToolDefinitions: runner.Definitions()}
+	uiConfig := baseUIConfig(s, cfg, runner.Definitions())
+	uiConfig.Backend, uiConfig.Save, uiConfig.Approvals, uiConfig.Questions = runner, store.Save, approvals, questions
 	uiConfig.ApplySettings = func(current *core.Session, selectedProvider, selectedModel, reasoning string) error {
-		if selectedProvider == "compatible" && len(cfg.OpenRouterModels) > 0 {
+		if selectedProvider == "compatible" && len(cfg.CompatibleModels) > 0 {
 			if cfg.BaseURL == "" {
-				return errors.New("configure base_url for the OpenRouter-compatible provider")
+				return errors.New("configure base_url for the compatible provider")
 			}
-			if os.Getenv(cfg.KeyEnv()) == "" {
-				return fmt.Errorf("set %s before switching to OpenRouter", cfg.KeyEnv())
+			keyEnv := compatibleAPIKeyEnv(cfg)
+			if os.Getenv(keyEnv) == "" {
+				return fmt.Errorf("set %s before switching to the compatible provider", keyEnv)
 			}
 		}
 		return applySessionSettings(cfg, current, selectedProvider, selectedModel, reasoning, store.Save)
 	}
-	for _, id := range cfg.OpenRouterModels {
-		uiConfig.OpenRouterModels = append(uiConfig.OpenRouterModels, core.ModelOption{ID: id, Name: id, Description: "Saved OpenRouter model"})
+	for _, id := range cfg.CompatibleModels {
+		if config.IsDecisionsOnlyCompatibleModel(id) {
+			continue
+		}
+		uiConfig.CompatibleModels = append(uiConfig.CompatibleModels, core.ModelOption{ID: id, Name: id, Description: "Saved compatible model"})
 	}
+	uiConfig.CompatibleReasoning = config.SupportsReasoning("compatible", cfg.BaseURL)
 	codexBinary := cfg.CodexBinary
 	if codex, ok := raw.(*provider.Codex); ok {
 		codexBinary = codex.Binary
@@ -338,6 +354,8 @@ func modelSettings(cfg config.Config) (model, reasoning string) {
 		reasoning = "not configurable for this provider"
 		if cfg.Provider == "codex" {
 			reasoning = "inherited from Codex"
+		} else if config.SupportsReasoning(cfg.Provider, cfg.BaseURL) {
+			reasoning = "provider/model default"
 		}
 	}
 	return model, reasoning
@@ -350,12 +368,22 @@ type runtimeBackend struct {
 	makeBackend     func(context.Context, config.Config) (core.Backend, core.Approver, error)
 	cfg             config.Config
 	approve, review core.Approver
+	ask             core.Asker
 	timeout         time.Duration
 	parent          context.Context
 }
 
+// headlessAsker answers for a run with no human: it skips the question at once.
+func headlessAsker(context.Context, core.Question) (core.Answer, error) {
+	return core.Answer{Skipped: true}, nil
+}
+
 func (r *runtimeBackend) Definitions() []core.ToolDefinition {
-	return tools.Definitions(r.makeBackend != nil)
+	definitions := tools.Definitions(r.makeBackend != nil)
+	if r.ask != nil {
+		definitions = append(definitions, tools.QuestionDefinition())
+	}
+	return definitions
 }
 
 func (r *runtimeBackend) Name() string { return r.backend.Name() }
@@ -392,14 +420,8 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt string
 		}
 		consumer(event)
 	}
-	var tasks []string
-	for _, m := range s.Messages {
-		if m.Role == "user" {
-			tasks = append(tasks, m.Content)
-		}
-	}
-	tasks = append(tasks, prompt)
-	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: strings.Join(tasks, "\n\nUser follow-up:\n"), Emit: emit})
+	task := newTaskContext(s.Messages, prompt)
+	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit})
 	if err != nil {
 		return err
 	}
@@ -465,6 +487,18 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt string
 			if r.checkpoint != nil {
 				err = errors.Join(err, r.checkpoint(child))
 			}
+			// The child's provider records into the child session only, and its events stay
+			// out of the parent stream, so its spend reaches the parent exactly once, here,
+			// even when the child failed. Children run concurrently, hence emitMu. Context
+			// stays untouched: the child's conversation is not part of the parent's. The
+			// provider checkpoints the parent when this tool returns, which persists it.
+			if spent := child.Usage.Total; !spent.IsZero() {
+				event := core.AggregateUsageEvent(spent)
+				emitMu.Lock()
+				s.RecordUsage(event)
+				emitMu.Unlock()
+				emit(event)
+			}
 			status := "Completed subagent "
 			if err != nil {
 				status = "Failed subagent "
@@ -480,8 +514,21 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt string
 			return output, err
 		})
 	}
+	// Outermost: subagent children receive the base executor and so can never ask the user.
+	agentTools = tools.WithQuestions(agentTools, r.ask)
+	if r.ask != nil {
+		// The user's answers are their own words: later approvals this turn are judged with them in view.
+		agentTools = withAnswerContext(agentTools, task, executor.SetTask)
+	}
 	return backend.Run(ctx, s, prompt, agentTools, emit)
 
+}
+
+// baseUIConfig is what the live and demo interfaces share. The context window
+// comes from configuration so the sidebar gauge and API compaction measure the
+// same budget.
+func baseUIConfig(s *core.Session, cfg config.Config, definitions []core.ToolDefinition) ui.Config {
+	return ui.Config{Session: s, Mode: cfg.Mode, ToolDefinitions: definitions, ContextWindow: cfg.ContextTokens}
 }
 
 func findCodex(binary string) (string, error) {
@@ -501,6 +548,9 @@ func doctor(ctx context.Context, c config.Config, path string) error {
 	fmt.Printf("JARVIS %s\nConfig    %s\nProvider  %s\nMode      %s\n", version, path, c.Provider, c.Mode)
 	model, reasoning := modelSettings(c)
 	fmt.Printf("Model     %s\nReasoning %s\n", safe(model), safe(reasoning))
+	for _, line := range contextSummary(c) {
+		fmt.Println(line)
+	}
 	fmt.Printf("Reviewer  Codex %s · reasoning %s · priority\n", provider.CodexReviewerModel, provider.CodexReviewerReasoning)
 	for _, name := range []string{"rg", "bash"} {
 		p, err := exec.LookPath(name)
@@ -551,6 +601,35 @@ func doctor(ctx context.Context, c config.Config, path string) error {
 	fmt.Println("Sandbox probe passed.")
 	return nil
 }
+
+// contextSummary is the doctor's view of the context budget. Only API providers
+// are summarized by JARVIS, so only they have a compaction point; Codex compacts
+// its own threads. A leftover context_bytes is called out because it silently
+// stopped doing anything.
+func contextSummary(c config.Config) []string {
+	line := "Context   " + core.CompactTokens(c.ContextTokens) + " tokens"
+	if c.Provider == "codex" {
+		line += " · Codex compacts its own threads"
+	} else {
+		line += " · compacts at " + core.CompactTokens(core.CompactionThreshold(c.ContextTokens))
+	}
+	lines := []string{line}
+	if c.ContextBytes != 0 {
+		lines = append(lines, fmt.Sprintf("Context   context_bytes (%d) is deprecated and ignored; context_tokens (%d) is used instead", c.ContextBytes, c.ContextTokens))
+	}
+	return lines
+}
+
+// tokenSummary is the headless one-line session total. In is the whole prompt,
+// cached or not; the parenthesis is the share the provider served from its cache.
+func tokenSummary(u core.TokenUsage) string {
+	in := core.CompactTokens(u.Prompt()) + " in"
+	if u.CacheRead > 0 {
+		in += " (" + core.CompactTokens(u.CacheRead) + " cached)"
+	}
+	return in + " · " + core.CompactTokens(u.Output) + " out"
+}
+
 func safe(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r < 32 && r != '\n' && r != '\t' {

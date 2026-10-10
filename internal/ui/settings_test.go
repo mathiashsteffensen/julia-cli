@@ -137,11 +137,11 @@ func TestShiftTabReportsCatalogFailureWithoutChangingSettings(t *testing.T) {
 	}
 }
 
-func TestPickerSwitchesBetweenCodexAndSavedOpenRouter(t *testing.T) {
+func TestPickerSwitchesBetweenCodexAndSavedCompatibleModels(t *testing.T) {
 	cfg := settingsConfig()
-	cfg.OpenRouterModels = []core.ModelOption{
-		{ID: "vendor/or-model-a", Name: "OpenRouter A", Description: "Saved model"},
-		{ID: "vendor/or-model-b", Name: "OpenRouter B"},
+	cfg.CompatibleModels = []core.ModelOption{
+		{ID: "vendor/or-model-a", Name: "Compatible A", Description: "Saved model"},
+		{ID: "vendor/or-model-b", Name: "Compatible B"},
 	}
 	m := testModel(t, cfg)
 	fetchPicker(t, m, m.openPicker("model"))
@@ -151,12 +151,12 @@ func TestPickerSwitchesBetweenCodexAndSavedOpenRouter(t *testing.T) {
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	m.Update(cmd())
 	if m.picker.provider != "compatible" || len(m.pickerChoices()) != 2 {
-		t.Fatal("Tab did not switch to saved OpenRouter models")
+		t.Fatal("Tab did not switch to saved compatible models")
 	}
 	m.input.SetValue("Keep this draft")
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.picker != nil || m.cfg.Session.Provider != "compatible" || m.cfg.Session.Model != "vendor/or-model-a" || m.cfg.Session.Reasoning != "" {
-		t.Fatal("OpenRouter selection did not update provider/model or clear Codex reasoning")
+		t.Fatal("Compatible selection did not update provider/model or clear Codex reasoning")
 	}
 	if m.input.Value() != "Keep this draft" {
 		t.Fatal("provider selection discarded the draft")
@@ -170,6 +170,42 @@ func TestPickerSwitchesBetweenCodexAndSavedOpenRouter(t *testing.T) {
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.cfg.Session.Provider != "codex" || m.cfg.Session.Model != "current" || m.cfg.Session.Reasoning != "medium" {
 		t.Fatal("Codex selection did not restore its model and default effort")
+	}
+}
+
+func TestCompatibleReasoningChoicesAreGenericAndUnverified(t *testing.T) {
+	const modelID = "vendor/model"
+	cfg := settingsConfig()
+	cfg.Session.Provider, cfg.Session.Model, cfg.Session.Reasoning = "compatible", modelID, "high"
+	cfg.CompatibleReasoning = true
+	cfg.CompatibleModels = []core.ModelOption{{ID: modelID, Name: modelID}}
+	m := testModel(t, cfg)
+	fetchPicker(t, m, m.openPicker("reasoning"))
+
+	choices := m.pickerChoices()
+	want := []string{"", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
+	if len(choices) != len(want) {
+		t.Fatalf("got %d generic reasoning choices, want %d: %#v", len(choices), len(want), choices)
+	}
+	for i, value := range want {
+		if choices[i].value != value {
+			t.Fatalf("choice %d is %q, want %q", i, choices[i].value, value)
+		}
+		if i > 0 && !strings.Contains(choices[i].detail, "unverified") {
+			t.Fatalf("choice %q does not disclose model support is unverified: %q", value, choices[i].detail)
+		}
+	}
+	if option := m.currentModelOption(); option == nil || len(option.ReasoningEfforts) != 0 {
+		t.Fatal("generic choices were incorrectly added to the model-advertised catalog")
+	}
+
+	// The keyboard cycle uses the same explicit generic choices without claiming
+	// that any effort is supported by this particular model.
+	m.closePicker()
+	m.cfg.Session.Reasoning = ""
+	m.cycleReasoning()
+	if m.cfg.Session.Reasoning != "none" {
+		t.Fatalf("generic reasoning cycle selected %q, want none", m.cfg.Session.Reasoning)
 	}
 }
 
@@ -203,11 +239,16 @@ func TestProviderSwitchClearsVisibleHistoryAfterStartingNewSession(t *testing.T)
 	m := testModel(t, cfg)
 	m.entries = []entry{{role: "user", text: "old task"}}
 	m.toolCount, m.inputTokens, m.outputTokens, m.lastDuration = 2, 10, 20, time.Minute
+	m.cfg.Session.Usage = core.SessionUsage{Total: core.TokenUsage{Input: 5, CacheRead: 6, Output: 7}, Context: 8}
+	m.live = core.SessionUsage{Total: core.TokenUsage{Input: 1}, Context: 9}
 	if err := m.applySettings("compatible", "vendor/model", ""); err != nil {
 		t.Fatal(err)
 	}
 	if m.cfg.Session.ID != "new-session" || m.cfg.Session.Provider != "compatible" || len(m.cfg.Session.Messages) != 0 || len(m.entries) != 0 || m.toolCount != 0 || m.inputTokens != 0 || m.outputTokens != 0 || m.lastDuration != 0 {
 		t.Fatal("provider switch did not isolate the new conversation")
+	}
+	if m.usage() != (core.SessionUsage{}) {
+		t.Fatalf("new conversation inherited token usage: %+v", m.usage())
 	}
 	if !strings.Contains(m.notice, "Previous conversation saved") {
 		t.Fatal("provider switch did not explain where the prior conversation went")
@@ -277,7 +318,7 @@ func TestDirectSettingsCommandsAndExplicitDefault(t *testing.T) {
 	m.cfg.Session.Provider = "openai"
 	m.input.SetValue("/reasoning high")
 	m.submit()
-	if m.cfg.Session.Reasoning != "" || !strings.Contains(m.notice, "Codex") {
+	if m.cfg.Session.Reasoning != "" || !strings.Contains(m.notice, "unavailable with this provider") {
 		t.Fatal("reasoning silently accepted by API provider")
 	}
 }

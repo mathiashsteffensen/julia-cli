@@ -50,18 +50,21 @@ func NewApprover() (core.Approver, <-chan ApprovalRequest) {
 }
 
 type Config struct {
-	Session          *core.Session
-	Backend          core.Backend
-	Tools            core.ToolExecutor
-	ToolDefinitions  []core.ToolDefinition
-	Mode             string
-	Save             func(*core.Session) error
-	Approvals        <-chan ApprovalRequest
-	Demo             bool
-	Models           func(context.Context) ([]core.ModelOption, error)
-	OpenRouterModels []core.ModelOption
-	ApplySettings    func(*core.Session, string, string, string) error
-	WeeklyUsage      func(context.Context) (*core.WeeklyUsage, error)
+	Session             *core.Session
+	Backend             core.Backend
+	Tools               core.ToolExecutor
+	ToolDefinitions     []core.ToolDefinition
+	Mode                string
+	Save                func(*core.Session) error
+	Approvals           <-chan ApprovalRequest
+	Questions           <-chan QuestionRequest
+	Demo                bool
+	CompatibleReasoning bool
+	Models              func(context.Context) ([]core.ModelOption, error)
+	CompatibleModels    []core.ModelOption
+	ApplySettings       func(*core.Session, string, string, string) error
+	WeeklyUsage         func(context.Context) (*core.WeeklyUsage, error)
+	ContextWindow       int // tokens the context gauge is measured against; <= 0 means core.DefaultContextWindow
 }
 
 type entry struct {
@@ -106,12 +109,17 @@ type model struct {
 	started                time.Time
 	lastDuration           time.Duration
 	now                    time.Time
-	inputTokens            int
-	outputTokens           int
+	inputTokens            int               // last model call: the whole prompt, cached tokens included
+	outputTokens           int               // last model call
+	live                   core.SessionUsage // usage reported by the running task, added to the session's until the stream finishes
 	toolCount              int
 	expandTools            bool
 	pending                *ApprovalRequest
 	approvalListening      bool
+	question               *questionState
+	questionListening      bool
+	deferredApproval       *ApprovalRequest
+	deferredQuestion       *QuestionRequest
 	stream                 chan streamMsg
 	cancel                 context.CancelFunc
 	lifetime               context.Context
@@ -129,8 +137,8 @@ type model struct {
 	reasoningCycleSequence uint64
 	reasoningCyclePending  int
 	reasoningCycleCancel   context.CancelFunc
-	// compatibleModels is the switchable catalog for the compatible/OpenRouter
-	// provider. It starts from the saved openrouter_models and remembers any
+	// compatibleModels is the switchable catalog for the compatible provider.
+	// It starts from the saved compatible_models and remembers any
 	// compatible model the session has used, so the provider stays reachable
 	// after the user switches to Codex and back.
 	compatibleModels []core.ModelOption
@@ -183,7 +191,7 @@ func newModel(cfg Config) *model {
 	m := &model{
 		cfg: cfg, input: input, viewport: viewport.New(), spinner: spin,
 		status: "Ready", lifetime: ctx, stop: stop, now: time.Now(),
-		compatibleModels: append([]core.ModelOption(nil), cfg.OpenRouterModels...),
+		compatibleModels: append([]core.ModelOption(nil), cfg.CompatibleModels...),
 	}
 	m.viewport.FillHeight = true
 	m.loadHistory()
@@ -191,8 +199,11 @@ func newModel(cfg Config) *model {
 		m.entries = demoEntries()
 		m.toolCount = 3
 		m.lastDuration = 28 * time.Second
-		m.inputTokens, m.outputTokens = 1842, 396
-		m.notice = "Preview · offline · no tools or provider calls"
+		m.inputTokens, m.outputTokens = 117_300, 1_284
+		if cfg.Session.Usage == (core.SessionUsage{}) {
+			cfg.Session.Usage = demoUsage()
+		}
+		m.notice = "Preview · offline · no tools or provider calls · try /ask"
 		if cfg.Session.Provider == "codex" {
 			m.weekly.value = &core.WeeklyUsage{RemainingPercent: 61, ResetsAt: m.now.Add(3 * 24 * time.Hour)}
 		}
@@ -202,7 +213,7 @@ func newModel(cfg Config) *model {
 }
 
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.spinner.Tick, m.waitApproval(), nextTick(), m.refreshWeeklyUsage(false))
+	return tea.Batch(textarea.Blink, m.spinner.Tick, m.waitApproval(), m.waitQuestion(), nextTick(), m.refreshWeeklyUsage(false))
 }
 
 func nextTick() tea.Cmd {
@@ -285,9 +296,25 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			reply(msg.request, false, "The active task has ended or was cancelled")
 			return m, m.waitApproval()
 		}
+		if m.question != nil {
+			// One request on screen at a time; this one waits behind the question.
+			m.deferredApproval = &msg.request
+			return m, nil
+		}
 		m.pending = &msg.request
 		m.refresh(true)
 		return m, nil
+	case questionMsg:
+		m.questionListening = false
+		if !m.busy || m.quitting {
+			replyQuestion(msg.request, core.Answer{Skipped: true})
+			return m, m.waitQuestion()
+		}
+		if m.pending != nil || m.question != nil {
+			m.deferredQuestion = &msg.request
+			return m, nil
+		}
+		return m, m.openQuestion(msg.request, false)
 	case streamMsg:
 		if msg.finished {
 			m.busy = false
@@ -299,6 +326,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				reply(*m.pending, false, "The active task has ended")
 				m.pending = nil
 			}
+			m.dismissInteractions("The active task has ended")
 			if msg.session != nil {
 				*m.cfg.Session = *msg.session
 				if m.cfg.Save != nil {
@@ -306,7 +334,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.entries = append(m.entries, entry{role: "warning", text: "Could not save session: " + err.Error()})
 					}
 				}
+			} else {
+				// Nothing recorded the run in the session; keep what was shown.
+				m.cfg.Session.Usage = m.usage()
 			}
+			// The session now holds every event of the run. Clearing the live
+			// figures exactly here is what keeps them from being counted twice.
+			m.live = core.SessionUsage{}
 			if msg.err != nil {
 				if errors.Is(msg.err, context.Canceled) {
 					m.entries = append(m.entries, entry{role: "note", text: "Task interrupted. Ready when you are."})
@@ -318,7 +352,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.quitting {
 				return m, m.quit()
 			}
-			return m, tea.Batch(m.waitApproval(), m.refreshWeeklyUsage(true))
+			return m, tea.Batch(m.waitApproval(), m.waitQuestion(), m.refreshWeeklyUsage(true))
 		}
 		if msg.event != nil {
 			m.applyEvent(*msg.event)
@@ -332,6 +366,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			reply(*m.pending, false, "Task cancelled by user")
 			m.pending = nil
 			m.refresh(false)
+		}
+		if m.question != nil && msg.String() != "ctrl+c" {
+			// Ctrl+C falls through to cancelTask, which cancels the task before the
+			// question is released, so the tool sees a cancellation, not a skip.
+			return m, m.updateQuestion(msg)
 		}
 		if m.picker != nil && m.pending == nil && msg.String() != "ctrl+c" {
 			return m, m.updatePicker(msg)
@@ -378,6 +417,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "enter" {
 			return m, m.submit()
 		}
+	case tea.MouseClickMsg:
+		if m.question != nil && m.pending == nil {
+			return m, m.clickQuestion(msg)
+		}
 	case tea.MouseWheelMsg:
 		if m.picker != nil && m.pending == nil {
 			return m, nil
@@ -385,6 +428,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
 		return m, cmd
+	}
+	if m.question != nil {
+		return m, m.updateQuestion(msg)
 	}
 	if m.picker != nil {
 		return m, m.updatePicker(msg)
@@ -406,7 +452,7 @@ func (m *model) decide(allow bool) tea.Cmd {
 	m.entries = append(m.entries, entry{role: "note", text: reason + ": " + m.pending.Approval.Call.Name})
 	m.pending = nil
 	m.refresh(true)
-	return m.waitApproval()
+	return tea.Batch(m.waitApproval(), m.promoteInteraction())
 }
 
 func reply(request ApprovalRequest, allow bool, reason string) {
@@ -427,6 +473,7 @@ func (m *model) cancelTask() {
 		m.pending = nil
 		m.refresh(false)
 	}
+	m.dismissInteractions("Task cancelled by user")
 }
 
 func (m *model) submit() tea.Cmd {
@@ -446,7 +493,14 @@ func (m *model) submit() tea.Cmd {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results\n- **Ctrl+P** or `/model` opens model search · **Tab/Shift+Tab** switch catalogs in the picker\n- **Shift+Tab** outside the picker cycles Codex reasoning · `/reasoning` opens its picker\n- `/model ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results\n- **Ctrl+P** or `/model` opens model search · **Tab/Shift+Tab** switch catalogs in the picker\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
+		case "/ask", "/ask text":
+			if !m.cfg.Demo {
+				m.notice = "Unknown command. /help lists the essentials."
+				return nil
+			}
+			m.input.Reset()
+			return m.openQuestion(QuestionRequest{Question: demoQuestion(prompt == "/ask text")}, true)
 		case "/clear":
 			next := sessions.New(m.cfg.Session.Directory, m.cfg.Session.Provider, m.cfg.Session.Model)
 			next.Reasoning = m.cfg.Session.Reasoning
@@ -463,8 +517,7 @@ func (m *model) submit() tea.Cmd {
 			}
 			*m.cfg.Session = *next
 			m.entries = nil
-			m.toolCount, m.inputTokens, m.outputTokens = 0, 0, 0
-			m.lastDuration = 0
+			m.resetCounters()
 			m.notice = "New conversation."
 			if m.cfg.Save != nil {
 				m.notice += " The previous session is saved."
@@ -581,7 +634,7 @@ func (m *model) applyEvent(event core.Event) {
 		}
 		m.status = "Thinking"
 	case "usage":
-		m.inputTokens, m.outputTokens = event.InputTokens, event.OutputTokens
+		m.recordUsage(event)
 	}
 	m.refresh(false)
 }

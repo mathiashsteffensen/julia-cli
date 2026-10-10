@@ -53,7 +53,7 @@ const (
 	CodexReviewerReasoning = "none"
 )
 
-const codexToolInstructions = `Execution architecture: native Codex execution tools are disabled. The registered dynamic tools, including WebSearch, are executed by JARVIS, which enforces the current runtime policy. Use those tools and treat their results as the authority on permitted actions. Bash defaults to the workspace OS sandbox. When the current policy permits escalation and the task needs access unavailable there, use the Bash tool's sandbox_permissions=require_escalated with a concrete justification. This dynamic Bash argument requests JARVIS approval, not a native Codex execution request. JARVIS evaluates that exact unsandboxed command through its isolated reviewer or human approval flow; requesting it does not itself grant permission. Native shell, patch, MCP, web, and agent tools remain unavailable. Never bypass a host denial or attempt an alternative execution path to evade it.`
+const codexToolInstructions = `Execution architecture: native Codex execution tools are disabled. The registered dynamic tools, including WebSearch and, when listed, Subagent and AskUserQuestion, are executed by JARVIS, which enforces the current runtime policy. Use those tools and treat their results as the authority on permitted actions. Bash defaults to the workspace OS sandbox. When the current policy permits escalation and the task needs access unavailable there, use the Bash tool's sandbox_permissions=require_escalated with a concrete justification. This dynamic Bash argument requests JARVIS approval, not a native Codex execution request. JARVIS evaluates that exact unsandboxed command through its isolated reviewer or human approval flow; requesting it does not itself grant permission. Native shell, patch, MCP, web, and agent tools remain unavailable. Never bypass a host denial or attempt an alternative execution path to evade it.`
 
 func (c *Codex) Review(ctx context.Context, approval core.Approval) (core.Decision, error) {
 	data, err := reviewPayload(approval)
@@ -320,6 +320,10 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt string, e
 	emit(core.Event{Kind: "status", Text: "Working · Codex"})
 	var pending strings.Builder
 	streamed := map[string]bool{}
+	var usage codexUsageTracker
+	if b := journal.Usage; b != nil && b.Thread == session.RemoteID && !review {
+		usage = codexUsageTracker{total: b.Total, seen: true}
+	}
 	flush := func() {
 		if pending.Len() > 0 {
 			session.Messages = append(session.Messages, core.Message{Role: "assistant", Content: pending.String()})
@@ -377,6 +381,10 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt string, e
 					} else {
 						result = *previous.Result
 					}
+				} else if tool.Name == core.QuestionTool {
+					// No side effects and possibly a long wait: never journal it as an
+					// uncertain tool, or an interruption would strand the session.
+					result = executor.Execute(ctx, tool)
 				} else {
 					journal.Calls[tool.ID] = codexJournalEntry{Call: tool}
 					if err = saveCodexJournal(session, journal, checkpoint); err != nil {
@@ -425,10 +433,8 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt string, e
 				} `json:"error"`
 			} `json:"turn"`
 			TokenUsage struct {
-				Last struct {
-					Input  int `json:"inputTokens"`
-					Output int `json:"outputTokens"`
-				} `json:"last"`
+				Last  codexTokenBreakdown `json:"last"`
+				Total codexTokenBreakdown `json:"total"`
 			} `json:"tokenUsage"`
 		}
 		if err = json.Unmarshal(message.Params, &notification); err != nil {
@@ -456,7 +462,16 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt string, e
 				emit(core.Event{Kind: "text", Text: notification.Item.Text})
 			}
 		case "thread/tokenUsage/updated":
-			emit(core.Event{Kind: "usage", InputTokens: notification.TokenUsage.Last.Input, OutputTokens: notification.TokenUsage.Last.Output})
+			// The approval reviewer runs on its own throwaway thread; its tokens never belong to the conversation.
+			if event, ok := usage.update(notification.TokenUsage.Last, notification.TokenUsage.Total); ok && !review {
+				session.RecordUsage(event)
+				// Saved with the usage it explains, so the next run counts only growth beyond it.
+				journal.Usage = &codexUsageBaseline{Thread: session.RemoteID, Total: usage.total}
+				if err = saveCodexJournal(session, journal, nil); err != nil {
+					return err
+				}
+				emit(event)
+			}
 		case "error":
 			if notification.WillRetry {
 				emit(core.Event{Kind: "warning", Text: "Codex is retrying a temporary provider error."})
@@ -540,6 +555,73 @@ func codexModelReasoning(ctx context.Context, client *codexClient, selected stri
 	}
 }
 
+// codexTokenBreakdown is one of the counters in a thread/tokenUsage/updated
+// notification. ReasoningOutputTokens is a subset of outputTokens, so it is ignored.
+type codexTokenBreakdown struct {
+	Input      int `json:"inputTokens"`
+	Cached     int `json:"cachedInputTokens"`
+	CacheWrite int `json:"cacheWriteInputTokens"`
+	Output     int `json:"outputTokens"`
+}
+
+// usage assumes inputTokens is the whole prompt, so cached and cache-write
+// tokens are subsets of it. That keeps Prompt() equal to inputTokens and means
+// a misreported cache count can never inflate the context estimate.
+func (b codexTokenBreakdown) usage() core.TokenUsage {
+	read, written := max(b.Cached, 0), max(b.CacheWrite, 0)
+	return core.TokenUsage{Input: max(b.Input-read-written, 0), CacheRead: read, CacheWrite: written, Output: max(b.Output, 0)}
+}
+
+func (b codexTokenBreakdown) minus(o codexTokenBreakdown) codexTokenBreakdown {
+	return codexTokenBreakdown{b.Input - o.Input, b.Cached - o.Cached, b.CacheWrite - o.CacheWrite, b.Output - o.Output}
+}
+
+// regressed reports a counter that went backwards, which means the server reset it.
+func (b codexTokenBreakdown) regressed(o codexTokenBreakdown) bool {
+	return b.Input < o.Input || b.Cached < o.Cached || b.CacheWrite < o.CacheWrite || b.Output < o.Output
+}
+
+// codexUsageBaseline is a thread's cumulative counters as of the last update
+// counted into the session, kept in the journal across runs.
+type codexUsageBaseline struct {
+	Thread string              `json:"thread"`
+	Total  codexTokenBreakdown `json:"total"`
+}
+
+// codexUsageTracker turns Codex's updates into per-call usage events. "total"
+// accumulates over the whole thread, including turns from before this run, so
+// each update contributes the growth of the total since the previous one. The
+// tracker starts from the journal's baseline when there is one, which keeps a
+// replay of an old update at the start of a run from counting a call twice and
+// recovers updates lost at the end of the previous run. Without a baseline the
+// first update contributes only the call it describes ("last").
+type codexUsageTracker struct {
+	total codexTokenBreakdown
+	seen  bool
+}
+
+// update returns the usage event for an update, or false when it carries nothing
+// new: an empty update, or a replay of a total that was already counted.
+func (t *codexUsageTracker) update(last, total codexTokenBreakdown) (core.Event, bool) {
+	if last == (codexTokenBreakdown{}) && total == (codexTokenBreakdown{}) {
+		return core.Event{}, false
+	}
+	contribution := last
+	switch {
+	case !t.seen || total.regressed(t.total):
+	case total == t.total:
+		return core.Event{}, false
+	default:
+		contribution = total.minus(t.total)
+	}
+	t.total, t.seen = total, true
+	contextTokens := 0
+	if last.Input > 0 {
+		contextTokens = last.Input + last.Output
+	}
+	return core.UsageEvent(contribution.usage(), contextTokens), true
+}
+
 type codexJournalEntry struct {
 	Call   core.ToolCall    `json:"call"`
 	Result *core.ToolResult `json:"result,omitempty"`
@@ -551,6 +633,7 @@ type codexJournal struct {
 	HistoryPending  bool                                    `json:"history_pending,omitempty"`
 	Calls           map[string]codexJournalEntry            `json:"calls"`
 	ArchivedCalls   map[string]map[string]codexJournalEntry `json:"archived_calls,omitempty"`
+	Usage           *codexUsageBaseline                     `json:"usage,omitempty"`
 }
 
 // Codex only accepts dynamicTools on thread/start. Fingerprint the whole catalog

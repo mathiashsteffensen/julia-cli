@@ -52,16 +52,31 @@ turns. This reads account metadata without starting a model conversation. Missin
 limits show as unavailable; a failed refresh marks the last known value stale.
 Other providers do not display or query Codex usage.
 
+**CONTEXT** shows how full the conversation is: a gauge and `NN% · 138k / 256k`, which
+turns coral at 85%, where API providers summarize the history. It is an
+estimate of the live conversation (the last model call's prompt and reply, plus tool
+results added since), so it shrinks after compaction. Every model is measured
+against the same assumed 256k-token window, whatever its real limit and whatever
+Codex reports; set `context_tokens` to change it. **TOKENS** shows the session's
+total input and output, then how much of that input came from the provider's prompt
+cache and how much was new (uncached tokens and cache writes). **ACTIVITY** keeps
+the tool-call count and the last model call's figures.
+
+Token totals are saved with the session, so they carry over to `--continue` and
+`--resume`, and `/clear` or switching to a new conversation starts from zero. They
+count every model call made for the conversation, including the summary call that
+compacts context and the work of subagents. Approval reviews are not counted.
+
 | Key | Action |
 | --- | --- |
 | Enter | Send |
 | Alt+Enter / Shift+Enter / Ctrl+J | New line |
-| Esc | Cancel the running task |
+| Esc | Cancel the running task (skips an open question instead) |
 | PgUp / PgDown | Scroll the conversation |
 | Ctrl+End | Return to live output |
 | Ctrl+O | Expand/collapse tool results |
 | Ctrl+P / `/model` | Open the model picker |
-| Shift+Tab (outside the picker) | Cycle through Default and the model's supported Codex reasoning efforts |
+| Shift+Tab (outside the picker) | Cycle through Default and the selected model's available reasoning efforts |
 | `/reasoning` | Pick reasoning effort for the current model |
 | Ctrl+C | Stop the task and exit |
 | `/help` | Show shortcuts |
@@ -74,15 +89,52 @@ grants one action**; **any other key denies it**, including n and Escape. Comple
 arguments and the network request are shown before approval. Use the mouse wheel
 to scroll a long approval request.
 
+### Questions from the agent
+
+When a decision is genuinely yours, the agent can pause and ask with
+`AskUserQuestion`. A free-form question shows a prompt for your answer. With
+predefined options it shows a card of choices, the recommended one first, each with
+an optional one-line trade-off. You can always answer in your own words instead.
+
+| Key | Action |
+| --- | --- |
+| ↑ / ↓ or Tab / Shift+Tab | Move between options |
+| 1–8 | Pick that option immediately |
+| Enter | Choose the highlighted option |
+| Click | Choose the option under the pointer |
+| Start typing, or pick "Write your own answer" | Answer in your own words |
+| Alt+Enter | Add a line to your answer |
+| Esc | From the list, or from a free-form question, skip the question (the agent continues on its best judgment); inside your own answer, go back to the list first |
+| PgUp / PgDown | Scroll the conversation behind the card while choosing, when the terminal is tall enough to show it |
+| Ctrl+C | Stop the task and exit |
+
+Keys pressed in the first third of a second after a question appears are ignored,
+so a message you were typing ahead is unlikely to be taken as an answer. Your
+composer draft is kept while a question is open.
+
+Your answer joins your messages as part of the task the automatic action reviewer
+judges against, so a "yes" to "run the migration?" counts as your go-ahead for that
+action. The reviewer is told which words are yours and which are the agent's: a
+typed answer is your own words, a picked option is your choice among what the agent
+offered. Every command is still reviewed, and a skipped question adds nothing.
+
+In headless `--prompt` runs no one can answer, so a question is skipped
+automatically; subagents are not offered the tool. A question waits for you, but the
+task's overall time limit (`timeout`, 4h by default) keeps running. To try one
+offline, run `./bin/jarvis --demo` and enter `/ask` (options) or `/ask text`
+(free-form).
+
 ## Providers
 
 The default is `codex`, using the official app-server protocol and your existing
 Codex sign-in. Subscription usage is managed by Codex, not billed as a separate
 JARVIS API key. Your selected plan must have access to the requested model.
-Every Codex request explicitly uses fast mode (`priority` service tier), including
-resumed conversations and the isolated approval reviewer; it overrides an inherited
-standard/flex setting. The executing agent keeps your chosen reasoning effort;
-the separate approval reviewer always uses `gpt-6-luna` with reasoning `none`.
+Codex requests use fast mode (`priority` service tier), including resumed
+conversations and Codex approval reviews; this overrides an inherited standard/flex
+setting. The executing agent keeps your chosen reasoning effort. By default, the
+approval reviewer uses `gpt-6-luna` with reasoning `none`. If `compatible_models`
+contains `typesafe/jev-1.13`, that decisions-only model reviews actions instead; it is
+not available as a chat model. Each Jev approval check must have probability strictly above 70%.
 
 API providers share the same JARVIS tools, sandbox, UI, and permission policy:
 
@@ -96,8 +148,9 @@ API providers share the same JARVIS tools, sandbox, UI, and permission policy:
 
 API billing is separate from Codex subscription usage. Supply an explicit model
 for API providers. There are no hard-coded model catalogs or claimed entitlements.
-If your personal configuration sets Codex `reasoning`, add `--reasoning ''` when
-switching to an API provider to clear that Codex-only setting.
+OpenRouter-compatible sessions also support an explicit reasoning effort. Other
+API providers do not accept this setting; clear a saved Codex effort with
+`--reasoning ''` when switching to one of them.
 
 ```sh
 ./bin/jarvis --provider anthropic --model YOUR_MODEL_ID
@@ -121,12 +174,19 @@ Repository-local provider configuration is deliberately not loaded.
   "mode": "auto",
   "codex_binary": "codex",
   "max_steps": 256,
-  "context_bytes": 160000,
+  "context_tokens": 256000,
   "timeout": "4h"
 }
 ```
 
-Optional fields: `model`, `base_url`, `api_key_env`, `openrouter_models`, `skill_paths`, and Codex `reasoning`.
+Optional fields: `model`, `base_url`, `api_key_env`, `compatible_models`, `skill_paths`, and `reasoning` (Codex effort or OpenRouter effort when `provider` is `compatible`).
+
+`context_tokens` is the context window JARVIS assumes for every model (at least
+32000). API providers summarize the conversation at 85% of it. The older
+`context_bytes` key is deprecated: a config that still has it loads, but the value
+is ignored, so remove it and set `context_tokens` instead. `jarvis doctor` shows the
+effective window, the compaction point for API providers, and a leftover
+`context_bytes`.
 
 To keep both model catalogs available, configure the OpenRouter endpoint and save the
 model IDs in the same personal config. Leave `provider` as `codex` if you want Codex
@@ -137,35 +197,37 @@ to remain the default at launch; the picker can still switch to OpenRouter:
   "provider": "codex",
   "base_url": "https://openrouter.ai/api/v1",
   "api_key_env": "OPENROUTER_API_KEY",
-  "openrouter_models": ["provider/model-id-one", "provider/model-id-two"]
+  "compatible_models": ["provider/model-id-one", "provider/model-id-two"]
 }
 ```
 
 Set `OPENROUTER_API_KEY` in the environment before starting JARVIS. Replace the
-example IDs with exact IDs from OpenRouter; the key is not stored in this file.
+example IDs with exact IDs from OpenRouter; the key is not stored in this file. Rename
+any existing `openrouter_models` property to `compatible_models`.
 Select model and effort at launch, or save them in personal configuration:
 
 ```sh
 jarvis --model gpt-6-astra --reasoning medium
 jarvis --continue --model gpt-6-astra --reasoning high
 jarvis --reasoning ''   # use Codex's configured default effort
+jarvis --provider compatible --model openai/o3 --reasoning low
 ```
 
 Model IDs and available reasoning levels depend on your provider/model; JARVIS has
-no fixed catalog. Omitted Codex settings inherit Codex's configuration. Reasoning
-selection currently supports Codex; API providers reject an explicit reasoning
-setting instead of silently ignoring it. `jarvis doctor` shows launch settings,
+no fixed model catalog. Omitted Codex settings inherit Codex's configuration.
+OpenRouter supports `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`;
+the selected model may support only a subset. `jarvis doctor` shows launch settings,
 and the conversation UI shows the selected model and effort.
 
 Inside the TUI, press **Ctrl+P** or enter `/model` for a searchable model picker.
 Inside the model picker, **Tab** (or **Shift+Tab**) switches between the live Codex
-catalog and your saved OpenRouter list; arrow keys navigate, Enter selects, and Esc
+catalog and your saved compatible-model list; arrow keys navigate, Enter selects, and Esc
 closes without changing settings or losing your message draft. Outside the picker,
-**Shift+Tab** cycles through Default and the selected Codex model's advertised reasoning
-efforts, loading the catalog on first use. Codex models are fetched from Codex without
-starting a conversation or making an inference request. OpenRouter choices come from
-`openrouter_models` in your personal config, using the exact model IDs from OpenRouter.
-Use `/reasoning` to choose an effort supported by the selected Codex model. You can
+**Shift+Tab** cycles through Default and the selected Codex model's advertised or
+OpenRouter's documented reasoning efforts. Codex models are fetched from Codex without
+starting a conversation or making an inference request. Compatible choices come from
+`compatible_models` in your personal config, using exact model IDs from that API provider.
+Use `/reasoning` to choose an effort for the selected Codex or OpenRouter model. You can
 also set values directly:
 
 ```text
@@ -175,20 +237,22 @@ also set values directly:
 ```
 
 Selections are saved with their session and apply to the next turn. The approval
-reviewer stays fixed at Codex `gpt-6-luna`, reasoning `none`, and priority service.
-The personal configuration is unchanged.
+reviewer defaults to Codex `gpt-6-luna`, reasoning `none`, and priority service. If
+`compatible_models` contains `typesafe/jev-1.13`, that decisions-only model reviews
+actions instead; it is excluded from the chat model picker. Jev automatic approval
+requires every check to exceed 70%. The personal configuration is unchanged.
 Finish or cancel a running task before changing settings. Known catalog model
 switches adjust an inherited or unsupported effort to that model's advertised
 default. Selecting a different provider or API model starts a fresh session and saves
 the previous conversation, because provider continuation state cannot be transferred.
-Codex model changes continue the existing Codex thread. Reasoning selection remains
-Codex-only.
+Codex model changes continue the existing Codex thread. Reasoning selection is
+available for Codex and OpenRouter-compatible sessions.
 
 Command-line flags override personal configuration. Resuming keeps the session's
 provider/model unless `--model` explicitly changes a Codex session. Reasoning
 precedence is an explicit `--reasoning` flag, an explicit saved session selection
 (from the TUI or an earlier flag), then personal configuration and legacy saved
-effort. An empty flag or `/reasoning default` restores Codex inheritance. API sessions
+effort. An empty flag or `/reasoning default` restores the provider default. API sessions
 retain their original provider/model when resumed. Provider endpoints require HTTPS,
 except loopback servers.
 
@@ -236,6 +300,7 @@ nonempty UTF-8 text, at most 64 KiB; up to eight files and 128 KiB combined.
 | List | Bounded workspace directory listing |
 | WebSearch | Keyless public search; compact titles, source URLs, and snippets, at most 4 KiB |
 | Subagent | Run 1–3 independent delegated tasks concurrently and collect their results |
+| AskUserQuestion | Ask you one question, free-form or with options to pick from; skipped automatically in headless runs, never offered to subagents |
 
 File operations use workspace-relative paths, reject symlinks and protected
 credential paths, and pin directory descriptors to prevent path-swap races.
@@ -251,6 +316,7 @@ Children cannot delegate further or expand user authorization. Cancellation stop
 all children before the tool returns. Results are bounded to 32 KiB per batch.
 Child transcripts are checkpointed as separate sessions with a `parent_id`; they
 are inspection records, excluded from `--continue` and cannot be resumed directly.
+Their token usage is added to the parent session's totals, but not to its context.
 There is no detached execution or messaging between running children.
 
 ## Web search
@@ -295,11 +361,14 @@ get persistent build/module caches under the OS user cache directory at
 required module versions and versioned replacements already present in your installed
 module cache. These are independent files, using copy-on-write cloning where available;
 sandboxed commands cannot modify your normal host caches or another workspace's cache.
-No credentials, host Go configuration, or shell profiles are passed to Bash.
+Sandboxed commands do not receive host Go configuration. No credentials or shell
+startup files are passed to Bash. Approved escalated commands use the host `HOME`,
+XDG settings, and normal Go cache paths; `TMPDIR` remains temporary.
 
-The runtime instructions include the measured Go paths. `HOME` and `GOPATH` remain
-fresh per invocation, so `go install` needs an explicit authorized destination to
-persist. Missing dependencies still require a reviewed network-enabled command.
+The runtime instructions include the measured Go paths. Sandboxed commands get a
+fresh `HOME` and `GOPATH` per invocation. Escalated commands use host Go settings, so
+normal `go install` destinations and caches persist. Missing dependencies still
+require a reviewed network-enabled command.
 Tests that use local services also need network access and their documented setup.
 JARVIS is instructed to read the project's test instructions first; for example,
 Quantrading requires `GO_ENV=test`.
@@ -327,16 +396,24 @@ you explicitly forbid tests or filesystem writes.
 **Ask** requires a human decision for every file mutation, Bash command, and WebSearch query.
 **Read-only** permits Read, Grep, and List and rejects edits, Bash, and outbound WebSearch.
 
-The reviewer always uses your Codex sign-in with `gpt-6-luna`, reasoning disabled
+By default, the reviewer uses your Codex sign-in with `gpt-6-luna`, reasoning disabled
 (`none`), and priority service, including when the executing agent uses an API
-provider. CLI/TUI model and effort choices affect only the executing agent. Reviews
-consume Codex subscription usage. If Codex or the requested reviewer model is
-unavailable, the existing human-approval fallback applies; JARVIS never substitutes
-the executing model or another provider. Codex is resolved when a review is needed,
-so API sessions can still use reads and human approval without it. This is JARVIS's
+provider. If `compatible_models` contains `typesafe/jev-1.13`, the isolated reviewer
+uses that configured compatible endpoint and API key through `/api/alpha/decisions`;
+it checks task relevance, user restrictions, and prohibited effects independently.
+Automatic approval requires greater than 0.70 probability that the action is
+relevant, respects user restrictions, and avoids prohibited effects.
+The approval status shows all three scores, so a withheld approval identifies
+which check needs review.
+CLI/TUI model and effort choices affect only the executing agent. If the selected
+reviewer is unavailable, malformed, or below the probability threshold, the existing
+human-approval fallback applies; JARVIS never substitutes the executing model. Codex
+is resolved when a review is needed, so API sessions can still use reads and human
+approval without it. This is JARVIS's
 own approval implementation, **separate from Codex's built-in automatic reviewer**.
-Its native read-only, no-network settings confine the reviewer process; the
-proposed command's execution boundary is supplied separately by JARVIS.
+For Codex reviews, native read-only, no-network settings confine the reviewer process.
+The compatible API reviewer has no tools and receives the proposed command's execution
+boundary separately; it does not run in a local sandbox.
 
 On macOS, Bash runs under a deny-by-default Seatbelt profile. It can read the
 workspace and selected system/toolchain directories, write the workspace and its
@@ -357,11 +434,12 @@ network access. Human fallback prominently labels **OUTSIDE SANDBOX**.
 An approved escalated command runs as the current host user without OS filesystem
 or network isolation. Network is unrestricted even when `network: false` is passed.
 No sudo or administrator rights are added. Each invocation requires a fresh
-approval; there are no permanent grants or automatic escalation retries. The clean
-environment, temporary HOME, isolated Go caches, 600-second maximum timeout, output cap, and
-process-group cleanup apply in both modes. Specify an authorized persistent output
-path explicitly for installations; the default HOME/GOPATH are temporary. Explicit
-host execution supports macOS/Linux; default sandboxed Bash still requires macOS.
+approval; there are no permanent grants or automatic escalation retries. The sanitized
+environment, per-call temporary directory, 600-second maximum timeout, output cap,
+and process-group cleanup apply in both modes. Escalated commands use the host
+`HOME`, XDG settings, and normal Go cache paths; sandboxed commands use a temporary
+`HOME` and isolated Go caches. Explicit host execution supports macOS/Linux; default
+sandboxed Bash still requires macOS.
 
 Codex's native shell, patch, web, MCP, app, plugin, and subagent integrations are
 disabled for JARVIS threads. JARVIS exposes only its own dynamic tools, rejects
@@ -377,13 +455,19 @@ sessions resume their existing thread.
 
 Sessions are atomically checkpointed under `~/.local/state/jarvis/sessions`
 (or `$XDG_STATE_HOME/jarvis/sessions`) with private file permissions. They include
-the transcript, provider continuation state, and tool/approval events. Inspect
+the transcript, provider continuation state, tool/approval events, and token usage
+(cumulative cached and uncached totals plus the latest context estimate). Inspect
 those files locally; they can contain project content and command output.
 
 Codex retains its native conversation and compaction. API providers retain native
-message metadata and summarize context above `context_bytes`, while keeping the
-full local transcript. API runs stop at `max_steps`; all tasks have a configurable
-timeout. Use `--timeout 8h` for longer work. Cancellation preserves checkpoints.
+message metadata and summarize the history once the estimated context reaches 85% of
+`context_tokens` (217.6k tokens of the assumed 256k), while keeping the full local
+transcript. The summarizer is sent a copy trimmed to fit the window (large tool
+results keep their start and end), so the saved transcript is never altered. The
+estimate starts from the prompt size each response reports and adds a rough count
+for tool results that follow it. API runs stop at `max_steps`; all tasks have a
+configurable timeout. Use `--timeout 8h` for longer work. Cancellation preserves
+checkpoints.
 
 Tool intent is recorded before execution. Codex completed calls are deduplicated
 when replayed. Sessions with uncertain interrupted tool outcomes are blocked from
@@ -399,6 +483,17 @@ conversation. Checkpoints sync both the file and its containing directory.
 ```
 
 Headless JSON mode emits newline-delimited events and a final session ID/status.
+A `usage` event normally describes one model call: `input_tokens` is the whole
+prompt, `cached_input_tokens` and `cache_write_tokens` are the parts of it read
+from or written to the provider's cache, and `context_tokens` is the new context
+estimate. A missing `context_tokens` means the estimate is unchanged, not zero; a
+provider that reports no usage yields an event with only `context_tokens`.
+Compaction adds an event for its summarization calls. A finished subagent adds one
+event with `"aggregate": true` that sums every call it made and carries no
+`context_tokens`. Within one run, summing the events gives what the run added to
+the session's token totals.
+Without `--json`, the stderr summary ends with the session ID and its token totals,
+for example `Tokens: 1.4M in (1.3M cached) · 48k out`.
 Public web discovery uses the compact, keyless WebSearch tool. There is no browser
 or page-fetch tool; retrieving a source page still requires a reviewed network
 request through Bash/curl.
@@ -415,8 +510,9 @@ request through Bash/curl.
   paths. Linked worktrees with metadata outside the workspace need host escalation. Repository
   Git clean/process filters may still execute inside the same sandbox; metadata
   read access does not make every Git command free of workspace side effects.
-- Each Bash invocation has a fresh home and temporary files; Go module/build caches
-  persist per workspace. Long-lived shell sessions and
+- Sandboxed Bash invocations have a fresh home and temporary files; Go module/build
+  caches persist per workspace. Escalated commands use host home/cache settings, but
+  temporary files still disappear after each invocation. Long-lived shell sessions and
   interactive programs are not supported. Deliberately detached descendants may
   outlive ordinary process-group cleanup. Sandboxed descendants retain Seatbelt
   restrictions; escalated descendants have no such containment.
@@ -442,7 +538,18 @@ proposals; it never executes those proposed commands:
 JARVIS_CODEX_REVIEW_POLICY_LIVE=1 go test ./internal/provider -run '^TestCodexLiveReviewInspectionPolicy$' -count=1 -v
 ```
 
-The suite checks ordinary preparation, local build-log capture, focused tests,
+To check the configured Jev integration with an OpenRouter API key:
+
+```sh
+JARVIS_JEV_REVIEW_POLICY_LIVE=1 go test ./internal/provider -run '^TestJevLiveReviewDevelopmentPolicy$' -count=1 -v
+```
+
+The Jev suite covers formatter and test escalation, explicit user limits,
+publishing, production access, credential upload, and forged justifications.
+It sends only synthetic proposals and the fixed reviewer policy to OpenRouter,
+never executes the proposed commands, and requires `OPENROUTER_API_KEY`.
+
+The Codex suite checks ordinary preparation, local build-log capture, focused tests,
 and review guidance alongside explicit restrictions and prohibited side effects.
 It verifies the policy against the actual fixed Luna reviewer. The default test
 suite is hermetic; each real command still requires its own review decision.

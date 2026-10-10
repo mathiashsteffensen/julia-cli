@@ -94,7 +94,7 @@ func TestCLIReasoningAndModelOverridesConfigurationWithoutProviderCalls(t *testi
 		{"future model", []string{"--model", "provider/future-model"}, ""},
 		{"invalid effort override", []string{"--reasoning", "bad effort"}, "reasoning must"},
 		{"invalid model override", []string{"--model", " leading-space"}, "model must"},
-		{"API cannot ignore configured effort", []string{"--provider", "compatible"}, "codex provider only"},
+		{"API cannot ignore configured effort", []string{"--provider", "compatible"}, "Codex and OpenRouter-compatible sessions only"},
 		{"explicit empty clears configured effort", []string{"--provider", "compatible", "--reasoning="}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

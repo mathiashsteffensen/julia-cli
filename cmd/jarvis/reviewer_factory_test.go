@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,6 +71,57 @@ func TestBackendFactoryUsesFixedCodexReviewerForEveryProvider(t *testing.T) {
 	}
 }
 
+func TestConfiguredCompatibleModelReviewsWithProbability(t *testing.T) {
+	var modelID, authorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/alpha/decisions" {
+			t.Errorf("review request path = %s", r.URL.Path)
+		}
+		authorization = r.Header.Get("Authorization")
+		var request struct {
+			Model string `json:"model"`
+			State struct {
+				Policy string `json:"policy"`
+			} `json:"state"`
+			Questions map[string]struct {
+				Type         string            `json:"type"`
+				Instructions string            `json:"instructions"`
+				Criteria     map[string]string `json:"criteria"`
+			} `json:"questions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error("decode request:", err)
+		}
+		modelID = request.Model
+		if request.State.Policy == "" || len(request.Questions) != 3 {
+			t.Error("decisions request omitted policy or independent checks")
+		}
+		for _, key := range []string{"task_relevant", "violates_user_limits", "prohibited_effects"} {
+			if q := request.Questions[key]; q.Type != "noul" || q.Instructions == "" {
+				t.Errorf("decisions request omitted typed check %s", key)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers":{"task_relevant":{"type":"noul","noul":0.81},"violates_user_limits":{"type":"noul","noul":0.01},"prohibited_effects":{"type":"noul","noul":0.05}}}`))
+	}))
+	defer server.Close()
+	binary, _ := reviewerProtocolFixture(t)
+	cfg := reviewerFactoryConfig(t, "codex", binary)
+	cfg.CompatibleModels = []string{compatibleApprovalModel}
+	cfg.BaseURL, cfg.APIKeyEnv = server.URL+"/api/v1", "REVIEWER_API_KEY"
+	t.Setenv(cfg.APIKeyEnv, "reviewer-secret")
+	backend, review, err := newBackend(context.Background(), cfg, nil)
+	if err != nil || backend.Name() != "codex" {
+		t.Fatal("configured Codex backend failed to initialize:", backend, err)
+	}
+	decision, err := review(context.Background(), core.Approval{Task: "Inspect the workspace", Call: core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
+	if err != nil || !decision.Allow {
+		t.Fatal("compatible reviewer did not approve above threshold:", decision, err)
+	}
+	if modelID != compatibleApprovalModel || authorization != "Bearer reviewer-secret" {
+		t.Fatal("review did not use the configured compatible model and key:", modelID, authorization)
+	}
+}
 func TestAPIFactoryMissingCodexIsLazyAndNeverFallsBackToExecutingModel(t *testing.T) {
 	for _, name := range []string{"openai", "anthropic", "google", "compatible"} {
 		for _, mode := range []string{"auto", "ask", "read-only"} {
