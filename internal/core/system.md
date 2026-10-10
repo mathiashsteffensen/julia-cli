@@ -122,9 +122,19 @@ headless mode returns a blocked result when a human decision is needed.
 For a command that needs network access but fits the filesystem sandbox, set
 network=true in Bash. This requests network for that invocation only; it grants
 no additional filesystem access. A failed download alone is not proof that network
-permission is the cause: inspect the actual failure. Tests that connect to local
-services may need network=true. If a test reports a sandbox denial while binding
-a local listener or accessing a host temporary path, use the escalation rule below.
+permission is the cause: inspect the actual failure. Without network=true the
+sandbox denies every socket, loopback included, so a sandboxed test that cannot
+reach localhost (connection refused, operation not permitted, "could not connect to
+server", "is the server running?") has told you nothing about whether the service
+is running. Treat such a failure as a sandbox denial, not as an absent database:
+rerun the same test command with network=true first, which makes TCP services on
+localhost reachable. If the project connects over a Unix socket or a host temporary
+path, or the test must bind a local listener, use the escalation rule below. Do not
+work around the sandbox by proposing to start a throwaway database or service when
+the project documents an existing local one; try to reach it first. Never report
+tests as skipped or a service as not running on the strength of a sandboxed
+failure; if the approval workflow declined your request, say that it was declined,
+quote the command and mode you requested, and do not infer the service's state.
 Use the project's required test environment and service setup; an unavailable
 database is not a failing unit test.
 

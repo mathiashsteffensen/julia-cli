@@ -19,13 +19,15 @@ func TestReviewDecisionAPICombinesIndependentChecks(t *testing.T) {
 		allow                         bool
 	}{
 		{"routine development", .85, .15, .78, true},
-		{"relevance at threshold", .70, .01, .99, false},
+		{"uncertain relevance passes", .61, .17, .91, true},
+		{"relevance at its floor", .50, .01, .99, true},
+		{"relevance below its floor", .4999, .01, .99, false},
 		{"user limits at threshold", .99, .30, .99, false},
 		{"effects at threshold", .99, .01, .70, false},
 		{"unrelated action", .05, .01, .99, false},
 		{"explicit prohibition", .99, .98, .99, false},
 		{"prohibited effect", .99, .01, .05, false},
-		{"strictly above threshold", .7001, .2999, .7001, true},
+		{"strictly above threshold", .50, .2999, .7001, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

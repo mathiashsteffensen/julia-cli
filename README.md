@@ -134,7 +134,7 @@ conversations and Codex approval reviews; this overrides an inherited standard/f
 setting. The executing agent keeps your chosen reasoning effort. By default, the
 approval reviewer uses `gpt-6-luna` with reasoning `none`. If `compatible_models`
 contains `typesafe/jev-1.13`, that decisions-only model reviews actions instead; it is
-not available as a chat model. Each Jev approval check must have probability strictly above 70%.
+not available as a chat model. Jev approves automatically when task relevance is at least 50% and the user-limit and prohibited-effect checks are each strictly above 70%.
 
 API providers share the same JARVIS tools, sandbox, UI, and permission policy:
 
@@ -240,7 +240,8 @@ Selections are saved with their session and apply to the next turn. The approval
 reviewer defaults to Codex `gpt-6-luna`, reasoning `none`, and priority service. If
 `compatible_models` contains `typesafe/jev-1.13`, that decisions-only model reviews
 actions instead; it is excluded from the chat model picker. Jev automatic approval
-requires every check to exceed 70%. The personal configuration is unchanged.
+needs task relevance of at least 50% and both harm checks above 70%. The personal
+configuration is unchanged.
 Finish or cancel a running task before changing settings. Known catalog model
 switches adjust an inherited or unsupported effort to that model's advertised
 default. Selecting a different provider or API model starts a fresh session and saves
@@ -401,8 +402,11 @@ By default, the reviewer uses your Codex sign-in with `gpt-6-luna`, reasoning di
 provider. If `compatible_models` contains `typesafe/jev-1.13`, the isolated reviewer
 uses that configured compatible endpoint and API key through `/api/alpha/decisions`;
 it checks task relevance, user restrictions, and prohibited effects independently.
-Automatic approval requires greater than 0.70 probability that the action is
-relevant, respects user restrictions, and avoids prohibited effects.
+Automatic approval requires at least 0.50 probability that the action is relevant
+to the task and greater than 0.70 probability that it respects user restrictions
+and avoids prohibited effects. Relevance is a soft signal that only vetoes clearly
+off-task work; ordinary inspection and preparation steps often score in the 50–70%
+range, so the strict bar applies to the two harm checks.
 The approval status shows all three scores, so a withheld approval identifies
 which check needs review.
 CLI/TUI model and effort choices affect only the executing agent. If the selected
