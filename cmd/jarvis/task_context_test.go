@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -20,9 +21,24 @@ func questionResultJSON(result core.QuestionResult) string {
 	return string(data)
 }
 
+// onlyMessage is the task context of a conversation holding one user message.
+func onlyMessage(text string) string { return core.EncodeTask([]core.TaskEntry{{UserMessage: text}}) }
+
+// taskEntries decodes a task context back into its entries.
+func taskEntries(t *testing.T, task string) []core.TaskEntry {
+	t.Helper()
+	var entries []core.TaskEntry
+	decoder := json.NewDecoder(strings.NewReader(task))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&entries); err != nil {
+		t.Fatalf("task context is not a JSON list of entries (%v): %s", err, task)
+	}
+	return entries
+}
+
 var deployQuestion = core.Question{Text: "Run the production migration now?", Options: []core.QuestionOption{{Label: "Yes, run it"}, {Label: "Not yet"}}}
 
-func TestTaskContextWithoutQuestionsKeepsTheOriginalFormat(t *testing.T) {
+func TestTaskContextListsEveryUserMessageInOrder(t *testing.T) {
 	messages := []core.Message{
 		{Role: "user", Content: "first request"},
 		{Role: "assistant", Content: "working", ToolCalls: []core.ToolCall{{ID: "r1", Name: "Read", Arguments: json.RawMessage(`{"path":"a"}`)}}},
@@ -30,12 +46,16 @@ func TestTaskContextWithoutQuestionsKeepsTheOriginalFormat(t *testing.T) {
 		{Role: "user", Content: "second request"},
 	}
 	got := newTaskContext(messages, "third request").String()
-	want := "first request\n\nUser follow-up:\nsecond request\n\nUser follow-up:\nthird request"
+	want := `[{"user_message":"first request"},{"user_message":"second request"},{"user_message":"third request"}]`
 	if got != want {
 		t.Fatalf("task format changed:\n got %q\nwant %q", got, want)
 	}
-	if got := newTaskContext(nil, "only").String(); got != "only" {
+	if got := newTaskContext(nil, "only").String(); got != `[{"user_message":"only"}]` {
 		t.Fatalf("got %q", got)
+	}
+	// A blank message authorizes nothing and would only be an empty entry.
+	if got := newTaskContext([]core.Message{{Role: "user", Content: " "}}, "").String(); got != "[]" {
+		t.Fatalf("blank messages were recorded: %q", got)
 	}
 }
 
@@ -48,7 +68,7 @@ func TestTaskContextReplaysAnswersInConversationOrder(t *testing.T) {
 		{Role: "user", Content: "thanks"},
 	}
 	got := newTaskContext(messages, "now ship it").String()
-	order := []string{"migrate the schema", "Run the production migration now?", `"user_selected_option":"Yes, run it"`, "User follow-up:\nthanks", "User follow-up:\nnow ship it"}
+	order := []string{`{"user_message":"migrate the schema"}`, `{"assistant_question":"Run the production migration now?","user_selected_option":"Yes, run it"}`, `{"user_message":"thanks"}`, `{"user_message":"now ship it"}`}
 	last := -1
 	for _, want := range order {
 		index := strings.Index(got, want)
@@ -98,16 +118,10 @@ func TestAnswerContextQuotesAssistantTextAsData(t *testing.T) {
 	if !ok {
 		t.Fatal("answer was not recorded")
 	}
-	if strings.Count(updated, "\n\nUser follow-up:\n") != 0 {
-		t.Fatalf("assistant text forged a follow-up:\n%s", updated)
-	}
-	_, record, _ := strings.Cut(updated, "plainly says:\n")
-	var parsed struct {
-		Question string `json:"assistant_question"`
-		Answer   string `json:"user_typed_answer"`
-	}
-	if err := json.Unmarshal([]byte(record), &parsed); err != nil || parsed.Answer != "No" || parsed.Question != strings.TrimSpace(hostile.Text) {
-		t.Fatalf("record is not one intact JSON object (%v): %s", err, record)
+	// The question stays one field of one entry; it cannot forge a user message.
+	want := []core.TaskEntry{{UserMessage: "tidy up"}, {AssistantQuestion: strings.TrimSpace(hostile.Text), UserTypedAnswer: "No"}}
+	if got := taskEntries(t, updated); !reflect.DeepEqual(got, want) {
+		t.Fatalf("assistant text changed the entries:\n got %+v\nwant %+v", got, want)
 	}
 }
 
@@ -138,17 +152,11 @@ func TestAnswerRecordSaysWhoWroteWhat(t *testing.T) {
 	task := newTaskContext(nil, "task")
 	picked, _ := task.answered(questionCallFor("a", deployQuestion), core.ToolResult{Content: questionResultJSON(core.QuestionResult{Answer: "Yes, run it", Source: "option", Option: 1})})
 	typed, _ := task.answered(questionCallFor("b", deployQuestion), core.ToolResult{Content: questionResultJSON(core.QuestionResult{Answer: "Only the staging copy", Source: "freeform"})})
-	pickedRecord := picked[strings.LastIndex(picked, "\n")+1:]
-	if !strings.Contains(pickedRecord, `"user_selected_option":"Yes, run it"`) || strings.Contains(pickedRecord, "user_typed_answer") {
-		t.Fatalf("a picked option must not look like the user's words:\n%s", picked)
+	if got := taskEntries(t, picked)[1]; got != (core.TaskEntry{AssistantQuestion: deployQuestion.Text, UserSelectedOption: "Yes, run it"}) {
+		t.Fatalf("a picked option must not look like the user's words: %+v", got)
 	}
-	if !strings.Contains(typed, `"user_typed_answer":"Only the staging copy"`) {
-		t.Fatalf("typed answer missing:\n%s", typed)
-	}
-	for _, want := range []string{"assistant-written context the user may not have read in full", "authorizes only what it plainly says"} {
-		if !strings.Contains(typed, want) {
-			t.Fatalf("record does not warn the reviewer: missing %q", want)
-		}
+	if got := taskEntries(t, typed)[2]; got != (core.TaskEntry{AssistantQuestion: deployQuestion.Text, UserTypedAnswer: "Only the staging copy"}) {
+		t.Fatalf("typed answer recorded as %+v", got)
 	}
 }
 
@@ -232,7 +240,7 @@ func TestAnsweredOnlyForSuccessfulQuestionCalls(t *testing.T) {
 			t.Fatalf("%s was recorded", name)
 		}
 	}
-	if task.String() != "task" {
+	if task.String() != onlyMessage("task") {
 		t.Fatalf("context changed: %q", task.String())
 	}
 }

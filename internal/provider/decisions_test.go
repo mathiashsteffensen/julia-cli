@@ -67,6 +67,19 @@ func TestReviewDecisionAPICombinesIndependentChecks(t *testing.T) {
 					t.Errorf("reason omitted %s: %s", check, decision.Reason)
 				}
 			}
+			// A denial reason goes back to the agent, so it must say which check failed.
+			for _, check := range []struct {
+				failed bool
+				phrase string
+			}{
+				{tc.relevance < MinimumRelevanceProbability, "does not look relevant"},
+				{1-tc.violation <= MinimumApprovalProbability, "conflict with a restriction"},
+				{tc.effects <= MinimumApprovalProbability, "not explicitly authorized"},
+			} {
+				if strings.Contains(decision.Reason, check.phrase) != check.failed {
+					t.Errorf("reason mentions %q = %v, want %v: %s", check.phrase, !check.failed, check.failed, decision.Reason)
+				}
+			}
 		})
 	}
 }

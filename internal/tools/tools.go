@@ -57,7 +57,19 @@ type Executor struct {
 	// this executor created itself and must remove.
 	scratch    string
 	ownScratch bool
+	// denials and consecutiveDenials count this turn's automatic review denials;
+	// see maxConsecutiveDenials. Execute holds mu, which serializes them.
+	denials, consecutiveDenials int
 }
+
+// A reviewer denial goes back to the model rather than to the user, so the model
+// can choose another approach or ask. Once it keeps running into denials in one
+// turn, the decision returns to a human: a model rewording the same action until
+// one version passes, or a reviewer too strict for the task, should not go unseen.
+const (
+	maxConsecutiveDenials = 3
+	maxTurnDenials        = 20
+)
 
 func New(c Config) (*Executor, error) {
 	if c.Mode == "" {
@@ -527,14 +539,20 @@ func (e *Executor) authorizeRequest(ctx context.Context, a core.Approval, review
 		} else {
 			e.emit("status", "Automatic review in progress"+label+"…")
 			decision, err := e.config.Review(ctx, a)
-			if err == nil && decision.Allow {
+			switch {
+			case err == nil && decision.Allow:
+				e.consecutiveDenials = 0
 				e.emit("status", "Automatic review approved"+label+": "+decision.Reason)
 				return nil
-			}
-			if err != nil {
+			case err != nil:
+				// A failed review is no judgment of the action; only a human can decide it.
 				a.Reason += " Automatic review failed: " + bounded(err.Error())
-			} else {
-				a.Reason += " Automatic approval not granted: " + bounded(decision.Reason)
+			case e.denied():
+				reason := bounded(decision.Reason)
+				e.emit("warning", "Automatic review denied"+label+": "+reason)
+				return fmt.Errorf("automatic review denied this action: %s. Do not retry it reworded or reach the same effect another way. Continue with other authorized work; if this action is necessary, explain why and ask the user (AskUserQuestion where available), then retry it only if they authorize it", reason)
+			default:
+				a.Reason += " Automatic approval not granted: " + bounded(decision.Reason) + " Repeated automatic denials this turn need your decision."
 			}
 		}
 	}
@@ -546,12 +564,22 @@ func (e *Executor) authorizeRequest(ctx context.Context, a core.Approval, review
 	if err != nil {
 		return fmt.Errorf("approval: %w", err)
 	}
+	// The human has now seen the action, so the next denials go to the model again.
+	e.consecutiveDenials = 0
 	if !decision.Allow {
 		e.emit("warning", "Approval denied: "+decision.Reason)
 		return fmt.Errorf("approval denied: %s", decision.Reason)
 	}
 	e.emit("status", "Human approval granted"+label+": "+decision.Reason)
 	return nil
+}
+
+// denied records an automatic review denial and reports whether it goes back to
+// the model; false means the limits are reached and a human decides instead.
+func (e *Executor) denied() bool {
+	e.denials++
+	e.consecutiveDenials++
+	return e.consecutiveDenials < maxConsecutiveDenials && e.denials < maxTurnDenials
 }
 
 // Grep gives rg only verified file contents via stdin: it never opens workspace

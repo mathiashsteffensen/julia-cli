@@ -3,11 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
+	"jarvis/internal/config"
 	"jarvis/internal/core"
 )
 
@@ -96,7 +100,7 @@ func TestSkippedAndFailedQuestionsAddNothingToTheReviewerContext(t *testing.T) {
 		if err := runQuestionBackend(runner, s); err != nil {
 			t.Fatal(err)
 		}
-		if got := approvals.last(t); got != "task" {
+		if got := approvals.last(t); got != onlyMessage("task") {
 			t.Fatalf("%s: reviewer context changed to %q", name, got)
 		}
 	}
@@ -119,7 +123,7 @@ func TestAnswersFromEarlierTurnsStillInformTheReviewer(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := approvals.last(t)
-	for _, want := range []string{"migrate the schema", `"user_selected_option":"Yes, run it"`, "User follow-up:\ntask"} {
+	for _, want := range []string{"migrate the schema", `"user_selected_option":"Yes, run it"`, `{"user_message":"task"}`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("resumed context is missing %q:\n%s", want, got)
 		}
@@ -149,7 +153,7 @@ func TestSubagentApprovalsSeeTheParentsAnswers(t *testing.T) {
 	}
 }
 
-func TestHeadlessRuntimeKeepsTheOriginalTaskContext(t *testing.T) {
+func TestHeadlessRuntimeTaskContextIsTheUserMessage(t *testing.T) {
 	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ string, executor core.ToolExecutor) error {
 		executor.Execute(ctx, core.ToolCall{ID: "w", Name: "Write", Arguments: json.RawMessage(writeCall)})
 		return nil
@@ -158,7 +162,7 @@ func TestHeadlessRuntimeKeepsTheOriginalTaskContext(t *testing.T) {
 	if err := runQuestionBackend(runner, s); err != nil {
 		t.Fatal(err)
 	}
-	if got := approvals.last(t); got != "task" {
+	if got := approvals.last(t); got != onlyMessage("task") {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -182,5 +186,72 @@ func TestHeadlessQuestionsAreSkippedAndTheCatalogMatchesTheTUI(t *testing.T) {
 	interactive, _ := newQuestionRunner(backend, func(context.Context, core.Question) (core.Answer, error) { return core.Answer{}, nil }, true, t.TempDir())
 	if h, i := toolNames(headless.Definitions()), toolNames(interactive.Definitions()); !reflect.DeepEqual(h, i) {
 		t.Fatalf("catalogs differ between modes: %v vs %v", h, i)
+	}
+}
+
+// With Jev reviewing in auto mode, a denial returns to the agent without prompting,
+// and the user's answer to the agent's follow-up question reaches Jev's next review.
+func TestJevDenialReturnsToAgentAndSeesTheUsersAnswer(t *testing.T) {
+	var mu sync.Mutex
+	var tasks []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			State struct {
+				Request struct {
+					Task string `json:"task"`
+				} `json:"request"`
+			} `json:"state"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error("decode review request:", err)
+		}
+		mu.Lock()
+		tasks = append(tasks, request.State.Request.Task)
+		mu.Unlock()
+		// Approve only once the user's answer is in the task, as Jev would.
+		prohibited := 0.9
+		if strings.Contains(request.State.Request.Task, `"user_selected_option":"Yes, use the network"`) {
+			prohibited = 0.05
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"answers":{"task_relevant":{"type":"noul","noul":0.9},"violates_user_limits":{"type":"noul","noul":0.01},"prohibited_effects":{"type":"noul","noul":%g}}}`, prohibited)
+	}))
+	defer server.Close()
+	cfg := config.Default()
+	cfg.Provider, cfg.CompatibleModels = "compatible", []string{compatibleApprovalModel}
+	cfg.BaseURL, cfg.APIKeyEnv = server.URL+"/api/v1", "JEV_TEST_KEY"
+	t.Setenv(cfg.APIKeyEnv, "jev-secret")
+
+	networkCall := core.ToolCall{ID: "b0", Name: "Bash", Arguments: json.RawMessage(`{"command":"true","network":true}`)}
+	ask := func(context.Context, core.Question) (core.Answer, error) {
+		return core.Answer{Text: "Yes, use the network", Option: 1}, nil
+	}
+	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ string, executor core.ToolExecutor) error {
+		denied := executor.Execute(ctx, networkCall)
+		if !denied.IsError || !strings.Contains(denied.Content, "automatic review denied") || !strings.Contains(denied.Content, "not explicitly authorized") {
+			t.Errorf("Jev denial did not reach the agent: %+v", denied)
+		}
+		if result := askQuestion(ctx, executor, `{"question":"The reviewer blocked network access. Run the check with network?","options":[{"label":"Yes, use the network"},{"label":"No"}]}`); result.IsError {
+			t.Errorf("question failed: %s", result.Content)
+		}
+		networkCall.ID = "b1"
+		if approved := executor.Execute(ctx, networkCall); approved.IsError {
+			t.Errorf("Jev did not approve after the user's answer: %+v", approved)
+		}
+		return nil
+	}}
+	runner, s := newQuestionRunner(backend, ask, false, t.TempDir())
+	runner.cfg = cfg
+	runner.cfg.SkillPaths = []string{}
+	runner.review = approvalReviewer(cfg)
+	runner.approve = func(_ context.Context, a core.Approval) (core.Decision, error) {
+		t.Errorf("a single Jev denial prompted the user: %s", a.Reason)
+		return core.Decision{}, nil
+	}
+	if err := runQuestionBackend(runner, s); err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 || strings.Contains(tasks[0], "assistant_question") || !strings.Contains(tasks[1], "Run the check with network?") {
+		t.Fatalf("Jev review tasks: %q", tasks)
 	}
 }

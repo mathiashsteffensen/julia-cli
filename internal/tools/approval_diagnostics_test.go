@@ -40,12 +40,20 @@ func TestAutomaticReviewIsVisibleBeforeReviewerAndHumanFallback(t *testing.T) {
 				if reviews != 1 {
 					t.Fatal("expected exactly one review", reviews)
 				}
-				if outcome == "approved" {
+				switch outcome {
+				case "approved":
 					if err != nil || humans != 0 || len(events) != 2 || !strings.Contains(events[1].Text, "Automatic review approved") {
 						t.Fatal("approved review reached human fallback", err, humans, events)
 					}
-				} else if err == nil || humans != 1 {
-					t.Fatal("failed/denied review bypassed human decision", err, humans)
+				case "denied":
+					// A denial is the reviewer's judgment: the model gets it, visibly, without a prompt.
+					if err == nil || humans != 0 || !strings.Contains(err.Error(), "review result fixture") || len(events) != 2 || events[1].Kind != "warning" || !strings.Contains(events[1].Text, "Automatic review denied") {
+						t.Fatal("denied review was not returned to the model", err, humans, events)
+					}
+				default:
+					if err == nil || humans != 1 {
+						t.Fatal("failed review bypassed human decision", err, humans)
+					}
 				}
 			})
 		}
@@ -68,5 +76,47 @@ func TestAutomaticReviewUnavailableIsDisclosedBeforeHumanFallback(t *testing.T) 
 	e.config.Emit = func(event core.Event) { events = append(events, event) }
 	if err := e.authorizeRequest(context.Background(), core.Approval{Reason: "Run command?"}, true); err == nil || humans != 1 {
 		t.Fatal("missing reviewer bypassed approval", err, humans)
+	}
+}
+
+func TestRepeatedReviewDenialsReturnToAHuman(t *testing.T) {
+	humans := 0
+	e, _ := fixture(t, "auto", func(_ context.Context, a core.Approval) (core.Decision, error) {
+		humans++
+		if !strings.Contains(a.Reason, "Repeated automatic denials") || !strings.Contains(a.Reason, "not authorized") {
+			t.Fatal("human was not told why the denial reached them", a.Reason)
+		}
+		return core.Decision{Allow: false, Reason: "human denied"}, nil
+	})
+	allow := false
+	e.config.Review = func(context.Context, core.Approval) (core.Decision, error) {
+		return core.Decision{Allow: allow, Reason: "not authorized"}, nil
+	}
+	request := func() error {
+		return e.authorizeRequest(context.Background(), core.Approval{Call: core.ToolCall{Name: "Bash"}, Reason: "Run this command?"}, true)
+	}
+	// The third consecutive denial goes to a human, who resets the streak.
+	for i, wantHumans := range []int{0, 0, 1, 1, 1, 2} {
+		if err := request(); err == nil || humans != wantHumans {
+			t.Fatalf("denial %d: humans=%d, want %d (%v)", i+1, humans, wantHumans, err)
+		}
+	}
+	// An approval also resets the streak.
+	allow = true
+	if err := request(); err != nil {
+		t.Fatal(err)
+	}
+	allow = false
+	for range maxConsecutiveDenials - 1 {
+		if err := request(); err == nil || humans != 2 {
+			t.Fatal("approval did not reset the denial streak", humans, err)
+		}
+	}
+	// Past the turn limit, every denial goes to a human.
+	e.denials, e.consecutiveDenials = maxTurnDenials-1, 0
+	for i := range 2 {
+		if err := request(); err == nil || humans != 3+i {
+			t.Fatal("denial past the turn limit did not reach a human", humans, err)
+		}
 	}
 }

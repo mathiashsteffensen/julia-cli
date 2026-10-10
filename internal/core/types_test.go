@@ -102,3 +102,14 @@ func TestCompactionThreshold(t *testing.T) {
 		t.Fatalf("threshold for 100k = %d, want 85000", got)
 	}
 }
+
+func TestEncodeTaskIsAReadableJSONList(t *testing.T) {
+	if got := EncodeTask(nil); got != "[]" {
+		t.Fatalf("empty task = %q", got)
+	}
+	got := EncodeTask([]TaskEntry{{UserMessage: "run make > log 2>&1 && cat <log"}, {AssistantQuestion: "Push?", UserSelectedOption: "Yes"}})
+	want := `[{"user_message":"run make > log 2>&1 && cat <log"},{"assistant_question":"Push?","user_selected_option":"Yes"}]`
+	if got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}

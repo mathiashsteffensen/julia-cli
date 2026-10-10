@@ -127,7 +127,7 @@ func TestSandboxFailureDoesNotRetryOutsideSandbox(t *testing.T) {
 	}
 }
 
-func TestEscalationAskSkipsReviewerAndReviewDenialCanAsk(t *testing.T) {
+func TestEscalationAskSkipsReviewerAndRepeatedReviewDenialAsks(t *testing.T) {
 	for _, mode := range []string{"ask", "auto"} {
 		t.Run(mode, func(t *testing.T) {
 			reviews, humans := 0, 0
@@ -142,13 +142,19 @@ func TestEscalationAskSkipsReviewerAndReviewDenialCanAsk(t *testing.T) {
 				reviews++
 				return core.Decision{Allow: false, Reason: "need human"}, nil
 			}
+			wantReviews := 0
+			if mode == "auto" {
+				// Denials go back to the model until the streak reaches the limit.
+				wantReviews = maxConsecutiveDenials
+				for range maxConsecutiveDenials - 1 {
+					if result := invoke(e, "Bash", escalationArgs("printf approved")); !result.IsError || !strings.Contains(result.Content, "automatic review denied") || humans != 0 {
+						t.Fatal("review denial was not returned to the model", result, humans)
+					}
+				}
+			}
 			result := invoke(e, "Bash", escalationArgs("printf approved"))
 			if result.IsError || result.Content != "approved" {
 				t.Fatal(result)
-			}
-			wantReviews := 0
-			if mode == "auto" {
-				wantReviews = 1
 			}
 			if reviews != wantReviews || humans != 1 {
 				t.Fatal(reviews, humans)

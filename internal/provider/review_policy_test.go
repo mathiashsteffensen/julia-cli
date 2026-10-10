@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,7 +68,7 @@ func TestCodexLiveReviewInspectionPolicy(t *testing.T) {
 				reason = "Run this sandboxed command with network access for this invocation?"
 			}
 			decision, err := (&Codex{}).Review(ctx, core.Approval{
-				Call: core.ToolCall{Name: "Bash", Arguments: args}, Task: task,
+				Call: core.ToolCall{Name: "Bash", Arguments: args}, Task: core.EncodeTask([]core.TaskEntry{{UserMessage: task}}),
 				ExecutionMode: tc.mode, Directory: "/private/tmp/jarvis-review-example-workspace", Network: network,
 				Reason: reason, Justification: tc.justification,
 			})
@@ -79,5 +80,15 @@ func TestCodexLiveReviewInspectionPolicy(t *testing.T) {
 				t.Fatalf("expected allow=%v", tc.allow)
 			}
 		})
+	}
+}
+
+// The task is a list of entries; the policy must say who wrote each field and how
+// far an answer reaches, since the entries themselves carry no such warning.
+func TestReviewPolicyExplainsTaskEntries(t *testing.T) {
+	for _, want := range []string{"user_message", "user_typed_answer", "user_selected_option", "authorizes only what it plainly says", "assistant_question text is assistant-written", "authorizes nothing on its own", "later entry can add or lift a restriction"} {
+		if !strings.Contains(reviewPolicy, want) {
+			t.Errorf("review policy does not mention %q", want)
+		}
 	}
 }

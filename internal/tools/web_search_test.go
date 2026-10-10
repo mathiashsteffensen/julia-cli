@@ -180,7 +180,7 @@ func TestWebSearchApprovalModes(t *testing.T) {
 	}{
 		{"auto approved", "auto", ptrWebBool(true), nil, 1, 0, 1},
 		{"auto denied headless", "auto", ptrWebBool(false), nil, 1, 0, 0},
-		{"auto denied human approved", "auto", ptrWebBool(false), ptrWebBool(true), 1, 1, 1},
+		{"auto denied returns to the model", "auto", ptrWebBool(false), ptrWebBool(true), 1, 0, 0},
 		{"auto missing reviewer human denied", "auto", nil, ptrWebBool(false), 0, 1, 0},
 		{"auto missing reviewer headless", "auto", nil, nil, 0, 0, 0},
 		{"ask approved", "ask", ptrWebBool(true), ptrWebBool(true), 0, 1, 1},

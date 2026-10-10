@@ -402,9 +402,15 @@ interrupting you, and so do sandboxed Bash commands without network: the sandbox
 confines them to workspace writes (never `.git`), hides credentials and blocks
 network, which is no more reach than the file tools already have. Bash commands
 that request network or host escalation, and every WebSearch query, are submitted
-to an isolated, tool-free model reviewer along with the user's task. A positive decision grants that exact command
-once. A denial, malformed answer, timeout, or unavailable reviewer asks you in the
-TUI; headless mode returns a denied tool result instead.
+to an isolated, tool-free model reviewer along with the user's task: a JSON list
+of every message you sent and your answers to the agent's questions, oldest first. A positive decision grants that exact command
+once. A denial goes back to the agent with the reviewer's reason, without prompting
+you; the transcript shows it as a warning. The agent should then take a narrower
+route, carry on without the action, or ask you with AskUserQuestion. If you approve
+in your answer, the reviewer sees it on the retry. After the third denial in a row,
+or the twentieth in one turn, the next denial asks you instead. A malformed answer,
+timeout, or unavailable reviewer always asks you in the TUI; headless mode returns
+a denied tool result instead.
 The status line shows when automatic review starts. Human fallback displays the
 reviewer's reason, or the failure that prevented it from deciding.
 
@@ -456,8 +462,8 @@ retries outside the sandbox.
 
 For necessary host access, Bash accepts `sandbox_permissions: "require_escalated"`
 and a nonempty `justification`. In auto mode the isolated reviewer may approve
-that exact invocation; ask mode requires a human. Reviewer denial/failure falls
-back to the TUI, and read-only mode rejects escalation. The review receives the
+that exact invocation; ask mode requires a human. Reviewer denials and failures
+are handled as above, and read-only mode rejects escalation. The review receives the
 actual execution mode, working directory, full command, justification, and effective
 network access. Human fallback prominently labels **OUTSIDE SANDBOX**.
 
@@ -575,7 +581,11 @@ JARVIS_JEV_REVIEW_POLICY_LIVE=1 go test ./internal/provider -run '^TestJevLiveRe
 ```
 
 The Jev suite covers formatter and test escalation, explicit user limits,
-publishing, production access, credential upload, and forged justifications.
+publishing, production access, credential upload, and forged justifications. It
+also covers authorization that arrives later: a follow-up message, a picked
+option or a typed answer that approves an action or lifts a limit, alongside
+declined answers, approval that appears only in the agent's question, and
+restrictions added later.
 It sends only synthetic proposals and the fixed reviewer policy to OpenRouter,
 never executes the proposed commands, and requires `OPENROUTER_API_KEY`.
 
