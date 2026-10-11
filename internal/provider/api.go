@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -91,7 +92,7 @@ func NewAPI(ctx context.Context, c APIConfig) (*API, error) {
 
 func (a *API) Name() string { return a.Provider }
 
-func (a *API) Run(ctx context.Context, s *core.Session, prompt string, tools core.ToolExecutor, emit core.Emit) error {
+func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tools core.ToolExecutor, emit core.Emit) error {
 	if s.PendingTool != nil {
 		return fmt.Errorf("tool %s was interrupted with an uncertain outcome; inspect the workspace and start a new session before continuing", s.PendingTool.Name)
 	}
@@ -104,13 +105,18 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt string, tools cor
 	if len(history) == 0 {
 		for _, m := range s.Messages {
 			if m.Role == "user" || m.Role == "assistant" {
-				history = append(history, fantasy.Message{Role: fantasy.MessageRole(m.Role), Content: []fantasy.MessagePart{fantasy.TextPart{Text: m.Content}}})
+				message := fantasy.Message{Role: fantasy.MessageRole(m.Role), Content: []fantasy.MessagePart{fantasy.TextPart{Text: m.Content}}}
+				for _, file := range fileParts(m.Images) {
+					message.Content = append(message.Content, file)
+				}
+				history = append(history, message)
 			}
 		}
 	}
-	userMessage := fantasy.NewUserMessage(prompt)
+	files := fileParts(prompt.Images)
+	userMessage := fantasy.NewUserMessage(prompt.Text, files...)
 	history = append(history, userMessage)
-	s.Messages = append(s.Messages, core.Message{Role: "user", Content: prompt})
+	s.Messages = append(s.Messages, core.Message{Role: "user", Content: prompt.Text, Images: prompt.Images})
 	if err := a.save(s, history); err != nil {
 		return err
 	}
@@ -179,9 +185,14 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt string, tools cor
 		// A compacted history is only a summary and the task: nothing left to summarize.
 		if contextTokens >= nextCompaction && len(history) > 2 {
 			emit(core.Event{Kind: "status", Text: "Compacting context; preserving the full local transcript"})
-			summary, spent, err := a.compact(ctx, history, prompt)
+			summary, spent, err := a.compact(ctx, history, prompt.Text)
 			compacted := 0
 			if err == nil {
+				// The task is retained verbatim, and so are the images it refers to.
+				task := &summary[len(summary)-1]
+				for _, file := range files {
+					task.Content = append(task.Content, file)
+				}
 				history = summary
 				contextTokens = estimateTokens(history) + instructionTokens
 				compacted = contextTokens
@@ -192,7 +203,7 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt string, tools cor
 				record(core.UsageEvent(spent, compacted))
 			}
 			if err != nil {
-				return fmt.Errorf("compact context: %w", err)
+				return fmt.Errorf("compact context: %w", explainUpstream(err))
 			}
 			if err = a.save(s, history); err != nil {
 				return err
@@ -222,7 +233,7 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt string, tools cor
 				// request instead of failing the same way again.
 				s.Usage.Context = max(s.Usage.Context, threshold)
 			}
-			return fmt.Errorf("provider stream: %w", err)
+			return fmt.Errorf("provider stream: %w", explainUpstream(err))
 		}
 		if journalErr != nil {
 			return fmt.Errorf("checkpoint tool execution: %w", journalErr)
@@ -302,13 +313,63 @@ func normalizeUsage(provider string, u fantasy.Usage) core.TokenUsage {
 // token per four bytes of its JSON encoding, rounded up. That suits prose and
 // code but undercounts dense text such as hex, base64 or minified JSON. Every
 // reported prompt size replaces the guess, so it only stands alone for a provider
-// that reports no usage.
+// that reports no usage. Attached images count as imageTokens each, not by the
+// size of their encoded data.
 func estimateTokens(v any) int {
+	images := 0
+	switch messages := v.(type) {
+	case fantasy.Message:
+		v, images = withoutFileData([]fantasy.Message{messages})
+	case []fantasy.Message:
+		v, images = withoutFileData(messages)
+	}
 	data, err := json.Marshal(v)
 	if err != nil {
 		return 0
 	}
-	return (len(data) + 3) / 4
+	return (len(data)+3)/4 + images*imageTokens
+}
+
+// imageTokens is what one image is assumed to cost. Providers charge by pixel
+// area; an image at images.MaxEdge lands near this on all of them.
+const imageTokens = 1600
+
+// withoutFileData returns a copy of messages whose file parts carry no data,
+// and how many file parts there were.
+func withoutFileData(messages []fantasy.Message) ([]fantasy.Message, int) {
+	var stripped []fantasy.Message
+	files := 0
+	for i, message := range messages {
+		cloned := false
+		for j, part := range message.Content {
+			file, ok := part.(fantasy.FilePart)
+			if !ok {
+				continue
+			}
+			if stripped == nil {
+				stripped = slices.Clone(messages)
+			}
+			if !cloned {
+				stripped[i].Content, cloned = slices.Clone(message.Content), true
+			}
+			file.Data = nil
+			stripped[i].Content[j] = file
+			files++
+		}
+	}
+	if stripped == nil {
+		return messages, 0
+	}
+	return stripped, files
+}
+
+// fileParts converts attached images to the parts fantasy sends to a model.
+func fileParts(images []core.Image) []fantasy.FilePart {
+	parts := make([]fantasy.FilePart, 0, len(images))
+	for _, image := range images {
+		parts = append(parts, fantasy.FilePart{MediaType: image.MediaType, Data: image.Data})
+	}
+	return parts
 }
 
 // estimateToolResults sizes only the tool messages of a step: its assistant
@@ -443,7 +504,8 @@ type agentTool struct {
 
 func (t *agentTool) Info() fantasy.ToolInfo {
 	props, _ := t.definition.Parameters["properties"].(map[string]any)
-	var required []string
+	// Empty rather than nil: a null "required" is rejected by strict validators such as Mistral's.
+	required := []string{}
 	switch r := t.definition.Parameters["required"].(type) {
 	case []string:
 		required = r

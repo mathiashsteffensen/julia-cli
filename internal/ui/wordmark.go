@@ -66,22 +66,11 @@ func uploadWordmark() tea.Cmd {
 }
 
 func wordmarkPlaceholders() string {
-	var out strings.Builder
-	for row := 0; row < wordmarkRows; row++ {
-		if row > 0 {
-			out.WriteByte('\n')
-		}
-		// The foreground is the image ID, not the visible text color. Keep it
-		// explicit so Lip Gloss preserves it through centering and padding.
-		out.WriteString("\x1b[38;2;74;65;82m")
-		for col := 0; col < wordmarkColumns; col++ {
-			out.WriteRune(kitty.Placeholder)
-			out.WriteRune(kitty.Diacritic(row))
-			out.WriteRune(kitty.Diacritic(col))
-		}
-		out.WriteString("\x1b[39m")
+	rows := make([]string, wordmarkRows)
+	for row := range rows {
+		rows[row] = placeholderRow(wordmarkID, row, wordmarkColumns)
 	}
-	return out.String()
+	return strings.Join(rows, "\n")
 }
 
 func (m *model) quit() tea.Cmd {
@@ -93,7 +82,7 @@ func (m *model) quit() tea.Cmd {
 	m.wordmarkStopping = true
 	// Raw is buffered. Wait for a round trip so deletion reaches the terminal
 	// before Bubble Tea restores the main screen, with a bounded fallback.
-	deleteImage := ansi.KittyGraphics(nil, "a=d", "d=I", "i="+strconv.Itoa(wordmarkID), "q=2")
+	deleteImage := ansi.KittyGraphics(nil, "a=d", "d=I", "i="+strconv.Itoa(wordmarkID), "q=2") + thumbnailDeletes(m.thumbnailOrder)
 	return tea.Sequence(tea.Raw(deleteImage+ansi.RequestModeTextCursorEnable),
 		tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg { return wordmarkExitMsg{} }))
 }

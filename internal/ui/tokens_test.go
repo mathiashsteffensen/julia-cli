@@ -163,7 +163,7 @@ func TestContextWindowIsConfigurable(t *testing.T) {
 type usageBackend struct{ events []core.Event }
 
 func (usageBackend) Name() string { return "fake" }
-func (b usageBackend) Run(_ context.Context, s *core.Session, _ string, _ core.ToolExecutor, emit core.Emit) error {
+func (b usageBackend) Run(_ context.Context, s *core.Session, _ core.Prompt, _ core.ToolExecutor, emit core.Emit) error {
 	for _, event := range b.events {
 		s.RecordUsage(event)
 		emit(event)
@@ -305,13 +305,14 @@ func TestSettingsChangeInSameConversationKeepsUsage(t *testing.T) {
 }
 
 func TestDemoPreviewsShowUsage(t *testing.T) {
-	demo := ansi.Strip(RenderDemo(128, 40))
+	// Retain the sidebar's display budget with the tall layout's extra spacing.
+	demo := ansi.Strip(RenderDemo(128, 45))
 	for _, want := range []string{"CONTEXT", "46% · 119k / 256k", "TOKENS", "511.7k in · 6.8k out", "412k cached · 100k new", "117.3k in · 1.3k out"} {
 		if !strings.Contains(demo, want) {
 			t.Errorf("demo preview is missing %q", want)
 		}
 	}
-	if welcome := ansi.Strip(RenderWelcome(128, 40)); !strings.Contains(welcome, "0% · 0 / 256k") || !strings.Contains(welcome, "0 in · 0 out") {
+	if welcome := ansi.Strip(RenderWelcome(128, 45)); !strings.Contains(welcome, "0% · 0 / 256k") || !strings.Contains(welcome, "0 in · 0 out") {
 		t.Error("welcome preview should show the zero state")
 	}
 	// Usage the caller supplied is never replaced by the sample figures.

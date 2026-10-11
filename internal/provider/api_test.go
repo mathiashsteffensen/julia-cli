@@ -85,7 +85,7 @@ func TestCompatibleRefreshesInstructionsAcrossRuns(t *testing.T) {
 	session := &core.Session{Instructions: "Runtime policy FIRST_BUNDLE"}
 	for _, instructions := range []string{"Runtime policy FIRST_BUNDLE", "Runtime policy REFRESHED_BUNDLE"} {
 		session.Instructions = instructions
-		if err = backend.Run(context.Background(), session, "Inspect the fixture", &testTools{}, func(core.Event) {}); err != nil {
+		if err = backend.Run(context.Background(), session, core.Prompt{Text: "Inspect the fixture"}, &testTools{}, func(core.Event) {}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -118,7 +118,7 @@ func TestAPICompactionRetainsRuntimeInstructionsAndIsolatesReview(t *testing.T) 
 	model := &scriptedAPIModel{parts: []fantasy.StreamPart{{Type: fantasy.StreamPartTypeTextStart, ID: "text"}, {Type: fantasy.StreamPartTypeTextDelta, ID: "text", Delta: "Done."}, {Type: fantasy.StreamPartTypeTextEnd, ID: "text"}, {Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonStop}}, generated: &fantasy.Response{FinishReason: fantasy.FinishReasonStop, Content: fantasy.ResponseContent{fantasy.TextContent{Text: "Previously inspected the fixture; continue verification."}}}}
 	session := &core.Session{Instructions: runtimeInstructions, Messages: []core.Message{{Role: "user", Content: strings.Repeat("prior user context ", 80)}, {Role: "assistant", Content: "Inspected files."}, {Role: "user", Content: "Continue carefully."}}}
 	backend := &API{Model: model, ContextTokens: 100, OpenRouter: true, Reasoning: "high"}
-	if err := backend.Run(context.Background(), session, "Verify results", &testTools{}, func(core.Event) {}); err != nil {
+	if err := backend.Run(context.Background(), session, core.Prompt{Text: "Verify results"}, &testTools{}, func(core.Event) {}); err != nil {
 		t.Fatal(err)
 	}
 	if model.generations != 1 || model.streams != 1 {
@@ -167,7 +167,7 @@ func TestAPICompactionRetainsRuntimeInstructionsAndIsolatesReview(t *testing.T) 
 func TestUnsupportedOpenRouterEffortErrorIsReturned(t *testing.T) {
 	model := &scriptedAPIModel{streamErr: errors.New("unsupported reasoning effort for this model")}
 	backend := &API{Model: model, OpenRouter: true, Reasoning: "high"}
-	err := backend.Run(context.Background(), &core.Session{}, "Inspect the fixture", &testTools{}, func(core.Event) {})
+	err := backend.Run(context.Background(), &core.Session{}, core.Prompt{Text: "Inspect the fixture"}, &testTools{}, func(core.Event) {})
 	if err == nil || !strings.Contains(err.Error(), "unsupported reasoning effort") {
 		t.Fatalf("unsupported model effort error was hidden: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestAPIRejectsMissingOrUnknownCompletion(t *testing.T) {
 			backend := &API{Model: model}
 			session := &core.Session{}
 			executor := &testTools{}
-			err := backend.Run(context.Background(), session, "Inspect the fixture", executor, func(core.Event) {})
+			err := backend.Run(context.Background(), session, core.Prompt{Text: "Inspect the fixture"}, executor, func(core.Event) {})
 			if err == nil {
 				t.Fatal("unconfirmed response reported successful")
 			}
@@ -203,7 +203,7 @@ func TestAPIPartialStreamFailureRetainsPromptAndText(t *testing.T) {
 	backend := &API{Model: model, Checkpoint: func(session *core.Session) error { checkpoint = append([]byte(nil), session.State...); return nil }}
 	session := &core.Session{}
 	executor := &testTools{}
-	err := backend.Run(context.Background(), session, "Inspect both files", executor, func(core.Event) {})
+	err := backend.Run(context.Background(), session, core.Prompt{Text: "Inspect both files"}, executor, func(core.Event) {})
 	if err == nil {
 		t.Fatal("interrupted stream reported success")
 	}
@@ -224,7 +224,7 @@ func TestAPIPendingToolBlocksResumeBeforeAnyActivity(t *testing.T) {
 	checkpoints := 0
 	backend := &API{Model: model, Checkpoint: func(*core.Session) error { checkpoints++; return nil }}
 	session := &core.Session{PendingTool: &core.ToolCall{ID: "unknown", Name: "Bash"}, State: json.RawMessage(`deliberately malformed`)}
-	err := backend.Run(context.Background(), session, "Continue", executor, func(core.Event) { t.Error("emitted activity before pending-tool guard") })
+	err := backend.Run(context.Background(), session, core.Prompt{Text: "Continue"}, executor, func(core.Event) { t.Error("emitted activity before pending-tool guard") })
 	if err == nil || !strings.Contains(err.Error(), "uncertain outcome") {
 		t.Fatalf("pending execution not rejected: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestAPIJournalFailureBlocksToolEffects(t *testing.T) {
 		return nil
 	}}
 	session := &core.Session{}
-	err := backend.Run(context.Background(), session, "List files", executor, func(core.Event) {})
+	err := backend.Run(context.Background(), session, core.Prompt{Text: "List files"}, executor, func(core.Event) {})
 	if err == nil || !strings.Contains(err.Error(), "disk full") {
 		t.Fatalf("checkpoint failure swallowed: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestCompatibleToolLoopAndCheckpoint(t *testing.T) {
 	s := &core.Session{}
 	tools := &testTools{}
 	var events []core.Event
-	if err = p.Run(context.Background(), s, "List files", tools, func(e core.Event) { events = append(events, e) }); err != nil {
+	if err = p.Run(context.Background(), s, core.Prompt{Text: "List files"}, tools, func(e core.Event) { events = append(events, e) }); err != nil {
 		t.Fatal(err)
 	}
 	if tools.calls != 1 || requests.Load() != 2 || saves < 3 {
@@ -439,7 +439,7 @@ func TestAPIRecordsUsageAfterEveryStepBeforeCheckpointing(t *testing.T) {
 	backend := &API{Model: model, Provider: "anthropic", Checkpoint: func(s *core.Session) error { snapshots = append(snapshots, s.Usage); return nil }}
 	session := &core.Session{}
 	var events []core.Event
-	if err := backend.Run(context.Background(), session, "List files", &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
+	if err := backend.Run(context.Background(), session, core.Prompt{Text: "List files"}, &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
 		t.Fatal(err)
 	}
 	history := decodeHistory(t, session)
@@ -480,7 +480,7 @@ func TestAPINormalizesUsageForTheConfiguredProvider(t *testing.T) {
 	model := &scriptedAPIModel{parts: textStep("Done.", fantasy.Usage{InputTokens: 1000, CacheReadTokens: 600, OutputTokens: 30})}
 	session := &core.Session{}
 	var events []core.Event
-	if err := (&API{Model: model, Provider: "google"}).Run(context.Background(), session, "Inspect", &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
+	if err := (&API{Model: model, Provider: "google"}).Run(context.Background(), session, core.Prompt{Text: "Inspect"}, &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
 		t.Fatal(err)
 	}
 	if want := (core.TokenUsage{Input: 400, CacheRead: 600, Output: 30}); session.Usage.Total != want {
@@ -496,7 +496,7 @@ func TestAPIMovesContextGaugeWhenProviderReportsNoUsage(t *testing.T) {
 	model := &scriptedAPIModel{parts: textStep("Done, with no usage block.", fantasy.Usage{})}
 	session := &core.Session{Instructions: instructions}
 	var events []core.Event
-	if err := (&API{Model: model}).Run(context.Background(), session, "Inspect the fixture", &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
+	if err := (&API{Model: model}).Run(context.Background(), session, core.Prompt{Text: "Inspect the fixture"}, &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
 		t.Fatal(err)
 	}
 	history := decodeHistory(t, session)
@@ -532,7 +532,7 @@ func TestAPIDecidesCompactionFromTheContextEstimate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			model := &scriptedAPIModel{parts: textStep("Done.", fantasy.Usage{InputTokens: 10, OutputTokens: 2}), generated: completeSummary("Continue the review.")}
 			session := &core.Session{Messages: tt.messages, Usage: core.SessionUsage{Context: tt.persists}}
-			if err := (&API{Model: model, ContextTokens: tt.window}).Run(context.Background(), session, "Verify results", &testTools{}, func(core.Event) {}); err != nil {
+			if err := (&API{Model: model, ContextTokens: tt.window}).Run(context.Background(), session, core.Prompt{Text: "Verify results"}, &testTools{}, func(core.Event) {}); err != nil {
 				t.Fatal(err)
 			}
 			if compacted := model.generations == 1; compacted != tt.compacts || model.generations > 1 {
@@ -551,7 +551,7 @@ func TestAPICompactionIsCountedAndShrinksTheContext(t *testing.T) {
 	backend := &API{Model: model, ContextTokens: 100, Checkpoint: func(s *core.Session) error { snapshots = append(snapshots, s.Usage); return nil }}
 	session := &core.Session{Instructions: instructions, Messages: priorConversation(2000), Usage: core.SessionUsage{Total: core.TokenUsage{Input: 5, Output: 5}, Context: 90_000}}
 	var events []core.Event
-	if err := backend.Run(context.Background(), session, "Verify results", &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
+	if err := backend.Run(context.Background(), session, core.Prompt{Text: "Verify results"}, &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
 		t.Fatal(err)
 	}
 	history := decodeHistory(t, session)
@@ -584,7 +584,7 @@ func TestAPIFailedCompactionStillCountsSpentTokens(t *testing.T) {
 	backend := &API{Model: model, ContextTokens: 100}
 	session := &core.Session{Messages: priorConversation(2000), Usage: core.SessionUsage{Context: 50_000}}
 	var events []core.Event
-	err := backend.Run(context.Background(), session, "Verify results", &testTools{}, func(e core.Event) { events = append(events, e) })
+	err := backend.Run(context.Background(), session, core.Prompt{Text: "Verify results"}, &testTools{}, func(e core.Event) { events = append(events, e) })
 	if err == nil || !strings.Contains(err.Error(), "compact context") {
 		t.Fatalf("compaction failure not reported: %v", err)
 	}
@@ -631,7 +631,7 @@ func TestAPITaskLargerThanTheThresholdDoesNotCompactOnEveryStep(t *testing.T) {
 			model := &promptSizedModel{scriptedAPIModel: scriptedAPIModel{generated: completeSummary("Continue the review.")}, toolSteps: toolSteps}
 			session := &core.Session{Messages: priorConversation(10)}
 			var events []core.Event
-			if err := (&API{Model: model, ContextTokens: window}).Run(context.Background(), session, task, &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
+			if err := (&API{Model: model, ContextTokens: window}).Run(context.Background(), session, core.Prompt{Text: task}, &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
 				t.Fatal(err)
 			}
 			if model.generations != 1 || model.streams != toolSteps+1 {
@@ -674,7 +674,7 @@ func TestAPICompactsWhenReportedUsageCrossesTheThresholdMidRun(t *testing.T) {
 			model := &compactionTrackingModel{scriptedAPIModel: scriptedAPIModel{steps: tt.steps, generated: completeSummary("Continue the review.")}}
 			session := &core.Session{Instructions: "Short runtime policy."}
 			var events []core.Event
-			if err := (&API{Model: model, ContextTokens: window}).Run(context.Background(), session, "List files", &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
+			if err := (&API{Model: model, ContextTokens: window}).Run(context.Background(), session, core.Prompt{Text: "List files"}, &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
 				t.Fatal(err)
 			}
 			if fmt.Sprint(model.compactionsAtStep) != fmt.Sprint(tt.compacting) {
@@ -720,7 +720,7 @@ func TestAPIContextOverflowForcesCompactionOnTheNextRun(t *testing.T) {
 	model := &scriptedAPIModel{streamErr: &fantasy.ProviderError{Message: "context_length_exceeded", ContextTooLargeErr: true}, generated: completeSummary("Continue the review.")}
 	backend := &API{Model: model, ContextTokens: window}
 	session := &core.Session{Messages: priorConversation(10), Usage: core.SessionUsage{Context: 1_000}}
-	err := backend.Run(context.Background(), session, "Verify results", &testTools{}, func(core.Event) {})
+	err := backend.Run(context.Background(), session, core.Prompt{Text: "Verify results"}, &testTools{}, func(core.Event) {})
 	if err == nil || !strings.Contains(err.Error(), "provider stream") {
 		t.Fatalf("overflow not reported: %v", err)
 	}
@@ -728,7 +728,7 @@ func TestAPIContextOverflowForcesCompactionOnTheNextRun(t *testing.T) {
 		t.Fatalf("context after an overflow = %d, want the threshold %d", session.Usage.Context, got)
 	}
 	model.streamErr, model.parts = nil, textStep("Done.", fantasy.Usage{InputTokens: 50, OutputTokens: 5})
-	if err = backend.Run(context.Background(), session, "Verify again", &testTools{}, func(core.Event) {}); err != nil {
+	if err = backend.Run(context.Background(), session, core.Prompt{Text: "Verify again"}, &testTools{}, func(core.Event) {}); err != nil {
 		t.Fatal(err)
 	}
 	if model.generations != 1 {
@@ -737,7 +737,7 @@ func TestAPIContextOverflowForcesCompactionOnTheNextRun(t *testing.T) {
 	// Any other stream failure leaves the estimate alone.
 	other := &scriptedAPIModel{streamErr: errors.New("connection reset")}
 	session = &core.Session{Usage: core.SessionUsage{Context: 1_000}}
-	if err = (&API{Model: other, ContextTokens: window}).Run(context.Background(), session, "Verify results", &testTools{}, func(core.Event) {}); err == nil || session.Usage.Context != 1_000 {
+	if err = (&API{Model: other, ContextTokens: window}).Run(context.Background(), session, core.Prompt{Text: "Verify results"}, &testTools{}, func(core.Event) {}); err == nil || session.Usage.Context != 1_000 {
 		t.Fatalf("an unrelated failure moved the estimate: err=%v context=%d", err, session.Usage.Context)
 	}
 }
@@ -747,7 +747,7 @@ func TestAPIGoogleRepeatedCacheReadsDoNotInflateTheContext(t *testing.T) {
 	model := &scriptedAPIModel{parts: textStep("Done.", fantasy.Usage{InputTokens: 10_000, CacheReadTokens: 27_000, OutputTokens: 37})}
 	session := &core.Session{}
 	var events []core.Event
-	if err := (&API{Model: model, Provider: "google"}).Run(context.Background(), session, "Inspect", &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
+	if err := (&API{Model: model, Provider: "google"}).Run(context.Background(), session, core.Prompt{Text: "Inspect"}, &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
 		t.Fatal(err)
 	}
 	usage := usageEvents(events)
@@ -764,7 +764,7 @@ func TestAPIReviewsNeverTouchSessionUsage(t *testing.T) {
 	backend := &API{Model: model}
 	session := &core.Session{}
 	var events []core.Event
-	if err := backend.Run(context.Background(), session, "Inspect", &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
+	if err := backend.Run(context.Background(), session, core.Prompt{Text: "Inspect"}, &testTools{}, func(e core.Event) { events = append(events, e) }); err != nil {
 		t.Fatal(err)
 	}
 	before, emitted := session.Usage, len(events)
@@ -784,7 +784,7 @@ func TestAPIStepOutputLimitLeavesRoomForReasoning(t *testing.T) {
 		want   int64
 	}{{0, 32_000}, {1_000_000, maxStepOutputTokens}, {100_000, 12_500}, {32_000, minStepOutputTokens}} {
 		model := &scriptedAPIModel{parts: textStep("Done.", fantasy.Usage{InputTokens: 10, OutputTokens: 2})}
-		if err := (&API{Model: model, ContextTokens: tc.window}).Run(context.Background(), &core.Session{}, "Review", &testTools{}, func(core.Event) {}); err != nil {
+		if err := (&API{Model: model, ContextTokens: tc.window}).Run(context.Background(), &core.Session{}, core.Prompt{Text: "Review"}, &testTools{}, func(core.Event) {}); err != nil {
 			t.Fatal(err)
 		}
 		if got := model.calls[0].MaxOutputTokens; got == nil || *got != tc.want {
@@ -802,8 +802,20 @@ func TestAPIReasoningOnlyTruncationSaysSo(t *testing.T) {
 		{Type: fantasy.StreamPartTypeReasoningStart, ID: "r"}, {Type: fantasy.StreamPartTypeReasoningDelta, ID: "r", Delta: "Thinking"}, {Type: fantasy.StreamPartTypeReasoningEnd, ID: "r"},
 		{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonLength, Usage: usage},
 	}}
-	err := (&API{Model: model}).Run(context.Background(), &core.Session{}, "Review", &testTools{}, func(core.Event) {})
+	err := (&API{Model: model}).Run(context.Background(), &core.Session{}, core.Prompt{Text: "Review"}, &testTools{}, func(core.Event) {})
 	if err == nil || !strings.Contains(err.Error(), "reasoning") || !strings.Contains(err.Error(), "32000") {
 		t.Fatalf("reasoning-only truncation not explained: %v", err)
+	}
+}
+
+func TestToolWithoutRequiredParametersSendsEmptyRequiredList(t *testing.T) {
+	tool := &agentTool{definition: core.ToolDefinition{Name: "List", Parameters: map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}}}}
+	data, err := json.Marshal(tool.Info().Required)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Mistral rejects the whole request when any tool's "required" is null.
+	if string(data) != "[]" {
+		t.Fatalf("required = %s, want []", data)
 	}
 }

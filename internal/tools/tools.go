@@ -108,7 +108,8 @@ func (e *Executor) emit(kind, text string) {
 	}
 }
 func schema(properties map[string]any, required ...string) map[string]any {
-	return map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}
+	// A schema without required properties still lists them as [], never null.
+	return map[string]any{"type": "object", "properties": properties, "required": append([]string{}, required...), "additionalProperties": false}
 }
 func str(description string) map[string]any {
 	return map[string]any{"type": "string", "description": description}

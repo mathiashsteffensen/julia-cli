@@ -34,10 +34,10 @@ func fetchPicker(t *testing.T, m *model, cmd tea.Cmd) {
 		t.Fatal("missing asynchronous catalog command")
 	}
 	batch, ok := cmd().(tea.BatchMsg)
-	if !ok || len(batch) != 2 {
+	if !ok || len(batch) < 2 {
 		t.Fatal("catalog should load independently of cursor blinking")
 	}
-	m.Update(batch[1]())
+	m.Update(batch[len(batch)-1]())
 }
 
 func TestPickerPreservesDraftAndCancelsStaleCatalog(t *testing.T) {
@@ -54,7 +54,7 @@ func TestPickerPreservesDraftAndCancelsStaleCatalog(t *testing.T) {
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 	batch := cmd().(tea.BatchMsg)
 	result := make(chan tea.Msg, 1)
-	go func() { result <- batch[1]() }()
+	go func() { result <- batch[len(batch)-1]() }()
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -149,7 +149,7 @@ func TestPickerSwitchesBetweenCodexAndSavedCompatibleModels(t *testing.T) {
 		t.Fatal("picker did not open the live Codex catalog")
 	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	m.Update(cmd())
+	fetchPicker(t, m, cmd)
 	if m.picker.provider != "compatible" || len(m.pickerChoices()) != 2 {
 		t.Fatal("Tab did not switch to saved compatible models")
 	}
@@ -163,7 +163,7 @@ func TestPickerSwitchesBetweenCodexAndSavedCompatibleModels(t *testing.T) {
 	}
 	fetchPicker(t, m, m.openPicker("model"))
 	_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	m.Update(cmd())
+	fetchPicker(t, m, cmd)
 	if m.picker.provider != "codex" || len(m.pickerChoices()) != 2 {
 		t.Fatal("Tab did not switch back to Codex models")
 	}
@@ -396,7 +396,7 @@ func TestPickerLoadingAndEmptyStatesFitSmallTerminal(t *testing.T) {
 type settingsBackend struct{ received chan core.Session }
 
 func (b settingsBackend) Name() string { return "fake" }
-func (b settingsBackend) Run(_ context.Context, s *core.Session, _ string, _ core.ToolExecutor, _ core.Emit) error {
+func (b settingsBackend) Run(_ context.Context, s *core.Session, _ core.Prompt, _ core.ToolExecutor, _ core.Emit) error {
 	b.received <- *s
 	return nil
 }

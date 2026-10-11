@@ -53,7 +53,7 @@ func TestAnswerReachesTheNextApprovalInTheSameTurn(t *testing.T) {
 	ask := func(context.Context, core.Question) (core.Answer, error) {
 		return core.Answer{Text: "Yes, run it", Option: 1}, nil
 	}
-	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ string, executor core.ToolExecutor) error {
+	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ core.Prompt, executor core.ToolExecutor) error {
 		before := executor.Execute(ctx, core.ToolCall{ID: "w0", Name: "Write", Arguments: json.RawMessage(writeCall)})
 		if !before.IsError {
 			t.Error("ask mode should have denied the write")
@@ -91,7 +91,7 @@ func TestSkippedAndFailedQuestionsAddNothingToTheReviewerContext(t *testing.T) {
 		"failed":  {core.Answer{}, context.DeadlineExceeded},
 	} {
 		ask := func(context.Context, core.Question) (core.Answer, error) { return tc.answer, tc.err }
-		backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ string, executor core.ToolExecutor) error {
+		backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ core.Prompt, executor core.ToolExecutor) error {
 			askQuestion(ctx, executor, `{"question":"Proceed?"}`)
 			executor.Execute(ctx, core.ToolCall{ID: "w", Name: "Write", Arguments: json.RawMessage(writeCall)})
 			return nil
@@ -107,7 +107,7 @@ func TestSkippedAndFailedQuestionsAddNothingToTheReviewerContext(t *testing.T) {
 }
 
 func TestAnswersFromEarlierTurnsStillInformTheReviewer(t *testing.T) {
-	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ string, executor core.ToolExecutor) error {
+	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ core.Prompt, executor core.ToolExecutor) error {
 		executor.Execute(ctx, core.ToolCall{ID: "w", Name: "Write", Arguments: json.RawMessage(writeCall)})
 		return nil
 	}}
@@ -135,7 +135,7 @@ func TestSubagentApprovalsSeeTheParentsAnswers(t *testing.T) {
 		return core.Answer{Text: "only the cache"}, nil
 	}
 	backend := &questionBackend{}
-	backend.run = func(ctx context.Context, s *core.Session, _ string, executor core.ToolExecutor) error {
+	backend.run = func(ctx context.Context, s *core.Session, _ core.Prompt, executor core.ToolExecutor) error {
 		if s.ParentID != "" {
 			executor.Execute(ctx, core.ToolCall{ID: "child-write", Name: "Write", Arguments: json.RawMessage(writeCall)})
 			return nil
@@ -154,7 +154,7 @@ func TestSubagentApprovalsSeeTheParentsAnswers(t *testing.T) {
 }
 
 func TestHeadlessRuntimeTaskContextIsTheUserMessage(t *testing.T) {
-	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ string, executor core.ToolExecutor) error {
+	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ core.Prompt, executor core.ToolExecutor) error {
 		executor.Execute(ctx, core.ToolCall{ID: "w", Name: "Write", Arguments: json.RawMessage(writeCall)})
 		return nil
 	}}
@@ -171,7 +171,7 @@ func TestHeadlessRuntimeTaskContextIsTheUserMessage(t *testing.T) {
 // fixes per thread) is identical in the TUI and headless; headless skips at once.
 func TestHeadlessQuestionsAreSkippedAndTheCatalogMatchesTheTUI(t *testing.T) {
 	var result core.ToolResult
-	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ string, executor core.ToolExecutor) error {
+	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ core.Prompt, executor core.ToolExecutor) error {
 		result = askQuestion(ctx, executor, `{"question":"Proceed?"}`)
 		return nil
 	}}
@@ -226,7 +226,7 @@ func TestJevDenialReturnsToAgentAndSeesTheUsersAnswer(t *testing.T) {
 	ask := func(context.Context, core.Question) (core.Answer, error) {
 		return core.Answer{Text: "Yes, use the network", Option: 1}, nil
 	}
-	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ string, executor core.ToolExecutor) error {
+	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ core.Prompt, executor core.ToolExecutor) error {
 		denied := executor.Execute(ctx, networkCall)
 		if !denied.IsError || !strings.Contains(denied.Content, "automatic review denied") || !strings.Contains(denied.Content, "not explicitly authorized") {
 			t.Errorf("Jev denial did not reach the agent: %+v", denied)

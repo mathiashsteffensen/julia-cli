@@ -19,11 +19,11 @@ import (
 )
 
 type questionBackend struct {
-	run func(ctx context.Context, s *core.Session, prompt string, executor core.ToolExecutor) error
+	run func(ctx context.Context, s *core.Session, prompt core.Prompt, executor core.ToolExecutor) error
 }
 
 func (b *questionBackend) Name() string { return "fake" }
-func (b *questionBackend) Run(ctx context.Context, s *core.Session, prompt string, executor core.ToolExecutor, _ core.Emit) error {
+func (b *questionBackend) Run(ctx context.Context, s *core.Session, prompt core.Prompt, executor core.ToolExecutor, _ core.Emit) error {
 	return b.run(ctx, s, prompt, executor)
 }
 
@@ -41,7 +41,7 @@ func newQuestionRunner(backend core.Backend, ask core.Asker, subagents bool, dir
 }
 
 func runQuestionBackend(runner *runtimeBackend, s *core.Session) error {
-	return runner.Run(context.Background(), s, "task", nil, func(core.Event) {})
+	return runner.Run(context.Background(), s, core.Prompt{Text: "task"}, nil, func(core.Event) {})
 }
 
 func hasTool(definitions []core.ToolDefinition, name string) bool {
@@ -115,7 +115,7 @@ func TestRuntimeQuestionToolDeliversQuestionAndAnswer(t *testing.T) {
 				return tc.answer, nil
 			}
 			var result core.ToolResult
-			backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ string, executor core.ToolExecutor) error {
+			backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ core.Prompt, executor core.ToolExecutor) error {
 				if !hasTool(executor.Definitions(), core.QuestionTool) {
 					return fmt.Errorf("question tool missing from %v", toolNames(executor.Definitions()))
 				}
@@ -161,7 +161,7 @@ func TestRuntimeQuestionToolRoundTripsThroughUIBridge(t *testing.T) {
 		}
 	}()
 	var result core.ToolResult
-	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ string, executor core.ToolExecutor) error {
+	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ core.Prompt, executor core.ToolExecutor) error {
 		result = askQuestion(ctx, executor, `{"question":"Pick one","options":[{"label":"First"},{"label":"Second"}]}`)
 		return nil
 	}}
@@ -178,7 +178,7 @@ func TestRuntimeQuestionToolRoundTripsThroughUIBridge(t *testing.T) {
 func TestRuntimeWithoutAskerDoesNotOfferQuestionTool(t *testing.T) {
 	for _, subagents := range []bool{false, true} {
 		t.Run(fmt.Sprintf("subagents=%v", subagents), func(t *testing.T) {
-			backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ string, executor core.ToolExecutor) error {
+			backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ core.Prompt, executor core.ToolExecutor) error {
 				if hasTool(executor.Definitions(), core.QuestionTool) {
 					return fmt.Errorf("question tool advertised: %v", toolNames(executor.Definitions()))
 				}
@@ -209,7 +209,7 @@ func TestRuntimeSubagentChildrenCannotAskTheUser(t *testing.T) {
 	var childRan, childSawTool bool
 	var childResult core.ToolResult
 	backend := &questionBackend{}
-	backend.run = func(ctx context.Context, s *core.Session, _ string, executor core.ToolExecutor) error {
+	backend.run = func(ctx context.Context, s *core.Session, _ core.Prompt, executor core.ToolExecutor) error {
 		if s.ParentID != "" {
 			childRan = true
 			childSawTool = hasTool(executor.Definitions(), core.QuestionTool)
@@ -261,7 +261,7 @@ func TestRuntimeDefinitionsMatchExecutorChain(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var chain []core.ToolDefinition
-			backend := &questionBackend{run: func(_ context.Context, _ *core.Session, _ string, executor core.ToolExecutor) error {
+			backend := &questionBackend{run: func(_ context.Context, _ *core.Session, _ core.Prompt, executor core.ToolExecutor) error {
 				chain = executor.Definitions()
 				return nil
 			}}
@@ -299,7 +299,7 @@ func TestRuntimeQuestionCancellationReleasesAsker(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ask, requests := ui.NewAsker()
 			var result core.ToolResult
-			backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ string, executor core.ToolExecutor) error {
+			backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, _ core.Prompt, executor core.ToolExecutor) error {
 				result = askQuestion(ctx, executor, `{"question":"Still there?"}`)
 				return nil
 			}}

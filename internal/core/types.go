@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"time"
 )
@@ -27,8 +28,30 @@ type ToolResult struct {
 type Message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content"`
+	Images     []Image    `json:"images,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+// Image is a picture the user attached to a message, already encoded in a
+// format every provider accepts. Width and Height are its pixel size.
+type Image struct {
+	MediaType string `json:"media_type"`
+	Data      []byte `json:"data"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+}
+
+// DataURL is the image as a base64 data: URL.
+func (i Image) DataURL() string {
+	return "data:" + i.MediaType + ";base64," + base64.StdEncoding.EncodeToString(i.Data)
+}
+
+// Prompt is one message the user sends: its text and any attached images. The
+// text names each image by an [Image #N] token, numbered in the order of Images.
+type Prompt struct {
+	Text   string
+	Images []Image
 }
 
 // ModelOption describes a provider-advertised model and its reasoning controls.
@@ -186,7 +209,7 @@ type ToolExecutor interface {
 // Implementations must honor cancellation and return only after all callbacks stop.
 type Backend interface {
 	Name() string
-	Run(context.Context, *Session, string, ToolExecutor, Emit) error
+	Run(context.Context, *Session, Prompt, ToolExecutor, Emit) error
 }
 
 type Approval struct {

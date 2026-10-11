@@ -20,7 +20,7 @@ type instructionBackend struct {
 }
 
 func (b *instructionBackend) Name() string { return "fake" }
-func (b *instructionBackend) Run(ctx context.Context, s *core.Session, prompt string, tools core.ToolExecutor, emit core.Emit) error {
+func (b *instructionBackend) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tools core.ToolExecutor, emit core.Emit) error {
 	b.seen = append(b.seen, s.Instructions)
 	args, _ := json.Marshal(map[string]any{"path": b.skillPath})
 	if result := tools.Execute(ctx, core.ToolCall{Name: "Read", Arguments: args}); !result.IsError {
@@ -41,7 +41,7 @@ func TestRuntimeRefreshesInstructionsWithoutExpandingToolAccess(t *testing.T) {
 	runner := &runtimeBackend{backend: backend, cfg: cfg, timeout: time.Second, parent: context.Background()}
 	s := &core.Session{Directory: t.TempDir(), Provider: "fake", Model: "first-model", Reasoning: "medium"}
 	emit := func(core.Event) {}
-	if err := runner.Run(context.Background(), s, "Inspect this project", nil, emit); err != nil {
+	if err := runner.Run(context.Background(), s, core.Prompt{Text: "Inspect this project"}, nil, emit); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("style revision two"), 0600); err != nil {
@@ -49,7 +49,7 @@ func TestRuntimeRefreshesInstructionsWithoutExpandingToolAccess(t *testing.T) {
 	}
 	runner.cfg.Mode, runner.headless = "read-only", true
 	s.Reasoning, s.Model = "high", "second-model"
-	if err := runner.Run(context.Background(), s, "Continue", nil, emit); err != nil {
+	if err := runner.Run(context.Background(), s, core.Prompt{Text: "Continue"}, nil, emit); err != nil {
 		t.Fatal(err)
 	}
 	if len(backend.seen) != 2 || !strings.Contains(backend.seen[0], "style revision one") || strings.Contains(backend.seen[1], "style revision one") || !strings.Contains(backend.seen[1], "style revision two") || !strings.Contains(backend.seen[1], `"human_approval_available": false`) || !strings.Contains(backend.seen[1], `"approval_mode": "read-only"`) {
@@ -61,7 +61,7 @@ func TestRuntimeRefreshesInstructionsWithoutExpandingToolAccess(t *testing.T) {
 		}
 	}
 	runner.cfg.SkillPaths = []string{filepath.Join(t.TempDir(), "missing.md")}
-	if err := runner.Run(context.Background(), s, "Continue", nil, emit); err == nil {
+	if err := runner.Run(context.Background(), s, core.Prompt{Text: "Continue"}, nil, emit); err == nil {
 		t.Fatal("missing explicit skill did not stop the turn")
 	}
 	if len(backend.seen) != 2 {

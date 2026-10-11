@@ -137,8 +137,8 @@ type cancellingBackend struct {
 }
 
 func (b *cancellingBackend) Name() string { return "fake" }
-func (b *cancellingBackend) Run(ctx context.Context, session *core.Session, prompt string, _ core.ToolExecutor, emit core.Emit) error {
-	session.Messages = append(session.Messages, core.Message{Role: "user", Content: prompt})
+func (b *cancellingBackend) Run(ctx context.Context, session *core.Session, prompt core.Prompt, _ core.ToolExecutor, emit core.Emit) error {
+	session.Messages = append(session.Messages, core.Message{Role: "user", Content: prompt.Text})
 	close(b.started)
 	emit(core.Event{Kind: "text", Text: "Thinking"})
 	<-ctx.Done()

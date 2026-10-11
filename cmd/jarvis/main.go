@@ -263,7 +263,7 @@ func run() error {
 				fmt.Fprintln(os.Stderr, "  ·", safe(e.Text))
 			}
 		}
-		err = runner.Run(ctx, s, prompt, nil, emit)
+		err = runner.Run(ctx, s, core.Prompt{Text: prompt}, nil, emit)
 		saveErr := store.Save(s)
 		if jsonMode {
 			msg := "completed"
@@ -409,7 +409,7 @@ func (r *runtimeBackend) Definitions() []core.ToolDefinition {
 }
 
 func (r *runtimeBackend) Name() string { return r.backend.Name() }
-func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt string, _ core.ToolExecutor, emit core.Emit) error {
+func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.Prompt, _ core.ToolExecutor, emit core.Emit) error {
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 	stop := context.AfterFunc(r.parent, cancel)
@@ -442,7 +442,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt string
 		}
 		consumer(event)
 	}
-	task := newTaskContext(s.Messages, prompt)
+	task := newTaskContext(s.Messages, prompt.Text)
 	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "jarvis-scratch", s.ID)})
 	if err != nil {
 		return err
@@ -478,7 +478,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt string
 		emit(core.Event{Kind: "status", Text: "Loaded skill: " + path})
 	}
 	if s.Title == "New conversation" || s.Title == "" {
-		s.Title = session.Title(prompt)
+		s.Title = session.Title(prompt.Text)
 	}
 	var agentTools core.ToolExecutor = executor
 	if r.makeBackend != nil {
@@ -505,7 +505,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt string
 					child.Audit = append(child.Audit, core.AuditEntry{At: time.Now(), Event: event})
 				}
 			}
-			err = childBackend.Run(childCtx, child, task, childTools, childEmit)
+			err = childBackend.Run(childCtx, child, core.Prompt{Text: task}, childTools, childEmit)
 			if r.checkpoint != nil {
 				err = errors.Join(err, r.checkpoint(child))
 			}

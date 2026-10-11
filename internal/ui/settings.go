@@ -176,6 +176,7 @@ func (m *model) loadPickerModels(provider string, blink bool) tea.Cmd {
 	fetch, err := m.catalogFetch(provider)
 	if err != nil {
 		m.picker.loading = false
+		m.spinner.stop()
 		if m.picker.kind == "reasoning" {
 			m.picker.err = "Effort catalog unavailable. Esc, then use /reasoning LEVEL."
 		} else {
@@ -200,9 +201,9 @@ func (m *model) loadPickerModels(provider string, blink bool) tea.Cmd {
 		return modelsMsg{sequence: sequence, options: options, err: err}
 	}
 	if blink {
-		return tea.Batch(textinput.Blink, load)
+		return tea.Batch(textinput.Blink, m.spinner.start(), load)
 	}
-	return load
+	return tea.Batch(m.spinner.start(), load)
 }
 
 func (m *model) reasoningSettings() bool {
@@ -218,6 +219,7 @@ func (m *model) closePicker() {
 		m.picker.cancel()
 	}
 	m.picker = nil
+	m.spinner.stop()
 	m.input.Focus()
 }
 
@@ -226,6 +228,7 @@ func (m *model) receiveModels(msg modelsMsg) tea.Cmd {
 		return nil
 	}
 	m.picker.loading = false
+	m.spinner.stop()
 	m.picker.cancel = nil
 	if msg.err != nil {
 		m.picker.err = "Could not load models: " + oneLine(msg.err.Error()) + ". Esc to use a direct command."

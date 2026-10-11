@@ -25,11 +25,14 @@ var (
 	cream       = lipgloss.Color("#ECE5DC")
 	muted       = lipgloss.Color("#96929F")
 	faint       = lipgloss.Color("#56515F")
+	border      = lipgloss.Color("#62536F")
 	coral       = lipgloss.Color("#F49D89")
 	violet      = lipgloss.Color("#C6B6F2")
+	cyan        = lipgloss.Color("#92CED2")
 	green       = lipgloss.Color("#A9C9AD")
 	coralStyle  = lipgloss.NewStyle().Foreground(coral)
 	violetStyle = lipgloss.NewStyle().Foreground(violet)
+	cyanStyle   = lipgloss.NewStyle().Foreground(cyan)
 	mutedStyle  = lipgloss.NewStyle().Foreground(muted)
 	faintStyle  = lipgloss.NewStyle().Foreground(faint)
 	creamStyle  = lipgloss.NewStyle().Foreground(cream)
@@ -71,11 +74,19 @@ func (m *model) resize(width, height int) {
 	if m.hasSidebar() {
 		m.mainWidth -= 29
 	}
-	m.bodyHeight = max(1, m.height-11)
-	m.input.SetWidth(max(8, m.mainWidth-5))
+	m.input.SetWidth(max(8, m.mainWidth-m.composerStyle().GetHorizontalFrameSize()))
+	// The placeholder emits just one end-of-buffer space. Fill its whole row
+	// here so the textarea viewport cannot pad it with the terminal background.
+	inputStyles := m.input.Styles()
+	inputStyles.Focused.EndOfBuffer = inputStyles.Focused.EndOfBuffer.Width(m.input.Width())
+	inputStyles.Blurred.EndOfBuffer = inputStyles.Blurred.EndOfBuffer.Width(m.input.Width())
+	m.input.SetStyles(inputStyles)
 	if m.picker != nil {
 		m.picker.search.SetWidth(max(8, m.mainWidth-8))
 	}
+	// Measure the fixed controls so spacing and title changes cannot push the
+	// composer or shortcuts off screen. The header always occupies three rows.
+	m.bodyHeight = max(1, m.height-3-lipgloss.Height(m.bottomView()))
 	m.viewport.SetWidth(m.mainWidth)
 	if m.question == nil {
 		// An open question keeps its own height until relayoutQuestion resizes it,
@@ -137,6 +148,14 @@ func (m *model) refresh(forceBottom bool) {
 			m.rows = append(m.rows, rowRef{entry: i, rowMeta: row})
 		}
 	}
+	m.activityRow = m.busy && len(blocks) > 0
+	if m.activityRow {
+		// Reserve the row under the latest entry; View draws the animated
+		// activity there, so ticks never rebuild the conversation.
+		blocks = append(blocks, "")
+		m.lines = append(m.lines, "", "")
+		m.rows = append(m.rows, rowRef{entry: -1, rowMeta: rowMeta{skip: true}}, rowRef{entry: -1, rowMeta: rowMeta{skip: true}})
+	}
 	m.viewport.SetContent(strings.Join(blocks, "\n\n"))
 	if forceBottom || atBottom {
 		m.viewport.GotoBottom()
@@ -146,11 +165,11 @@ func (m *model) refresh(forceBottom bool) {
 func str(value string) *string { return &value }
 
 func (m *model) renderEntry(item *entry) entryLayout {
-	if item.layout.text != "" && item.cachedRevision == item.revision && item.cachedWidth == m.mainWidth && item.cachedExpanded == m.expandTools {
+	if item.layout.text != "" && item.cachedRevision == item.revision && item.cachedWidth == m.mainWidth && item.cachedExpanded == m.expandTools && item.cachedGraphics == m.graphicsEpoch {
 		return item.layout
 	}
 	item.layout = m.layoutEntry(*item)
-	item.cachedRevision, item.cachedWidth, item.cachedExpanded = item.revision, m.mainWidth, m.expandTools
+	item.cachedRevision, item.cachedWidth, item.cachedExpanded, item.cachedGraphics = item.revision, m.mainWidth, m.expandTools, m.graphicsEpoch
 	return item.layout
 }
 
@@ -179,7 +198,15 @@ func (m *model) layoutEntry(item entry) entryLayout {
 		out.targets = []copyTarget{{"your message", item.text}}
 		bar := lipgloss.NewStyle().Foreground(coral).Render("┃") + " "
 		add(bar+coralStyle.Bold(true).Render("YOU"), rowMeta{gutter: 2, skip: true})
-		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string { return bar + creamStyle.Render(s) })
+		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string { return bar + highlightImageTokens(s) })
+		rows := imageRows(item.images)
+		if len(item.images) > 0 && len(item.imageIDs) == len(item.images) && m.thumbnailsShown() {
+			add(bar, rowMeta{gutter: 2, skip: true})
+			rows = m.thumbnailRowsFor(item, w)
+		}
+		for _, row := range rows {
+			add(bar+ansi.Truncate(row, w, "…"), rowMeta{gutter: 2, skip: true})
+		}
 	case "assistant":
 		out.targets = []copyTarget{{"reply", item.text}}
 		add(" "+violetStyle.Bold(true).Render("✦ JARVIS"), rowMeta{gutter: 1, skip: true})
@@ -241,7 +268,7 @@ func (m *model) layoutEntry(item entry) entryLayout {
 			icon = coralStyle.Render("!")
 		}
 		bar := faintStyle.Render("│") + " "
-		title := icon + " " + creamStyle.Render(sanitize(name))
+		title := icon + " " + cyanStyle.Bold(true).Render(sanitize(name))
 		if detail != "" {
 			title += "  " + mutedStyle.Render(ansi.Truncate(sanitize(detail), max(6, w-ansi.StringWidth(name)-5), "…"))
 		}
@@ -336,7 +363,7 @@ func (m *model) View() tea.View {
 	header := brand + caption
 	header += strings.Repeat(" ", max(1, contentWidth-ansi.StringWidth(header)-ansi.StringWidth(right))) + right
 	header = "\n" + ansi.Truncate(header, contentWidth, "") + "\n" + faintStyle.Render(strings.Repeat("─", contentWidth))
-	body := m.highlightSelection(m.viewport.View())
+	body := m.withActivity(m.highlightSelection(m.viewport.View()))
 	if m.picker != nil && m.pending == nil {
 		body = m.pickerView()
 	} else if m.question != nil && m.pending == nil {
@@ -347,28 +374,7 @@ func (m *model) View() tea.View {
 	if m.hasSidebar() {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(m.mainWidth).Height(m.bodyHeight).Render(body), "  ", m.sidebar())
 	}
-	composerTitle := violetStyle.Render("MESSAGE")
-	composerInput := m.input.View()
-	if m.picker != nil {
-		composerTitle = violetStyle.Render("SEARCH · your message draft is kept")
-		if m.mainWidth < 44 {
-			composerTitle = violetStyle.Render("SEARCH · draft kept")
-		}
-		composerInput = m.picker.search.View() + "\n"
-	}
-	if m.busy {
-		composerTitle = mutedStyle.Render("DRAFT · retained while JARVIS works")
-	}
-	if m.question != nil {
-		composerTitle = mutedStyle.Render("DRAFT · kept while you answer")
-	}
-	if m.pending != nil {
-		composerTitle = coralStyle.Render("APPROVAL · y / Enter")
-	}
-	composer := lipgloss.NewStyle().Width(max(10, m.mainWidth-4)).Padding(0, 1).Background(panel).Border(lipgloss.RoundedBorder()).BorderForeground(faint).Render(composerTitle + "\n" + composerInput)
-	status := m.statusLine()
-	footer := m.footer()
-	view := header + "\n" + body + "\n" + status + "\n" + composer + "\n" + footer
+	view := header + "\n" + body + "\n" + m.bottomView()
 	view = lipgloss.NewStyle().Padding(0, m.margin()).Background(background).Foreground(cream).Width(m.width).Render(view)
 	// Clamp every final row, including pathological filenames and narrow resizes.
 	lines := strings.Split(view, "\n")
@@ -385,6 +391,63 @@ func (m *model) View() tea.View {
 	v.WindowTitle = "JARVIS — personal agent"
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
+}
+
+func (m *model) composerStyle() lipgloss.Style {
+	vertical, horizontal := 0, 1
+	if m.width >= 60 {
+		horizontal = 2
+	}
+	if m.height >= 36 {
+		vertical = 1
+	}
+	stroke := border
+	if m.pending != nil {
+		stroke = coral
+	}
+	return lipgloss.NewStyle().Width(m.mainWidth).Padding(vertical, horizontal).
+		Background(panel).Border(lipgloss.RoundedBorder()).BorderForeground(stroke).BorderBackground(panel)
+}
+
+func (m *model) bottomView() string {
+	style := m.composerStyle()
+	innerWidth := max(1, m.mainWidth-style.GetHorizontalFrameSize())
+	composerTitle := violetStyle.Bold(true).Render("MESSAGE")
+	composerInput := m.input.View()
+	if m.picker != nil {
+		composerTitle = violetStyle.Bold(true).Render("SEARCH") + mutedStyle.Render(" · your message draft is kept")
+		if m.mainWidth < 44 {
+			composerTitle = violetStyle.Bold(true).Render("SEARCH") + mutedStyle.Render(" · draft kept")
+		}
+		composerInput = m.picker.search.View() + "\n"
+	}
+	if m.busy {
+		composerTitle = violetStyle.Bold(true).Render("DRAFT") + mutedStyle.Render(" · retained while JARVIS works")
+	}
+	if m.question != nil {
+		composerTitle = violetStyle.Bold(true).Render("DRAFT") + mutedStyle.Render(" · kept while you answer")
+	}
+	if m.pending != nil {
+		composerTitle = coralStyle.Render("APPROVAL · y / Enter")
+	}
+	if m.picker == nil && m.pending == nil {
+		composerTitle += m.attachmentChips(max(0, innerWidth-ansi.StringWidth(composerTitle)))
+	}
+	composer := style.Render(ansi.Truncate(composerTitle, innerWidth, "…") + "\n" + composerInput)
+	var rows []string
+	if m.height >= 28 {
+		rows = append(rows, "")
+	}
+	rows = append(rows, m.statusLine())
+	if m.height >= 28 {
+		rows = append(rows, "")
+	}
+	rows = append(rows, composer)
+	if m.height >= 36 {
+		rows = append(rows, "")
+	}
+	rows = append(rows, m.footer(), "")
+	return strings.Join(rows, "\n")
 }
 
 func (m *model) welcome() string {
@@ -418,7 +481,7 @@ func reasoningDisplay(provider, effort string) string {
 
 func (m *model) sidebar() string {
 	const width = 23
-	label := func(s string) string { return faintStyle.Bold(true).Render(s) }
+	label := func(s string) string { return violetStyle.Bold(true).Render(s) }
 	value := func(s string) string { return creamStyle.Render(ansi.Truncate(sanitize(s), width, "…")) }
 	provider, modelName, reasoning, directory, id := "—", "default", "", "", "new conversation"
 	if m.cfg.Session != nil {
@@ -436,7 +499,7 @@ func (m *model) sidebar() string {
 	// row the model alone identifies the connection, and the reasoning effort and
 	// weekly allowance are the next to go.
 	title, name := label("CONNECTION"), value(modelName)
-	providerRow := violetStyle.Render(ansi.Truncate(sanitize(provider), width, "…"))
+	providerRow := cyanStyle.Render(ansi.Truncate(sanitize(provider), width, "…"))
 	connection := [][]string{{title, providerRow, name}, {title, name}}
 	if showsReasoning(provider, m.cfg.CompatibleReasoning) {
 		effort := []string{mutedStyle.Render(ansi.Truncate("reasoning: "+sanitize(reasoning), width, "…"))}
@@ -524,10 +587,39 @@ func permissionCaption(mode string) string {
 	}
 }
 
+// activityLine is the animated stream, what the task is doing, and how long
+// it has run, fitted to width with the elapsed time kept visible.
+func (m *model) activityLine(width int) string {
+	streamWidth := min(activityWidth, max(3, width/5))
+	stream := ansi.Truncate(m.spinner.View(), streamWidth, "")
+	duration := mutedStyle.Render(elapsed(m.now.Sub(m.started)))
+	labelWidth := max(0, width-streamWidth-ansi.StringWidth(duration)-4)
+	label := mutedStyle.Render(ansi.Truncate(sanitize(m.status), labelWidth, "…"))
+	return stream + "  " + label + "  " + duration
+}
+
+// withActivity draws the running task's activity on the row reserved under
+// the latest entry. Scrolled back into history, it sticks to the body's last
+// row so the task stays visible.
+func (m *model) withActivity(body string) string {
+	if !m.busy || !m.activityRow || !m.conversationShown() || len(m.lines) == 0 {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	row := min(len(m.lines)-1-m.viewport.YOffset(), len(lines)-1)
+	if row < 0 {
+		return body
+	}
+	lines[row] = ansi.Truncate(" "+m.activityLine(m.mainWidth-1), m.mainWidth, "")
+	return strings.Join(lines, "\n")
+}
+
 func (m *model) statusLine() string {
 	status := lipgloss.NewStyle().Foreground(green).Render("●") + mutedStyle.Render(" Ready")
-	if m.busy {
-		status = m.spinner.View() + " " + violetStyle.Render(sanitize(m.status)) + " " + faintStyle.Render(elapsed(m.now.Sub(m.started)))
+	if m.busy && m.conversationShown() {
+		status = "" // the activity is drawn under the latest entry
+	} else if m.busy {
+		status = m.activityLine(m.mainWidth)
 	} else if m.lastDuration > 0 {
 		status += faintStyle.Render(" · " + elapsed(m.lastDuration))
 	}
@@ -540,7 +632,13 @@ func (m *model) statusLine() string {
 		if showsReasoning(m.cfg.Session.Provider, m.cfg.CompatibleReasoning) {
 			settings += " · " + reasoningDisplay(m.cfg.Session.Provider, m.cfg.Session.Reasoning)
 		}
-		status += faintStyle.Render(" · " + sanitize(settings))
+		if remaining := m.mainWidth - ansi.StringWidth(status); remaining > 3 {
+			suffix := violetStyle.Render(sanitize(settings))
+			if status != "" {
+				suffix = mutedStyle.Render(" · ") + suffix
+			}
+			status += ansi.Truncate(suffix, remaining, "…")
+		}
 	}
 	if m.pending != nil {
 		status = coralStyle.Render("◆ Waiting for your approval")
@@ -595,17 +693,20 @@ func (m *model) footer() string {
 		return mutedStyle.Render(text)
 	}
 	if m.width < 62 {
-		return faintStyle.Render("enter send · ctrl+p models · /help")
+		return coralStyle.Render("enter") + mutedStyle.Render(" send · ") + violetStyle.Render("ctrl+p") + mutedStyle.Render(" models · ") + violetStyle.Render("/help")
 	}
-	left := faintStyle.Render("enter ") + mutedStyle.Render("send") + faintStyle.Render("  alt+enter ") + mutedStyle.Render("newline") + faintStyle.Render("  esc ") + mutedStyle.Render("interrupt") + faintStyle.Render("  /help")
+	left := coralStyle.Render("enter ") + mutedStyle.Render("send") + violetStyle.Render("  alt+enter ") + mutedStyle.Render("newline") + violetStyle.Render("  esc ") + mutedStyle.Render("interrupt") + violetStyle.Render("  /help")
 	if m.width >= 90 {
-		left += faintStyle.Render("  ctrl+o ") + mutedStyle.Render("tools")
+		left += violetStyle.Render("  ctrl+o ") + mutedStyle.Render("tools")
 	}
 	if m.width >= 74 {
-		left += faintStyle.Render("  ctrl+p ") + mutedStyle.Render("models")
+		left += violetStyle.Render("  ctrl+p ") + mutedStyle.Render("models")
 	}
 	if m.width >= 100 {
-		left += faintStyle.Render("  drag ") + mutedStyle.Render("copy")
+		left += violetStyle.Render("  drag ") + mutedStyle.Render("copy")
+	}
+	if m.width >= 116 {
+		left += violetStyle.Render("  ctrl+v ") + mutedStyle.Render("image")
 	}
 	return left
 }

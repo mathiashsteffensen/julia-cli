@@ -36,16 +36,16 @@ type usageBackend struct {
 }
 
 func (b *usageBackend) Name() string { return "fake" }
-func (b *usageBackend) Run(ctx context.Context, s *core.Session, prompt string, executor core.ToolExecutor, emit core.Emit) error {
+func (b *usageBackend) Run(ctx context.Context, s *core.Session, prompt core.Prompt, executor core.ToolExecutor, emit core.Emit) error {
 	call := func(u core.TokenUsage, contextTokens int) {
 		event := core.UsageEvent(u, contextTokens)
 		s.RecordUsage(event)
 		emit(event)
 	}
 	if s.ParentID != "" {
-		spend := b.children[prompt]
+		spend := b.children[prompt.Text]
 		call(spend.usage, spend.context)
-		s.Messages = append(s.Messages, core.Message{Role: "user", Content: prompt}, core.Message{Role: "assistant", Content: "report for " + prompt})
+		s.Messages = append(s.Messages, core.Message{Role: "user", Content: prompt.Text}, core.Message{Role: "assistant", Content: "report for " + prompt.Text})
 		return spend.err
 	}
 	call(b.parent, b.parentContext)
@@ -102,7 +102,7 @@ func TestSubagentSpendRollsUpIntoParentSessionOnce(t *testing.T) {
 			}
 			s := session.New(t.TempDir(), "fake", "model")
 			var usage []core.Event
-			if err := runner.Run(context.Background(), s, "delegate this", nil, func(event core.Event) {
+			if err := runner.Run(context.Background(), s, core.Prompt{Text: "delegate this"}, nil, func(event core.Event) {
 				if event.Kind == "usage" {
 					usage = append(usage, event)
 				}
@@ -165,7 +165,7 @@ func TestSubagentSpendRollsUpIntoParentSessionOnce(t *testing.T) {
 type emitOnlyBackend struct{ events []core.Event }
 
 func (b *emitOnlyBackend) Name() string { return "fake" }
-func (b *emitOnlyBackend) Run(_ context.Context, _ *core.Session, _ string, _ core.ToolExecutor, emit core.Emit) error {
+func (b *emitOnlyBackend) Run(_ context.Context, _ *core.Session, _ core.Prompt, _ core.ToolExecutor, emit core.Emit) error {
 	for _, event := range b.events {
 		emit(event)
 	}
@@ -179,7 +179,7 @@ func TestRuntimeEmitWrapperForwardsUsageWithoutRecordingIt(t *testing.T) {
 	runner := &runtimeBackend{backend: &emitOnlyBackend{events: events}, cfg: cfg, timeout: 10 * time.Second, parent: context.Background()}
 	s := session.New(t.TempDir(), "fake", "model")
 	var seen []core.Event
-	if err := runner.Run(context.Background(), s, "task", nil, func(event core.Event) { seen = append(seen, event) }); err != nil {
+	if err := runner.Run(context.Background(), s, core.Prompt{Text: "task"}, nil, func(event core.Event) { seen = append(seen, event) }); err != nil {
 		t.Fatal(err)
 	}
 	if len(seen) != 2 || seen[0] != events[0] {
@@ -213,7 +213,7 @@ func TestRuntimeProviderRecordedUsageIsCountedOnce(t *testing.T) {
 			runner.makeBackend = func(context.Context, config.Config) (core.Backend, core.Approver, error) { return backend, nil, nil }
 		}
 		s := session.New(t.TempDir(), "fake", "model")
-		if err := runner.Run(context.Background(), s, "task", nil, func(core.Event) {}); err != nil {
+		if err := runner.Run(context.Background(), s, core.Prompt{Text: "task"}, nil, func(core.Event) {}); err != nil {
 			t.Fatal(err)
 		}
 		if s.Usage.Total != want || s.Usage.Context != 1_030 {

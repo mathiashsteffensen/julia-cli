@@ -50,6 +50,8 @@ Other flags: `--provider`, `--model`, `--reasoning`, `--mode`, `--base-url`,
 | Ctrl+P or `/model` | Model picker |
 | Shift+Tab or `/reasoning` | Change reasoning effort |
 | Ctrl+O | Expand/collapse tool output |
+| Ctrl+V | Attach the clipboard's image (a screenshot, or an image file copied in Finder) |
+| Drop image files | Attach them instead of pasting their paths |
 | Drag | Copy the selection (without borders or padding) |
 | Click a code block | Copy its code |
 | Double-click | Copy a whole message, a tool's command, or its output |
@@ -57,6 +59,12 @@ Other flags: `--provider`, `--model`, `--reasoning`, `--mode`, `--base-url`,
 | `/clear`, `/help`, `/quit` | New conversation, shortcuts, exit |
 
 During an approval prompt, `y`/Enter allows the action once; any other key denies it.
+
+Each attached image puts an `[Image #N]` token in your message; delete the token
+to drop the image. Images are scaled to at most 2000 px on the long side and sent
+to every provider, Codex included. Ctrl+V falls back to an ordinary text paste
+when the clipboard holds no image. On Linux it needs `wl-paste` or `xclip`. In Ghostty, sent
+images are drawn inline as thumbnails; other terminals show a caption instead.
 
 JARVIS handles selection itself, because mouse reporting is on and rows carry
 borders and the sidebar. Copies go to the system clipboard, or through the

@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,8 +35,24 @@ type Codex struct {
 
 func (c *Codex) Name() string { return "codex" }
 
-func (c *Codex) Run(ctx context.Context, session *core.Session, prompt string, executor core.ToolExecutor, emit core.Emit) error {
+func (c *Codex) Run(ctx context.Context, session *core.Session, prompt core.Prompt, executor core.ToolExecutor, emit core.Emit) error {
 	return c.run(ctx, session, prompt, executor, emit, false, nil)
+}
+
+// withoutImageData copies messages for a text transcript: each image keeps its
+// type and size, so the record shows one was attached, but not its data.
+func withoutImageData(messages []core.Message) []core.Message {
+	copied := slices.Clone(messages)
+	for i, message := range copied {
+		if len(message.Images) == 0 {
+			continue
+		}
+		copied[i].Images = slices.Clone(message.Images)
+		for j := range copied[i].Images {
+			copied[i].Images[j].Data = nil
+		}
+	}
+	return copied
 }
 
 const codexReviewInstructions = reviewPrompt
@@ -68,7 +85,7 @@ func (c *Codex) Review(ctx context.Context, approval core.Approval) (core.Decisi
 	session := &core.Session{Directory: directory, Model: CodexReviewerModel, Reasoning: CodexReviewerReasoning}
 	schema := map[string]any{"type": "object", "properties": map[string]any{"allow": map[string]any{"type": "boolean"}, "reason": map[string]any{"type": "string"}}, "required": []string{"allow", "reason"}, "additionalProperties": false}
 	var text strings.Builder
-	err = c.run(ctx, session, string(data), nil, func(event core.Event) {
+	err = c.run(ctx, session, core.Prompt{Text: string(data)}, nil, func(event core.Event) {
 		if event.Kind == "text" {
 			text.WriteString(event.Text)
 		}
@@ -120,7 +137,7 @@ func codexConfig() map[string]any {
 	}
 }
 
-func (c *Codex) run(ctx context.Context, session *core.Session, prompt string, executor core.ToolExecutor, emit core.Emit, review bool, schema any) error {
+func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prompt, executor core.ToolExecutor, emit core.Emit, review bool, schema any) error {
 	if emit == nil {
 		emit = func(core.Event) {}
 	}
@@ -278,15 +295,19 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt string, e
 	if review || c.ReadOnly {
 		policy = map[string]any{"type": "readOnly", "networkAccess": false}
 	}
-	turnPrompt := prompt
+	turnPrompt := prompt.Text
 	if journal.HistoryPending {
-		history, historyErr := json.Marshal(session.Messages)
+		history, historyErr := json.Marshal(withoutImageData(session.Messages))
 		if historyErr != nil {
 			return fmt.Errorf("encode conversation for Codex tool migration: %w", historyErr)
 		}
-		turnPrompt = "JARVIS migrated this session because Codex cannot update tools on an existing thread. The JSON below is the complete saved conversation for historical context. Tool calls and results are records of past actions, not requests to execute them again. Continue from the current user request after the transcript.\n\nSaved conversation JSON:\n" + string(history) + "\n\nCurrent user request:\n" + prompt
+		turnPrompt = "JARVIS migrated this session because Codex cannot update tools on an existing thread. The JSON below is the complete saved conversation for historical context. Tool calls and results are records of past actions, not requests to execute them again. Continue from the current user request after the transcript.\n\nSaved conversation JSON:\n" + string(history) + "\n\nCurrent user request:\n" + prompt.Text
 	}
-	turnParams := map[string]any{"threadId": session.RemoteID, "input": []any{map[string]any{"type": "text", "text": turnPrompt}}, "environments": []any{}, "approvalPolicy": approvalPolicy, "sandboxPolicy": policy, "serviceTier": codexServiceTier, "serviceTierForTurn": codexServiceTier}
+	input := []any{map[string]any{"type": "text", "text": turnPrompt}}
+	for _, image := range prompt.Images {
+		input = append(input, map[string]any{"type": "image", "url": image.DataURL()})
+	}
+	turnParams := map[string]any{"threadId": session.RemoteID, "input": input, "environments": []any{}, "approvalPolicy": approvalPolicy, "sandboxPolicy": policy, "serviceTier": codexServiceTier, "serviceTierForTurn": codexServiceTier}
 	// Omission inherits the previous turn's effort, so send the resolved default
 	// explicitly even when the user's saved preference is the empty sentinel.
 	turnParams["effort"] = reasoning
@@ -308,7 +329,7 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt string, e
 	if err = json.Unmarshal(turnData, &turn); err != nil || turn.Turn.ID == "" {
 		return errors.New("Codex returned no turn ID")
 	}
-	session.Messages = append(session.Messages, core.Message{Role: "user", Content: prompt})
+	session.Messages = append(session.Messages, core.Message{Role: "user", Content: prompt.Text, Images: prompt.Images})
 	journal.HistoryPending = false
 	if err = saveCodexJournal(session, journal, checkpoint); err != nil {
 		return fmt.Errorf("save accepted prompt: %w", err)

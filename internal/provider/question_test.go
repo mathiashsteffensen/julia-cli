@@ -40,7 +40,7 @@ func TestAPIQuestionIsNotJournaledAsAnUncertainTool(t *testing.T) {
 	tools := &questionTools{session: session}
 	var checkpoints []bool
 	backend := &API{Model: model, Checkpoint: func(s *core.Session) error { checkpoints = append(checkpoints, s.PendingTool != nil); return nil }}
-	if err := backend.Run(context.Background(), session, "decide", tools, func(core.Event) {}); err != nil {
+	if err := backend.Run(context.Background(), session, core.Prompt{Text: "decide"}, tools, func(core.Event) {}); err != nil {
 		t.Fatal(err)
 	}
 	if tools.calls != 1 || tools.pending != nil {
@@ -61,7 +61,7 @@ func TestAPIOtherToolsStillMarkThemselvesPending(t *testing.T) {
 	session := &core.Session{}
 	seen := false
 	executor := &pendingProbe{session: session, seen: &seen}
-	if err := (&API{Model: model}).Run(context.Background(), session, "list", executor, func(core.Event) {}); err != nil {
+	if err := (&API{Model: model}).Run(context.Background(), session, core.Prompt{Text: "list"}, executor, func(core.Event) {}); err != nil {
 		t.Fatal(err)
 	}
 	if !seen {
@@ -93,7 +93,7 @@ func TestCodexQuestionIsNotJournaledAsAnUncertainTool(t *testing.T) {
 	backend := &Codex{start: f.start}
 	// The journal lives in the session state; look at it from inside the tool.
 	probe := &journalProbe{questionTools: tools, session: session, intents: &intents}
-	if err := backend.Run(context.Background(), session, "decide", probe, nil); err != nil {
+	if err := backend.Run(context.Background(), session, core.Prompt{Text: "decide"}, probe, nil); err != nil {
 		t.Fatal(err)
 	}
 	if tools.calls != 1 {
@@ -105,7 +105,7 @@ func TestCodexQuestionIsNotJournaledAsAnUncertainTool(t *testing.T) {
 	// A new run on the same session must not be blocked by this call.
 	f2 := newCodexFixture(t)
 	f2.turn = func(f *codexFixture) { f.finish("completed") }
-	if err := (&Codex{start: f2.start}).Run(context.Background(), session, "continue", &codexTestExecutor{}, nil); err != nil && strings.Contains(err.Error(), "uncertain outcome") {
+	if err := (&Codex{start: f2.start}).Run(context.Background(), session, core.Prompt{Text: "continue"}, &codexTestExecutor{}, nil); err != nil && strings.Contains(err.Error(), "uncertain outcome") {
 		t.Fatalf("session was left unresumable: %v", err)
 	}
 }

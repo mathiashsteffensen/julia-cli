@@ -52,6 +52,10 @@ func (a *API) compact(ctx context.Context, history []fantasy.Message, task strin
 	for _, message := range history {
 		entry := fantasy.Message{Role: message.Role}
 		for _, part := range message.Content {
+			if file, ok := part.(fantasy.FilePart); ok {
+				// The summary is text: an image is noted, not re-sent as data.
+				part = fantasy.TextPart{Text: "[attached image: " + file.MediaType + "]"}
+			}
 			if part != nil && part.GetType() != fantasy.ContentTypeReasoning {
 				entry.Content = append(entry.Content, part)
 			}

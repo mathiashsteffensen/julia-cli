@@ -172,7 +172,7 @@ type settingsTurnBackend struct {
 }
 
 func (b *settingsTurnBackend) Name() string { return "codex" }
-func (b *settingsTurnBackend) Run(ctx context.Context, current *core.Session, _ string, executor core.ToolExecutor, _ core.Emit) error {
+func (b *settingsTurnBackend) Run(ctx context.Context, current *core.Session, _ core.Prompt, executor core.ToolExecutor, _ core.Emit) error {
 	*b.agentCalls = append(*b.agentCalls, [2]string{b.selected.Model, b.selected.Reasoning})
 	if current.Model != b.selected.Model || current.Reasoning != b.selected.Reasoning {
 		b.t.Fatal("agent and live session settings differ")
@@ -202,13 +202,13 @@ func TestRuntimeChangesAgentSettingsWithoutChangingFixedReviewer(t *testing.T) {
 	}}
 	current := &core.Session{Directory: t.TempDir(), Provider: "codex", Model: "first-model", Reasoning: "medium", ReasoningSet: true}
 	emit := func(core.Event) {}
-	if err := runner.Run(context.Background(), current, "First task", nil, emit); err != nil {
+	if err := runner.Run(context.Background(), current, core.Prompt{Text: "First task"}, nil, emit); err != nil {
 		t.Fatal(err)
 	}
 	if err := applySessionSettings(cfg, current, "codex", "second-model", "high", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := runner.Run(context.Background(), current, "Second task", nil, emit); err != nil {
+	if err := runner.Run(context.Background(), current, core.Prompt{Text: "Second task"}, nil, emit); err != nil {
 		t.Fatal(err)
 	}
 	want := [][2]string{{"first-model", "medium"}, {"second-model", "high"}}

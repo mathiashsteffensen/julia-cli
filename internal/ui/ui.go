@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -20,6 +19,7 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"jarvis/internal/core"
+	"jarvis/internal/images"
 	sessions "jarvis/internal/session"
 )
 
@@ -70,6 +70,8 @@ type Config struct {
 type entry struct {
 	role           string
 	text           string
+	images         []core.Image // a user message's attached images
+	imageIDs       []int        // the Kitty image ID that draws each of images
 	call           *core.ToolCall
 	result         *core.ToolResult
 	done           bool
@@ -77,6 +79,7 @@ type entry struct {
 	cachedRevision uint64
 	cachedWidth    int
 	cachedExpanded bool
+	cachedGraphics uint64
 	layout         entryLayout
 }
 
@@ -94,7 +97,7 @@ type model struct {
 	cfg        Config
 	input      textarea.Model
 	viewport   viewport.Model
-	spinner    spinner.Model
+	spinner    activityModel
 	width      int
 	height     int
 	mainWidth  int
@@ -110,8 +113,12 @@ type model struct {
 	}
 	flashSeq               uint64
 	clipboard              func(string) error
+	clipboardImage         func(context.Context) (core.Image, error)
+	attachments            []attachment // images pasted into the draft
+	imageSeq               int          // the last [Image #N] number handed out in this draft
 	renderWidth            int
 	busy                   bool
+	activityRow            bool // the conversation ends with a row reserved for the activity
 	quitting               bool
 	status                 string
 	notice                 string
@@ -139,6 +146,11 @@ type model struct {
 	wordmarkPending        bool
 	wordmarkReady          bool
 	wordmarkStopping       bool
+	graphicsConfirmed      bool               // the terminal accepted a Kitty graphics upload
+	graphicsEpoch          uint64             // bumps when thumbnails must be laid out again
+	cellWidth, cellHeight  int                // the terminal's cell size in pixels; zero until reported
+	thumbnails             map[int]core.Image // sent images, by the Kitty image ID that draws them
+	thumbnailOrder         []int              // those IDs, in the order they were registered
 	picker                 *settingsPicker
 	pickerSequence         uint64
 	models                 []core.ModelOption
@@ -194,12 +206,9 @@ func newModel(cfg Config) *model {
 	input.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "shift+enter", "ctrl+j"))
 	input.SetStyles(composerStyles())
 	input.Focus()
-	spin := spinner.New()
-	spin.Spinner = spinner.Dot
-	spin.Style = coralStyle
 	m := &model{
-		cfg: cfg, input: input, viewport: viewport.New(), spinner: spin,
-		status: "Ready", lifetime: ctx, stop: stop, now: time.Now(), clipboard: systemClipboard,
+		cfg: cfg, input: input, viewport: viewport.New(),
+		status: "Ready", lifetime: ctx, stop: stop, now: time.Now(), clipboard: systemClipboard, clipboardImage: images.Clipboard,
 		compatibleModels: append([]core.ModelOption(nil), cfg.CompatibleModels...),
 	}
 	m.viewport.FillHeight = true
@@ -222,7 +231,7 @@ func newModel(cfg Config) *model {
 }
 
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.spinner.Tick, m.waitApproval(), m.waitQuestion(), nextTick(), m.refreshWeeklyUsage(false))
+	return tea.Batch(textarea.Blink, m.waitApproval(), m.waitQuestion(), nextTick(), m.refreshWeeklyUsage(false))
 }
 
 func nextTick() tea.Cmd {
@@ -269,17 +278,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.receiveReasoningCycle(msg)
 	case tea.EnvMsg:
 		m.wordmarkEnabled = supportsWordmark(msg)
-		return m, m.requestWordmark()
+		return m, tea.Batch(m.requestWordmark(), m.requestCellSize())
 	case tea.ColorProfileMsg:
 		m.wordmarkTrueColor = msg.Profile == colorprofile.TrueColor
-		return m, m.requestWordmark()
+		return m, tea.Batch(m.requestWordmark(), m.requestCellSize())
 	case tea.ModeReportMsg:
 		if msg.Mode == ansi.ModeTextCursorEnable && m.wordmarkStopping {
 			return m, tea.Quit
 		}
 		if msg.Mode == ansi.ModeAltScreenSaveCursor && m.wordmarkPending && !m.quitting {
 			m.wordmarkPending = false
-			return m, uploadWordmark()
+			return m, tea.Batch(uploadWordmark(), m.uploadThumbnails())
 		}
 		return m, nil
 	case wordmarkExitMsg:
@@ -287,13 +296,29 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case uv.KittyGraphicsEvent:
 		if msg.Options.ID == wordmarkID && m.wordmarkEnabled && m.wordmarkTrueColor && !m.wordmarkPending && !m.quitting {
 			m.wordmarkReady = string(msg.Payload) == "OK"
+			if m.wordmarkReady && !m.graphicsConfirmed {
+				m.graphicsConfirmed = true
+				m.graphicsEpoch++
+				m.refresh(false)
+			}
 		}
 		return m, nil
+	case uv.CellSizeEvent:
+		return m, m.receiveCellSize(msg)
 	case tea.WindowSizeMsg:
 		m.resize(msg.Width, msg.Height)
-		return m, m.requestWordmark()
+		// A font size change resizes the window too, so ask for the cell size again.
+		return m, tea.Batch(m.requestWordmark(), m.requestCellSize())
 	case copiedMsg:
 		return m, m.receiveCopied(msg)
+	case imagesMsg:
+		return m, m.receiveImages(msg)
+	case tea.PasteMsg:
+		if m.pending == nil && m.question == nil && m.picker == nil {
+			if cmd, handled := m.pasteText(msg.Content); handled {
+				return m, cmd
+			}
+		}
 	case copyNoticeDoneMsg:
 		if m.notice == msg.notice {
 			m.notice = ""
@@ -307,10 +332,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.now = time.Time(msg)
 		return m, tea.Batch(nextTick(), m.refreshWeeklyUsage(false))
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
+	case activityTickMsg:
+		return m, m.spinner.update(msg)
 	case approvalMsg:
 		m.approvalListening = false
 		if !m.busy || m.quitting {
@@ -339,6 +362,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamMsg:
 		if msg.finished {
 			m.busy = false
+			m.spinner.stop()
 			m.cancel = nil
 			m.lastDuration = time.Since(m.started)
 			m.status = "Ready"
@@ -438,6 +462,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "shift+tab" {
 			return m, m.cycleReasoning()
 		}
+		if msg.String() == "ctrl+v" {
+			return m, m.pasteImage(true)
+		}
 		if msg.String() == "enter" {
 			return m, m.submit()
 		}
@@ -521,11 +548,12 @@ func (m *model) submit() tea.Cmd {
 		if handled, cmd := m.settingsCommand(prompt); handled {
 			return cmd
 		}
+		var cmd tea.Cmd
 		switch prompt {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results\n- **Drag** to copy a selection · **click** a code block to copy it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- **Ctrl+P** or `/model` opens model search · **Tab/Shift+Tab** switch catalogs in the picker\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- **Ctrl+P** or `/model` opens model search · **Tab/Shift+Tab** switch catalogs in the picker\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
 		case "/ask", "/ask text":
 			if !m.cfg.Demo {
 				m.notice = "Unknown command. /help lists the essentials."
@@ -549,6 +577,7 @@ func (m *model) submit() tea.Cmd {
 			}
 			*m.cfg.Session = *next
 			m.entries = nil
+			cmd = m.deleteThumbnails()
 			m.resetCounters()
 			m.notice = "New conversation."
 			if m.cfg.Save != nil {
@@ -560,19 +589,22 @@ func (m *model) submit() tea.Cmd {
 		}
 		m.input.Reset()
 		m.refresh(true)
-		return nil
+		return cmd
 	}
 	if m.cfg.Demo {
 		m.notice = "Offline preview. Restart without --demo to begin a real session."
 		return nil
 	}
 	m.invalidateReasoningCycle()
+	request := m.takeImages(prompt)
 	m.input.Reset()
 	m.notice = ""
 	m.busy = true
 	m.status = "Thinking"
 	m.started, m.now = time.Now(), time.Now()
-	m.entries = append(m.entries, entry{role: "user", text: prompt})
+	sent := entry{role: "user", text: request.Text, images: request.Images}
+	m.registerImages(&sent)
+	m.entries = append(m.entries, sent)
 	m.refresh(true)
 	ctx, cancel := context.WithCancel(m.lifetime)
 	m.cancel = cancel
@@ -582,7 +614,7 @@ func (m *model) submit() tea.Cmd {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		err := m.cfg.Backend.Run(ctx, session, prompt, m.cfg.Tools, func(event core.Event) {
+		err := m.cfg.Backend.Run(ctx, session, request, m.cfg.Tools, func(event core.Event) {
 			// Providers may reuse their event's backing data after Emit returns.
 			event = cloneEvent(event)
 			select {
@@ -595,7 +627,7 @@ func (m *model) submit() tea.Cmd {
 		case <-m.lifetime.Done():
 		}
 	}()
-	return waitStream(stream, m.lifetime)
+	return tea.Batch(waitStream(stream, m.lifetime), m.spinner.start(), m.uploadThumbnails(sent.imageIDs...))
 }
 
 func cloneSession(original *core.Session) *core.Session {
@@ -679,7 +711,9 @@ func (m *model) loadHistory() {
 		switch message.Role {
 		case "user", "assistant":
 			if message.Content != "" {
-				m.entries = append(m.entries, entry{role: message.Role, text: message.Content})
+				item := entry{role: message.Role, text: message.Content, images: message.Images}
+				m.registerImages(&item)
+				m.entries = append(m.entries, item)
 			}
 			for _, call := range message.ToolCalls {
 				call := call

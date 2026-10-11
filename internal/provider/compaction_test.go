@@ -423,7 +423,7 @@ func TestAPICompactsAnOversizedHistoryAndStaysUsable(t *testing.T) {
 	session := &core.Session{Messages: messages, Usage: core.SessionUsage{Context: 30_000}}
 	backend := &API{Model: model, ContextTokens: window}
 	for run := 1; run <= 2; run++ {
-		if err := backend.Run(context.Background(), session, "Verify the review", &testTools{}, func(core.Event) {}); err != nil {
+		if err := backend.Run(context.Background(), session, core.Prompt{Text: "Verify the review"}, &testTools{}, func(core.Event) {}); err != nil {
 			t.Fatalf("run %d: %v", run, err)
 		}
 	}

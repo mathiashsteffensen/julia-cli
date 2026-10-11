@@ -17,7 +17,7 @@ import (
 type delegationBackend struct{ parentID string }
 
 func (b *delegationBackend) Name() string { return "fake" }
-func (b *delegationBackend) Run(ctx context.Context, s *core.Session, prompt string, executor core.ToolExecutor, emit core.Emit) error {
+func (b *delegationBackend) Run(ctx context.Context, s *core.Session, prompt core.Prompt, executor core.ToolExecutor, emit core.Emit) error {
 	if s.ParentID == "" {
 		result := executor.Execute(ctx, core.ToolCall{Name: "Subagent", Arguments: json.RawMessage(`{"tasks":["delegated task one","delegated task two"]}`)})
 		if result.IsError || strings.Contains(result.Content, `"error"`) {
@@ -45,7 +45,7 @@ func (b *delegationBackend) Run(ctx context.Context, s *core.Session, prompt str
 	}
 	emit(core.Event{Kind: "text", Text: "private child text"})
 	emit(core.Event{Kind: "status", Text: "child status"})
-	s.Messages = append(s.Messages, core.Message{Role: "user", Content: prompt}, core.Message{Role: "assistant", Content: "child answer"})
+	s.Messages = append(s.Messages, core.Message{Role: "user", Content: prompt.Text}, core.Message{Role: "assistant", Content: "child answer"})
 	return nil
 }
 
@@ -76,7 +76,7 @@ func TestRuntimeSubagentsInheritSettingsAndAuthorization(t *testing.T) {
 		},
 		checkpoint: func(child *core.Session) error { mu.Lock(); defer mu.Unlock(); saved[child.ID] = *child; return nil },
 	}
-	err := runner.Run(context.Background(), s, "current follow-up", nil, func(event core.Event) {
+	err := runner.Run(context.Background(), s, core.Prompt{Text: "current follow-up"}, nil, func(event core.Event) {
 		if event.Kind == "text" {
 			t.Error("child text leaked into parent stream")
 		}

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -19,11 +20,11 @@ func TestWordmarkWaitsForTerminalAcknowledgementAndRestoresAfterResize(t *testin
 	if cmd == nil || !strings.Contains(m.View().Content, "J A R V I S") {
 		t.Fatal("must show readable text while waiting for terminal")
 	}
-	if raw := cmd().(tea.RawMsg).Msg; raw != ansi.RequestModeAltScreenSaveCursor {
-		t.Fatalf("must round trip before uploading: %q", raw)
+	if raw := rawOutput(cmd); raw != ansi.RequestModeAltScreenSaveCursor+ansi.WindowOp(ansi.RequestCellSizeWinOp) {
+		t.Fatalf("must round trip before uploading, and ask the cell size: %q", raw)
 	}
 	_, cmd = m.Update(tea.ModeReportMsg{Mode: ansi.ModeAltScreenSaveCursor, Value: ansi.ModeSet})
-	if cmd == nil || !strings.Contains(cmd().(tea.RawMsg).Msg.(string), "U=1") {
+	if !strings.Contains(rawOutput(cmd), "U=1") {
 		t.Fatal("missing virtual image upload")
 	}
 	m.Update(uv.KittyGraphicsEvent{Options: kitty.Options{ID: wordmarkID}, Payload: []byte("EINVAL")})
@@ -103,4 +104,23 @@ func TestWordmarkFallsBackInUnsupportedTerminals(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("must not upload when color conversion would damage image IDs")
 	}
+}
+
+// rawOutput runs cmd, and every command a batch of it holds, and returns what
+// they write to the terminal, in order.
+func rawOutput(cmd tea.Cmd) string {
+	if cmd == nil {
+		return ""
+	}
+	switch msg := cmd().(type) {
+	case tea.RawMsg:
+		return fmt.Sprint(msg.Msg)
+	case tea.BatchMsg:
+		var out strings.Builder
+		for _, cmd := range msg {
+			out.WriteString(rawOutput(cmd))
+		}
+		return out.String()
+	}
+	return ""
 }
