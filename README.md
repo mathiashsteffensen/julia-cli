@@ -107,16 +107,17 @@ keys are only referenced by env var name.
   "timeout": "4h",
   "base_url": "https://openrouter.ai/api/v1",
   "api_key_env": "OPENROUTER_API_KEY",
-  "compatible_models": ["vendor/model-a", "vendor/model-b"],
+  "compatible_models": ["vendor/model-a", {"id": "vendor/model-b", "reasoning": "high"}],
   "skill_paths": ["~/.codex/skills/coding-assistance-style/SKILL.md"],
   "browser": "/Applications/Chromium.app"
 }
 ```
 
 - `compatible_models` populates the second tab of the model picker. Codex models come from Codex itself.
+- `model` and each `compatible_models` entry are a model ID, or `{"id": "<model-id>", "reasoning": "<effort>"}` for a model that starts at that effort when you launch with it or pick it.
 - `context_tokens` is the assumed window for every model. API providers compact the history at 85%.
 - `skill_paths` are extra instruction files added to every turn. If you omit it, JARVIS loads `coding-assistance-style/SKILL.md` from `$CODEX_HOME/skills` or `~/.agents/skills`. `[]` disables skills.
-- The last reasoning effort you picked for each provider is remembered in `~/.local/state/jarvis/preferences.json`.
+- The last reasoning effort you picked for each provider is remembered in `~/.local/state/jarvis/preferences.json`. It applies at launch unless the model has its own `reasoning`, and `--reasoning` beats both.
 - `browser` is the Chrome the Browser tool launches (an executable or `.app`); `JARVIS_BROWSER` overrides it. Without either, JARVIS looks for Chrome, Chromium, Chrome for Testing, Brave or Edge in `/Applications`, then in Playwright's and Puppeteer's caches. `npx playwright install chromium` provides one.
 
 Sessions are stored in `~/.local/state/jarvis/sessions` with 0600 permissions.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"jarvis/internal/core"
@@ -28,10 +29,10 @@ func TestCompatibleModelConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
-	if err != nil || len(cfg.CompatibleModels) != 2 || cfg.CompatibleModels[1] != "openai/gpt-model" {
+	if err != nil || len(cfg.CompatibleModels) != 2 || cfg.CompatibleModels[1].ID != "openai/gpt-model" {
 		t.Fatalf("saved compatible models not loaded: %#v %v", cfg.CompatibleModels, err)
 	}
-	for _, models := range [][]string{{""}, {" model"}, {"bad\nmodel"}, {"duplicate", "duplicate"}} {
+	for _, models := range [][]ModelEntry{{{ID: ""}}, {{ID: " model"}}, {{ID: "bad\nmodel"}}, {{ID: "duplicate"}, {ID: "duplicate"}}} {
 		cfg := Default()
 		cfg.CompatibleModels = models
 		if err := cfg.Validate(); err == nil {
@@ -229,5 +230,91 @@ func TestReviewerModelConfiguration(t *testing.T) {
 	cfg.ReviewerModel = "compatible/" + CompatibleDecisionsModel
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("accepted a compatible reviewer without base_url")
+	}
+}
+
+func TestModelsAreIDsOrObjectsWithReasoning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	data := `{"provider":"compatible","base_url":"https://openrouter.ai/api/v1",
+		"model":{"id":"mistral/mistral-large-4-0","reasoning":"high"},
+		"compatible_models":["deepseek/deepseek-v4.1-flash",{"id":"mistral/mistral-large-4-0","reasoning":"high"},{"id":"vendor/plain"}]}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Model != "mistral/mistral-large-4-0" || cfg.ModelReasoning != "high" {
+		t.Fatalf("model object not loaded: %q %q", cfg.Model, cfg.ModelReasoning)
+	}
+	want := []ModelEntry{{ID: "deepseek/deepseek-v4.1-flash"}, {ID: "mistral/mistral-large-4-0", Reasoning: "high"}, {ID: "vendor/plain"}}
+	if len(cfg.CompatibleModels) != len(want) {
+		t.Fatalf("compatible_models = %#v", cfg.CompatibleModels)
+	}
+	for i := range want {
+		if cfg.CompatibleModels[i] != want[i] {
+			t.Fatalf("compatible_models[%d] = %#v, want %#v", i, cfg.CompatibleModels[i], want[i])
+		}
+	}
+	if got := cfg.ReasoningFor("compatible", "deepseek/deepseek-v4.1-flash"); got != "" {
+		t.Fatal("a bare model ID got reasoning", got)
+	}
+	if got := cfg.ReasoningFor("codex", "mistral/mistral-large-4-0"); got != "" {
+		t.Fatal("the model's reasoning leaked to another provider", got)
+	}
+
+	// A string model stays a string; an object model round-trips as one.
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var again Config
+	if err := json.Unmarshal(encoded, &again); err != nil || again.Model != cfg.Model || again.ModelReasoning != "high" || len(again.CompatibleModels) != 3 {
+		t.Fatalf("round trip lost models: %s %v", encoded, err)
+	}
+	if !strings.Contains(string(encoded), `"deepseek/deepseek-v4.1-flash"`) {
+		t.Fatalf("a bare model ID was not written as a string: %s", encoded)
+	}
+}
+
+func TestModelObjectsAreChecked(t *testing.T) {
+	for _, data := range []string{
+		`{"model":{"reasoning":"high"}}`,
+		`{"model":{"id":"m","effort":"high"}}`,
+		`{"model":42}`,
+		`{"compatible_models":[{"id":"m","reasoning":"high"}]}`,
+		`{"provider":"compatible","base_url":"https://openrouter.ai/api/v1","compatible_models":[{"id":"m","reasoning":"turbo"}]}`,
+		`{"provider":"openai","model":{"id":"m","reasoning":"high"}}`,
+	} {
+		p := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(p, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(p); err == nil {
+			t.Fatalf("accepted %s", data)
+		}
+	}
+}
+
+func TestModelReasoningBeatsRememberedReasoning(t *testing.T) {
+	remembered := Preferences{Reasoning: map[string]string{"compatible": "low"}}
+	cfg := Default()
+	cfg.Provider, cfg.BaseURL = "compatible", "https://openrouter.ai/api/v1"
+	cfg.Model, cfg.ModelReasoning = "vendor/a", "high"
+	cfg.ApplyStartingReasoning(remembered)
+	if cfg.Reasoning != "high" {
+		t.Fatal("the model's reasoning did not win", cfg.Reasoning)
+	}
+	cfg.Model, cfg.ModelReasoning, cfg.Reasoning = "vendor/b", "", ""
+	cfg.CompatibleModels = []ModelEntry{{ID: "vendor/b", Reasoning: "max"}}
+	cfg.ApplyStartingReasoning(remembered)
+	if cfg.Reasoning != "max" {
+		t.Fatal("the compatible_models entry's reasoning did not apply", cfg.Reasoning)
+	}
+	cfg.Model, cfg.Reasoning = "vendor/c", ""
+	cfg.ApplyStartingReasoning(remembered)
+	if cfg.Reasoning != "low" {
+		t.Fatal("a model without reasoning lost the remembered effort", cfg.Reasoning)
 	}
 }

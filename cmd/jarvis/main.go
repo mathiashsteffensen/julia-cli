@@ -86,6 +86,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// The "model" entry's reasoning belongs to that provider and model only.
+	if (backend != "" && backend != cfg.Provider) || (model != "" && model != cfg.Model) {
+		cfg.ModelReasoning = ""
+	}
 	if backend != "" {
 		cfg.Provider = backend
 	}
@@ -111,13 +115,16 @@ func run() error {
 	if timeout != "" {
 		cfg.Timeout = timeout
 	}
-	// The last reasoning effort chosen for this provider replaces the configured
-	// default; an explicit flag is itself a choice and becomes the new default.
+	// The model's own configured reasoning, else the last effort chosen for
+	// this provider, replaces the configured default; an explicit flag is
+	// itself a choice and becomes the new default.
 	preferencesPath, preferencesErr := config.PreferencesPath()
-	if !reasoningSet && preferencesErr == nil {
-		if prefs, err := config.LoadPreferences(preferencesPath); err == nil {
-			cfg.ApplyRememberedReasoning(prefs)
+	if !reasoningSet {
+		var prefs config.Preferences
+		if preferencesErr == nil {
+			prefs, _ = config.LoadPreferences(preferencesPath)
 		}
+		cfg.ApplyStartingReasoning(prefs)
 	}
 	if err = cfg.Validate(); err != nil {
 		return err
@@ -308,11 +315,11 @@ func run() error {
 		}
 		return nil
 	}
-	for _, id := range cfg.CompatibleModels {
-		if config.IsDecisionsOnlyCompatibleModel(id) {
+	for _, entry := range cfg.CompatibleModels {
+		if config.IsDecisionsOnlyCompatibleModel(entry.ID) {
 			continue
 		}
-		uiConfig.CompatibleModels = append(uiConfig.CompatibleModels, core.ModelOption{ID: id, Name: id, Description: "Saved compatible model"})
+		uiConfig.CompatibleModels = append(uiConfig.CompatibleModels, core.ModelOption{ID: entry.ID, Name: entry.ID, Description: "Saved compatible model", DefaultReasoning: entry.Reasoning})
 	}
 	uiConfig.CompatibleReasoning = config.SupportsReasoning("compatible", cfg.BaseURL)
 	codexBinary := cfg.CodexBinary

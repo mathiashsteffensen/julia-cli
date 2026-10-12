@@ -96,7 +96,7 @@ func applySessionSettings(cfg config.Config, current *core.Session, selectedProv
 	candidate := *current
 	candidate.Provider = selectedProvider
 	candidate.Model, candidate.Reasoning, candidate.ReasoningSet = model, reasoning, true
-	cfg.Provider, cfg.Model, cfg.Reasoning = selectedProvider, model, reasoning
+	cfg.Provider, cfg.Model, cfg.Reasoning, cfg.ModelReasoning = selectedProvider, model, reasoning, ""
 	if err := cfg.Validate(); err != nil {
 		return err
 	}

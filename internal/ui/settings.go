@@ -567,10 +567,17 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 		// can be restored below from its own catalog entry.
 		reasoning = ""
 	}
-	if provider == "compatible" && modelChanged {
+	if provider == "compatible" && (modelChanged || providerChanged) {
 		// Compatible model support is not in the catalog, so do not carry a
-		// potentially unsupported effort to a different model.
+		// potentially unsupported effort to a different model; start at the
+		// effort its compatible_models entry gives, if any.
 		reasoning = ""
+		for _, option := range m.compatibleModels {
+			if option.ID == model {
+				reasoning = option.DefaultReasoning
+				break
+			}
+		}
 	} else if provider == "codex" && (modelChanged || providerChanged) {
 		for _, option := range m.models {
 			if option.ID == model && (reasoning == "" || (len(option.ReasoningEfforts) > 0 && !slices.Contains(option.ReasoningEfforts, reasoning))) {

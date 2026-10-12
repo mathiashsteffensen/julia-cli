@@ -87,10 +87,15 @@ func savePreferences(path string, p Preferences) error {
 	return os.Rename(name, path)
 }
 
-// ApplyRememberedReasoning makes the provider's last used effort the default,
-// unless it is no longer valid for the current configuration (for example a
-// compatible endpoint that stopped supporting reasoning).
-func (c *Config) ApplyRememberedReasoning(p Preferences) {
+// ApplyStartingReasoning picks the effort a new run starts with: the model's
+// own configured reasoning, else the provider's last used effort, unless that
+// is no longer valid for the current configuration (for example a compatible
+// endpoint that stopped supporting reasoning).
+func (c *Config) ApplyStartingReasoning(p Preferences) {
+	if effort := c.ReasoningFor(c.Provider, c.Model); effort != "" {
+		c.Reasoning = effort
+		return
+	}
 	effort, ok := p.Reasoning[c.Provider]
 	if !ok {
 		return

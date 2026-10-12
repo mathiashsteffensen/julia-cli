@@ -173,6 +173,31 @@ func TestPickerSwitchesBetweenCodexAndSavedCompatibleModels(t *testing.T) {
 	}
 }
 
+func TestCompatibleModelStartsAtItsConfiguredReasoning(t *testing.T) {
+	cfg := settingsConfig()
+	cfg.CompatibleReasoning = true
+	cfg.CompatibleModels = []core.ModelOption{{ID: "vendor/a", Name: "vendor/a", DefaultReasoning: "high"}, {ID: "vendor/b", Name: "vendor/b"}}
+	m := testModel(t, cfg)
+	if err := m.applySettings("compatible", "vendor/a", ""); err != nil {
+		t.Fatal(err)
+	}
+	if m.cfg.Session.Reasoning != "high" {
+		t.Fatal("switching providers ignored the model's reasoning", m.cfg.Session.Reasoning)
+	}
+	if err := m.applySettings("compatible", "vendor/b", "high"); err != nil {
+		t.Fatal(err)
+	}
+	if m.cfg.Session.Reasoning != "" {
+		t.Fatal("an effort carried to a model without one", m.cfg.Session.Reasoning)
+	}
+	if err := m.applySettings("compatible", "vendor/a", ""); err != nil {
+		t.Fatal(err)
+	}
+	if m.cfg.Session.Reasoning != "high" {
+		t.Fatal("switching models ignored the model's reasoning", m.cfg.Session.Reasoning)
+	}
+}
+
 func TestCompatibleReasoningChoicesAreGenericAndUnverified(t *testing.T) {
 	const modelID = "vendor/model"
 	cfg := settingsConfig()

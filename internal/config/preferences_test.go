@@ -30,13 +30,13 @@ func TestRememberedReasoningIsPerProvider(t *testing.T) {
 
 	cfg := Default()
 	cfg.Reasoning = "medium"
-	cfg.ApplyRememberedReasoning(p)
+	cfg.ApplyStartingReasoning(p)
 	if cfg.Reasoning != "low" {
 		t.Fatalf("codex reasoning = %q", cfg.Reasoning)
 	}
 	cfg = Default()
 	cfg.Provider, cfg.Model, cfg.Reasoning = "openai", "gpt", ""
-	cfg.ApplyRememberedReasoning(p)
+	cfg.ApplyStartingReasoning(p)
 	if cfg.Reasoning != "" {
 		t.Fatalf("another provider's effort leaked: %q", cfg.Reasoning)
 	}
@@ -45,7 +45,7 @@ func TestRememberedReasoningIsPerProvider(t *testing.T) {
 func TestRememberedReasoningIgnoredWhenInvalid(t *testing.T) {
 	cfg := Default()
 	cfg.Provider, cfg.Model, cfg.BaseURL = "compatible", "vendor/model", "https://example.com/v1"
-	cfg.ApplyRememberedReasoning(Preferences{Reasoning: map[string]string{"compatible": "high"}})
+	cfg.ApplyStartingReasoning(Preferences{Reasoning: map[string]string{"compatible": "high"}})
 	if cfg.Reasoning != "" {
 		t.Fatalf("applied unsupported effort %q", cfg.Reasoning)
 	}
