@@ -113,6 +113,36 @@ func TestCompatibleRefreshesInstructionsAcrossRuns(t *testing.T) {
 	}
 }
 
+// A compatible endpoint gets the key configured for it, or none, never the
+// OpenAI keys the SDK would otherwise read from the environment.
+func TestCompatibleNeverSendsTheEnvironmentsOpenAIKey(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-environment")
+	t.Setenv("OPENAI_ADMIN_KEY", "sk-admin")
+	for _, key := range []string{"", "sk-configured"} {
+		authorization := make(chan string, 1)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			authorization <- r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"id\":\"a\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Done.\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+		}))
+		backend, err := NewAPI(context.Background(), APIConfig{Provider: "compatible", Model: "fixture", BaseURL: server.URL + "/v1", APIKey: key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := backend.Run(context.Background(), &core.Session{}, core.Prompt{Text: "hello"}, &testTools{}, func(core.Event) {}); err != nil {
+			t.Fatal(err)
+		}
+		server.Close()
+		want := ""
+		if key != "" {
+			want = "Bearer " + key
+		}
+		if got := <-authorization; got != want {
+			t.Fatalf("configured key %q sent Authorization %q, want %q", key, got, want)
+		}
+	}
+}
+
 func TestAPICompactionRetainsRuntimeInstructionsAndIsolatesReview(t *testing.T) {
 	const runtimeInstructions = "Runtime policy COMPACTION_POLICY_SENTINEL with current workspace and permissions."
 	model := &scriptedAPIModel{parts: []fantasy.StreamPart{{Type: fantasy.StreamPartTypeTextStart, ID: "text"}, {Type: fantasy.StreamPartTypeTextDelta, ID: "text", Delta: "Done."}, {Type: fantasy.StreamPartTypeTextEnd, ID: "text"}, {Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonStop}}, generated: &fantasy.Response{FinishReason: fantasy.FinishReasonStop, Content: fantasy.ResponseContent{fantasy.TextContent{Text: "Previously inspected the fixture; continue verification."}}}}

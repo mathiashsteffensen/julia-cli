@@ -21,6 +21,7 @@ import (
 	"charm.land/fantasy/providers/google"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/charmbracelet/openai-go/option"
 )
 
 // API adapts independently supplied models to the same tools and event stream.
@@ -78,7 +79,13 @@ func NewAPI(ctx context.Context, c APIConfig) (*API, error) {
 		if c.BaseURL == "" {
 			return nil, errors.New("compatible provider requires compatible_base_url")
 		}
-		p, err = openaicompat.New(openaicompat.WithAPIKey(c.APIKey), openaicompat.WithBaseURL(c.BaseURL), openaicompat.WithHTTPClient(client))
+		// The SDK reads OPENAI_API_KEY and OPENAI_ADMIN_KEY from the environment
+		// unless told otherwise, and fantasy passes no key at all when it is
+		// empty: a keyless endpoint, or an api_key_env that is unset, would send
+		// the OpenAI key to a third party. The configured key, empty or not,
+		// replaces both.
+		p, err = openaicompat.New(openaicompat.WithAPIKey(c.APIKey), openaicompat.WithBaseURL(c.BaseURL), openaicompat.WithHTTPClient(client),
+			openaicompat.WithSDKOptions(option.WithAPIKey(c.APIKey), option.WithAdminAPIKey("")))
 	default:
 		return nil, fmt.Errorf("unknown API provider %q", c.Provider)
 	}
