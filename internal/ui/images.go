@@ -147,16 +147,17 @@ func (m *model) attachmentChips(width int) string {
 	}
 	var chips string
 	for i, a := range named {
-		chip := "  " + violetStyle.Render(fmt.Sprintf("▣ Image #%d", a.number)) + faintStyle.Render(fmt.Sprintf(" %d×%d", a.image.Width, a.image.Height))
+		// The chips share the composer title's row, so they carry its background.
+		chip := ink(panel, violet).Render(fmt.Sprintf("  ▣ Image #%d", a.number)) + ink(panel, faint).Render(fmt.Sprintf(" %d×%d", a.image.Width, a.image.Height))
 		rest := ""
 		if left := len(named) - i - 1; left > 0 {
-			rest = mutedStyle.Render(fmt.Sprintf("  +%d", left))
+			rest = ink(panel, muted).Render(fmt.Sprintf("  +%d", left))
 		}
 		if ansi.StringWidth(chips+chip+rest) > width {
 			if chips == "" {
-				return "  " + violetStyle.Render(fmt.Sprintf("▣ %d image%s", len(named), plural(len(named))))
+				return ink(panel, violet).Render(fmt.Sprintf("  ▣ %d image%s", len(named), plural(len(named))))
 			}
-			return chips + mutedStyle.Render(fmt.Sprintf("  +%d", len(named)-i))
+			return chips + ink(panel, muted).Render(fmt.Sprintf("  +%d", len(named)-i))
 		}
 		chips += chip
 	}

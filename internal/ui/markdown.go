@@ -114,6 +114,12 @@ type codeSpan struct {
 // renderCodeBlock draws a card width cells wide: a header row, a padding row,
 // the code, and a padding row. continued marks rows that carry on a wrapped line.
 func renderCodeBlock(code, language string, width int) (rows []string, continued []bool) {
+	return renderCodeCard(code, language, width, "⧉ copy")
+}
+
+// renderCodeCard is renderCodeBlock with the header's right-hand hint chosen
+// by the caller: a card that cannot be clicked to copy shows none.
+func renderCodeCard(code, language string, width int, hint string) (rows []string, continued []bool) {
 	width = max(codeGutter+8, width)
 	inner := width - codeGutter - 1
 	fill := lipgloss.NewStyle().Background(codeBackground)
@@ -124,7 +130,10 @@ func renderCodeBlock(code, language string, width int) (rows []string, continued
 		label = "code"
 	}
 	left := header.Render(strings.Repeat(" ", codeGutter)) + header.Foreground(violet).Bold(true).Render(ansi.Truncate(label, max(1, width-codeGutter-12), "…"))
-	right := header.Foreground(muted).Render("⧉ copy") + header.Render(" ")
+	right := ""
+	if hint != "" {
+		right = header.Foreground(muted).Render(hint) + header.Render(" ")
+	}
 	if ansi.StringWidth(left)+ansi.StringWidth(right) >= width {
 		right = ""
 	}

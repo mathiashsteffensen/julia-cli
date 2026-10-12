@@ -17,8 +17,8 @@ func TestWordmarkWaitsForTerminalAcknowledgementAndRestoresAfterResize(t *testin
 	m.resize(128, 40)
 	m.Update(tea.ColorProfileMsg{Profile: colorprofile.TrueColor})
 	_, cmd := m.Update(tea.EnvMsg{"TERM_PROGRAM=ghostty", "TERM=xterm-ghostty"})
-	if cmd == nil || !strings.Contains(m.View().Content, "J A R V I S") {
-		t.Fatal("must show readable text while waiting for terminal")
+	if cmd == nil || !strings.Contains(ansi.Strip(m.View().Content), "A little less supervision") {
+		t.Fatal("must show the welcome while waiting for terminal")
 	}
 	if raw := rawOutput(cmd); raw != ansi.RequestModeAltScreenSaveCursor+ansi.WindowOp(ansi.RequestCellSizeWinOp) {
 		t.Fatalf("must round trip before uploading, and ask the cell size: %q", raw)
@@ -36,32 +36,13 @@ func TestWordmarkWaitsForTerminalAcknowledgementAndRestoresAfterResize(t *testin
 		t.Fatal("unrelated acknowledgement activated wordmark")
 	}
 	m.Update(uv.KittyGraphicsEvent{Options: kitty.Options{ID: wordmarkID}, Payload: []byte("OK")})
-	view := m.View().Content
-	if !strings.ContainsRune(view, kitty.Placeholder) {
-		t.Fatal("confirmed wordmark missing")
+	if !m.wordmarkReady || !m.graphicsConfirmed {
+		t.Fatal("acknowledged upload must confirm graphics")
 	}
-	// Exercise the actual grapheme parser used by Bubble Tea, not just ANSI
-	// string widths: image IDs and combining row/column coordinates must survive.
-	buffer := uv.NewScreenBuffer(128, 40)
-	uv.NewStyledString(view).Draw(buffer, buffer.Bounds())
-	cells := 0
-	for y := 0; y < 40; y++ {
-		for x := 0; x < 128; x++ {
-			cell := buffer.CellAt(x, y)
-			if cell != nil && strings.ContainsRune(cell.Content, kitty.Placeholder) {
-				cells++
-				if len([]rune(cell.Content)) != 3 || cell.Width != 1 {
-					t.Fatalf("damaged placeholder: %#v", cell)
-				}
-				r, g, b, _ := cell.Style.Fg.RGBA()
-				if int(r>>8)<<16|int(g>>8)<<8|int(b>>8) != wordmarkID {
-					t.Fatalf("image ID color changed: %#v", cell.Style.Fg)
-				}
-			}
-		}
-	}
-	if cells != wordmarkColumns*wordmarkRows {
-		t.Fatalf("got %d placeholder cells", cells)
+	// The welcome draws its wordmark in block lettering; the uploaded image is
+	// the graphics probe only, so no placeholder cell appears in the view.
+	if strings.ContainsRune(m.View().Content, kitty.Placeholder) {
+		t.Fatal("welcome placed the probe image")
 	}
 	_, cmd = m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	if cmd == nil || m.wordmarkReady {

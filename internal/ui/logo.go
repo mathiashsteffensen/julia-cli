@@ -72,6 +72,56 @@ func logoLettering() []string {
 	return rows
 }
 
+// heroLettering draws the wordmark for the welcome screen: each pixel a cell
+// wide and half a cell tall, so the letters stand twice as wide as the
+// sidebar's and their strokes read as blocks rather than quadrant stipple.
+// gap is the number of cells between letters.
+func heroLettering(gap int) []string {
+	width := 0
+	for i, letter := range logoLetters {
+		if i > 0 {
+			width += gap
+		}
+		width += len(letter[0])
+	}
+	rows := make([]string, len(logoLetters[0])/2)
+	for row := range rows {
+		var b strings.Builder
+		column := 0
+		for i, letter := range logoLetters {
+			if i > 0 {
+				b.WriteString(strings.Repeat(" ", gap))
+				column += gap
+			}
+			for x := range len(letter[0]) {
+				top, bottom := letter[2*row][x] == '#', letter[2*row+1][x] == '#'
+				cell := " "
+				switch {
+				case top && bottom:
+					cell = "█"
+				case top:
+					cell = "▀"
+				case bottom:
+					cell = "▄"
+				}
+				b.WriteString(lipgloss.NewStyle().Foreground(logoColor(column, width)).Render(cell))
+				column++
+			}
+		}
+		rows[row] = b.String()
+	}
+	return rows
+}
+
+// heroWidth is the cell width of heroLettering(gap).
+func heroWidth(gap int) int {
+	width := gap * (len(logoLetters) - 1)
+	for _, letter := range logoLetters {
+		width += len(letter[0])
+	}
+	return width
+}
+
 // sidebarLogo keeps a blank row between each rail and the lettering at every
 // terminal height. Collapsing those rows makes the diagonal rails touch the mark.
 func sidebarLogo(version string, width int) []string {

@@ -289,8 +289,9 @@ func TestUnsandboxedApprovalDisclosesExactScopeAndDirectory(t *testing.T) {
 			Reason:        "Review the requested execution scope", Network: true,
 		}, Reply: make(chan core.Decision, 1)}
 		m.refresh(true)
+		// Box drawing and the code card's wrap marker are chrome, not content.
 		panel := strings.Map(func(r rune) rune {
-			if r >= 0x2500 && r <= 0x257f {
+			if r >= 0x2500 && r <= 0x257f || r == '↳' {
 				return -1
 			}
 			return r

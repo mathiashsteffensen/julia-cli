@@ -13,8 +13,11 @@ import (
 	"github.com/charmbracelet/x/ansi/kitty"
 )
 
-// The image is a high-resolution rendering of the same Menlo Bold wordmark.
-// Its 18-column placement makes the lettering about 30% larger than plain text.
+// The welcome screen draws its wordmark in block lettering (see logo.go), so
+// this image is no longer placed. Its upload remains the graphics probe: the
+// terminal's acknowledgement is what confirms Kitty graphics work before any
+// thumbnail is sent, and its deletion on quit is the test that the delete
+// reaches the terminal before the screen is restored.
 //
 //go:embed assets/wordmark.png
 var wordmarkPNG []byte
@@ -63,14 +66,6 @@ func uploadWordmark() tea.Cmd {
 		return nil
 	}
 	return tea.Raw(out.String())
-}
-
-func wordmarkPlaceholders() string {
-	rows := make([]string, wordmarkRows)
-	for row := range rows {
-		rows[row] = placeholderRow(wordmarkID, row, wordmarkColumns)
-	}
-	return strings.Join(rows, "\n")
 }
 
 func (m *model) quit() tea.Cmd {

@@ -66,6 +66,7 @@ func (m *model) openPicker(kind string) tea.Cmd {
 	if kind == "reasoning" {
 		search.Placeholder = "Filter reasoning levels"
 	}
+	search.SetStyles(searchStyles())
 	search.CharLimit = 256
 	search.SetVirtualCursor(true)
 	search.SetWidth(max(8, m.mainWidth-8))
@@ -629,6 +630,19 @@ func (m *model) modelProviderLabel(provider string) string {
 
 func oneLine(value string) string { return strings.Join(strings.Fields(sanitize(value)), " ") }
 
+// searchStyles dress the picker's search field as the composer: the field sits
+// on the composer's panel, so every part of it carries that background.
+func searchStyles() textinput.Styles {
+	s := textinput.DefaultDarkStyles()
+	s.Focused.Prompt = ink(panel, coral)
+	s.Focused.Text = ink(panel, cream)
+	s.Focused.Placeholder = ink(panel, muted)
+	s.Focused.Suggestion = ink(panel, faint)
+	s.Blurred = s.Focused
+	s.Cursor.Color = coral
+	return s
+}
+
 func (m *model) pickerView() string {
 	p := m.picker
 	width := m.mainWidth
@@ -643,21 +657,40 @@ func (m *model) pickerView() string {
 		}
 		title, subtitle = "REASONING EFFORT", "For "+name+" · applies to the next turn"
 	}
-	lines := []string{violetStyle.Bold(true).Render(title), mutedStyle.Render(ansi.Truncate(oneLine(subtitle), width, "…"))}
+	heading := violetStyle.Bold(true).Render(title)
+	var lines []string
 	if p.loading {
-		lines = append(lines, "", m.spinner.View()+mutedStyle.Render(" Loading available models…"))
+		lines = append(lines, heading, mutedStyle.Render(ansi.Truncate(oneLine(subtitle), width, "…")), "", m.spinner.View()+mutedStyle.Render(" Loading available models…"))
 	} else {
 		choices := m.pickerChoices()
-		rowHeight := 2
-		if m.bodyHeight < 9 {
+		selected := min(p.selected, max(0, len(choices)-1))
+		// The position rides on the heading's row, right-aligned, as the
+		// question card's does.
+		count := fmt.Sprintf("%d available", len(choices))
+		if len(choices) > 0 {
+			count = fmt.Sprintf("%d / %d", selected+1, len(choices))
+		}
+		if fill := width - ansi.StringWidth(heading) - ansi.StringWidth(count); fill >= 2 {
+			heading += strings.Repeat(" ", fill) + faintStyle.Render(count)
+		}
+		lines = append(lines, heading, mutedStyle.Render(ansi.Truncate(oneLine(subtitle), width, "…")), "")
+		if m.bodyHeight < 6 {
+			// Too short for chrome: the heading alone, or just the choices.
+			lines = lines[:min(1, m.bodyHeight-1)]
+		}
+		// Tall enough, each choice is two rows and a row of air; otherwise
+		// the rows pack, then drop their detail.
+		rowHeight, spaced := 2, m.bodyHeight >= 14
+		if spaced {
+			rowHeight = 3
+		} else if m.bodyHeight < 10 {
 			rowHeight = 1
 		}
-		reserved := 3
+		reserved := len(lines)
 		if p.err != "" {
-			reserved++
+			reserved += 2
 		}
 		slots := max(1, (m.bodyHeight-reserved)/rowHeight)
-		selected := min(p.selected, max(0, len(choices)-1))
 		start := max(0, selected-slots+1)
 		if len(choices) == 0 {
 			empty := "No matching models. Esc to use /model ID."
@@ -666,33 +699,34 @@ func (m *model) pickerView() string {
 			}
 			lines = append(lines, mutedStyle.Render(ansi.Truncate(empty, width, "…")))
 		}
+		// Each choice is lit like a question's option: a coral bar down its
+		// rows and a panel behind the chosen one, its detail brought up from
+		// faint to muted so the eye lands there.
 		for i := start; i < min(len(choices), start+slots); i++ {
 			choice := choices[i]
-			prefix, suffix := "  ", ""
-			if i == selected {
-				prefix = "› "
+			if spaced && i > start {
+				lines = append(lines, "")
 			}
+			bg := background
+			bar, label, detail := " ", creamStyle, faintStyle
+			if i == selected {
+				bg = panel
+				bar, label, detail = ink(panel, coral).Render("▌"), ink(panel, cream).Bold(true), ink(panel, muted)
+			}
+			lead := ink(bg, cream).Render(" ") + bar + ink(bg, cream).Render("  ")
+			mark := ""
 			if choice.active {
-				suffix = "  ✓"
+				mark = ink(bg, green).Render("  ✓ current")
 			}
-			label := ansi.Truncate(prefix+oneLine(choice.label)+suffix, width, "…")
-			style := creamStyle
-			if i == selected {
-				style = lipgloss.NewStyle().Foreground(coral).Background(panel).Bold(true).Width(width)
-			}
-			lines = append(lines, style.Render(label))
-			if rowHeight == 2 {
-				lines = append(lines, faintStyle.Render(ansi.Truncate("  "+oneLine(choice.detail), width, "…")))
+			name := ansi.Truncate(oneLine(choice.label), max(1, width-4-ansi.StringWidth(mark)), "…")
+			row := lead + label.Render(name) + mark
+			lines = append(lines, paint(bg, width, row))
+			if rowHeight >= 2 {
+				lines = append(lines, paint(bg, width, lead+detail.Render(ansi.Truncate(oneLine(choice.detail), max(1, width-5), "…"))))
 			}
 		}
 		if p.err != "" {
-			lines = append(lines, coralStyle.Render(ansi.Truncate(p.err, width, "…")))
-		} else {
-			count := fmt.Sprintf("%d available", len(choices))
-			if len(choices) > 0 {
-				count = fmt.Sprintf("%d / %d", selected+1, len(choices))
-			}
-			lines = append(lines, faintStyle.Render(count))
+			lines = append(lines, "", coralStyle.Render(ansi.Truncate(p.err, width, "…")))
 		}
 	}
 	if len(lines) > m.bodyHeight {

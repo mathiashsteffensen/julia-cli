@@ -610,6 +610,9 @@ func (m *model) assembleCard(q *questionState, width int, plan cardPlan, budget 
 		foot = append(foot, blank)
 	}
 	foot = append(foot, paint(cardBG, iw, pad+m.cardHint(q, iw-4)))
+	if plan.airy {
+		foot = append(foot, blank)
+	}
 
 	var blocks [][]string
 	if q.freeform() {

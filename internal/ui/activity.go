@@ -82,10 +82,11 @@ func activityHash(x uint64) uint64 {
 	return x ^ (x >> 31)
 }
 
-// Precompute a seamless purple-magenta wave in perceptual color space.
+// Precompute a seamless violet-to-coral wave, the interface's two accents, in
+// perceptual color space.
 var activityGradient = func() [activityWidth * 2]lipgloss.Style {
-	purple := colorful.Color{R: 107.0 / 255, G: 80.0 / 255, B: 1}
-	magenta := colorful.Color{R: 1, G: 96.0 / 255, B: 1}
+	purple := colorful.Color{R: 0xC6 / 255.0, G: 0xB6 / 255.0, B: 0xF2 / 255.0}
+	magenta := colorful.Color{R: 0xF4 / 255.0, G: 0x9D / 255.0, B: 0x89 / 255.0}
 	var gradient [activityWidth * 2]lipgloss.Style
 	for i := range gradient {
 		position := i

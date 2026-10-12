@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -123,8 +124,19 @@ func (m *model) refresh(forceBottom bool) {
 		style.Document.BlockSuffix = ""
 		style.Document.Color = str("#ECE5DC")
 		style.Heading.Color = str("#C6B6F2")
+		style.Heading.Bold = ptr(true)
 		style.H1.Color = str("#F49D89")
 		style.H1.BackgroundColor = nil
+		// Headings are set by weight and color, not by their Markdown markers.
+		style.H1.Prefix, style.H1.Suffix = "", ""
+		style.H2.Prefix, style.H3.Prefix, style.H4.Prefix, style.H5.Prefix, style.H6.Prefix = "", "", "", "", ""
+		style.HorizontalRule.Color = str("#56515F")
+		style.HorizontalRule.Format = "\n────────\n"
+		style.BlockQuote.Color = str("#96929F")
+		style.Item.BlockPrefix = "• "
+		style.Enumeration.Color = str("#C6B6F2")
+		style.Emph.Color = str("#ECE5DC")
+		style.Strong.Color = str("#ECE5DC")
 		style.Code.Color = str("#C6B6F2")
 		style.Code.BackgroundColor = str("#27242E")
 		style.CodeBlock.Theme = "dracula"
@@ -134,35 +146,43 @@ func (m *model) refresh(forceBottom bool) {
 		m.markdown, _ = glamour.NewTermRenderer(glamour.WithStyles(style), glamour.WithWordWrap(max(10, m.mainWidth-4)))
 		m.renderWidth = m.mainWidth
 	}
-	var blocks []string
 	m.lines, m.rows = m.lines[:0], m.rows[:0]
 	for i := range m.entries {
 		layout := m.renderEntry(&m.entries[i])
 		if i > 0 {
-			m.lines = append(m.lines, "")
-			m.rows = append(m.rows, rowRef{entry: -1})
+			gap, meta := "", rowMeta{}
+			if m.entries[i].role == "tool" && m.entries[i-1].role == "tool" {
+				// Consecutive calls read as one run of work. The rail is
+				// decoration: a copy keeps the blank line, not the glyph.
+				gap, meta = toolRail, rowMeta{gutter: 1}
+			}
+			m.lines = append(m.lines, gap)
+			m.rows = append(m.rows, rowRef{entry: -1, rowMeta: meta})
 		}
-		blocks = append(blocks, layout.text)
 		m.lines = append(m.lines, strings.Split(layout.text, "\n")...)
 		for _, row := range layout.rows {
 			m.rows = append(m.rows, rowRef{entry: i, rowMeta: row})
 		}
 	}
-	m.activityRow = m.busy && len(blocks) > 0
+	m.activityRow = m.busy && len(m.entries) > 0
 	if m.activityRow {
 		// Reserve the row under the latest entry; View draws the animated
 		// activity there, so ticks never rebuild the conversation.
-		blocks = append(blocks, "")
 		m.lines = append(m.lines, "", "")
 		m.rows = append(m.rows, rowRef{entry: -1, rowMeta: rowMeta{skip: true}}, rowRef{entry: -1, rowMeta: rowMeta{skip: true}})
 	}
-	m.viewport.SetContent(strings.Join(blocks, "\n\n"))
+	m.viewport.SetContent(strings.Join(m.lines, "\n"))
 	if forceBottom || atBottom {
 		m.viewport.GotoBottom()
 	}
 }
 
 func str(value string) *string { return &value }
+func ptr[T any](value T) *T    { return &value }
+
+// toolRail is the rule beside a tool call; it runs on through the gap between
+// consecutive calls, so a burst of work reads as one block.
+var toolRail = faintStyle.Render("│")
 
 func (m *model) renderEntry(item *entry) entryLayout {
 	if item.layout.text != "" && item.cachedRevision == item.revision && item.cachedWidth == m.mainWidth && item.cachedExpanded == m.expandTools && item.cachedGraphics == m.graphicsEpoch {
@@ -211,7 +231,8 @@ func (m *model) layoutEntry(item entry) entryLayout {
 		out.targets = []copyTarget{{"reply", item.text}}
 		add(" "+violetStyle.Bold(true).Render("✦ JARVIS"), rowMeta{gutter: 1, skip: true})
 		for i, segment := range splitFences(sanitize(item.text)) {
-			if i > 0 {
+			if i > 0 || strings.HasPrefix(strings.TrimLeft(segment.text, " \n"), "#") {
+				// A heading straight under the label would read as part of it.
 				add("", rowMeta{gutter: 1})
 			}
 			if segment.code {
@@ -267,15 +288,15 @@ func (m *model) layoutEntry(item entry) entryLayout {
 				detail = summary
 			}
 		}
-		icon := violetStyle.Render("◌")
+		icon, nameStyle := violetStyle.Render("◌"), cyanStyle.Bold(true)
 		if item.done {
 			icon = lipgloss.NewStyle().Foreground(green).Render("✓")
 		}
 		if item.result != nil && item.result.IsError {
-			icon = coralStyle.Render("!")
+			icon, nameStyle = coralStyle.Render("!"), coralStyle.Bold(true)
 		}
-		bar := faintStyle.Render("│") + " "
-		title := icon + " " + cyanStyle.Bold(true).Render(sanitize(name))
+		bar := toolRail + " "
+		title := icon + " " + nameStyle.Render(sanitize(name))
 		if detail != "" {
 			title += "  " + mutedStyle.Render(ansi.Truncate(sanitize(detail), max(6, w-ansi.StringWidth(name)-5), "…"))
 		}
@@ -365,7 +386,11 @@ func (m *model) layoutEntry(item entry) entryLayout {
 				}
 			} else if result != "" {
 				first, _, _ := strings.Cut(result, "\n")
-				add(bar+faintStyle.Render("  "+ansi.Truncate(first, w-2, "…")), rowMeta{gutter: 4, target: 1})
+				style := faintStyle
+				if item.result.IsError {
+					style = coralStyle
+				}
+				add(bar+style.Render("  "+ansi.Truncate(first, w-2, "…")), rowMeta{gutter: 4, target: 1})
 			}
 			// Images sit under the output as in a user's message: drawn when the
 			// terminal can, captioned otherwise or when only a marker was saved.
@@ -609,23 +634,26 @@ func (m *model) composerStyle() lipgloss.Style {
 func (m *model) bottomView() string {
 	style := m.composerStyle()
 	innerWidth := max(1, m.mainWidth-style.GetHorizontalFrameSize())
-	composerTitle := violetStyle.Bold(true).Render("MESSAGE")
+	// Each part of the title sets the panel background itself: a style reset
+	// between two parts would otherwise let the terminal background through.
+	label, note := ink(panel, violet).Bold(true), ink(panel, muted)
+	composerTitle := label.Render("MESSAGE")
 	composerInput := m.input.View()
 	if m.picker != nil {
-		composerTitle = violetStyle.Bold(true).Render("SEARCH") + mutedStyle.Render(" · your message draft is kept")
+		composerTitle = label.Render("SEARCH") + note.Render(" · your message draft is kept")
 		if m.mainWidth < 44 {
-			composerTitle = violetStyle.Bold(true).Render("SEARCH") + mutedStyle.Render(" · draft kept")
+			composerTitle = label.Render("SEARCH") + note.Render(" · draft kept")
 		}
 		composerInput = m.picker.search.View() + "\n"
 	}
 	if m.busy {
-		composerTitle = violetStyle.Bold(true).Render("DRAFT") + mutedStyle.Render(" · retained while JARVIS works")
+		composerTitle = label.Render("DRAFT") + note.Render(" · retained while JARVIS works")
 	}
 	if m.question != nil {
-		composerTitle = violetStyle.Bold(true).Render("DRAFT") + mutedStyle.Render(" · kept while you answer")
+		composerTitle = label.Render("DRAFT") + note.Render(" · kept while you answer")
 	}
 	if m.pending != nil {
-		composerTitle = coralStyle.Render("APPROVAL · y / Enter")
+		composerTitle = ink(panel, coral).Render("APPROVAL · y / Enter")
 	}
 	if m.picker == nil && m.pending == nil {
 		composerTitle += m.attachmentChips(max(0, innerWidth-ansi.StringWidth(composerTitle)))
@@ -649,17 +677,37 @@ func (m *model) bottomView() string {
 
 func (m *model) welcome() string {
 	w := m.mainWidth
-	var content string
-	if m.bodyHeight >= 15 && w >= 65 {
-		logo := coralStyle.Bold(true).Render("✦  J A R V I S")
-		if m.wordmarkReady {
-			logo = wordmarkPlaceholders()
-		}
-		content = logo + "\n\n" + creamStyle.Bold(true).Render("A little less supervision. A lot more done.") + "\n\n" + mutedStyle.Render("Think deeply. Work carefully. Keep going.") + "\n\n" + faintStyle.Render("────────────────────────────────────────") + "\n\n" + violetStyle.Render("01") + creamStyle.Render("  Explore a codebase and explain the moving parts") + "\n" + violetStyle.Render("02") + creamStyle.Render("  Investigate a question. Follow the evidence.") + "\n" + violetStyle.Render("03") + creamStyle.Render("  Make a change, verify it, and report back")
-	} else {
-		content = coralStyle.Bold(true).Render("J A R V I S") + "\n\n" + creamStyle.Render("At your service, sir.") + "\n" + mutedStyle.Render("Give me something worth doing.")
+	if m.bodyHeight < 15 || w < 65 {
+		content := coralStyle.Bold(true).Render("J A R V I S") + "\n\n" + creamStyle.Render("At your service, sir.") + "\n" + mutedStyle.Render("Give me something worth doing.")
+		return lipgloss.Place(w, m.bodyHeight, lipgloss.Center, lipgloss.Center, content)
 	}
-	return lipgloss.Place(w, m.bodyHeight, lipgloss.Center, lipgloss.Center, content)
+	// The hero is the sidebar's wordmark at twice the width, with the starters
+	// under it as one left-aligned column. Every row is padded to the block's
+	// width before placing, so the column cannot stagger as centered rows would.
+	const gap = 2
+	starters := []string{"Explore a codebase and explain the moving parts", "Investigate a question. Follow the evidence.", "Make a change, verify it, and report back"}
+	hero := heroWidth(gap)
+	width := hero
+	for _, s := range starters {
+		width = max(width, 4+ansi.StringWidth(s))
+	}
+	// Centered rows center on the wordmark; the starters hang from its left
+	// edge and may run past its right one.
+	left := func(line string) string { return line + strings.Repeat(" ", max(0, width-ansi.StringWidth(line))) }
+	center := func(line string) string {
+		pad := max(0, hero-ansi.StringWidth(line))
+		return left(strings.Repeat(" ", pad/2) + line)
+	}
+	var rows []string
+	for _, row := range heroLettering(gap) {
+		rows = append(rows, center(row))
+	}
+	rows = append(rows, "", "", center(creamStyle.Bold(true).Render("A little less supervision. A lot more done.")), center(mutedStyle.Render("Think deeply. Work carefully. Keep going.")), "")
+	rows = append(rows, center(lipgloss.NewStyle().Foreground(logoRule).Render(strings.Repeat("╱", hero))), "")
+	for i, s := range starters {
+		rows = append(rows, left(violetStyle.Render(fmt.Sprintf("%02d", i+1))+"  "+creamStyle.Render(s)))
+	}
+	return lipgloss.Place(w, m.bodyHeight, lipgloss.Center, lipgloss.Center, strings.Join(rows, "\n"))
 }
 
 func showsReasoning(provider string, compatibleReasoning bool) bool {
@@ -959,8 +1007,60 @@ func (m *model) approvalView() string {
 	if request.Network && request.Call.Name == "Browser" {
 		text += "\n\n" + coralStyle.Render("Reaches beyond this machine")
 	}
-	text += "\n\n" + mutedStyle.Render(ansi.Hardwrap(sanitize(arguments), w, false)) + "\n\n" + violetStyle.Bold(true).Render("y / Enter  "+allowLabel(request)) + "\n" + creamStyle.Render("n / Esc / any other key  Deny") + "\n\n" + faintStyle.Render("Mouse wheel scrolls the complete request")
-	return lipgloss.NewStyle().Width(m.mainWidth - 4).Border(lipgloss.RoundedBorder()).BorderForeground(coral).Padding(1).Render(text)
+	if command, rest, ok := approvalCommand(request.Call, raw); ok {
+		// The command itself, as the agent would run it, is what is being
+		// judged; it gets the card a reply's code gets. Its other arguments
+		// are chips under the card: what the command asks for, at a glance.
+		rows, _ := renderCodeCard(command, "bash", w, "")
+		text += "\n\n" + strings.Join(rows, "\n")
+		if len(rest) > 0 {
+			text += "\n" + ansi.Truncate(strings.Join(rest, " "), w, "…")
+		}
+	} else {
+		text += "\n\n" + mutedStyle.Render(ansi.Hardwrap(sanitize(arguments), w, false))
+	}
+	keys := ink(panel, violet).Bold(true).Render(" y / Enter ") + " " + creamStyle.Render(allowLabel(request)) + "   " + ink(panel, cream).Render(" n / Esc ") + " " + mutedStyle.Render("or any other key denies")
+	text += "\n\n" + ansi.Truncate(keys, w, "…") + "\n\n" + faintStyle.Render("Mouse wheel scrolls the complete request")
+	// As wide as the composer below it, border included.
+	return lipgloss.NewStyle().Width(m.mainWidth - 2).Border(lipgloss.RoundedBorder()).BorderForeground(coral).Padding(1).Render(text)
+}
+
+// approvalCommand returns a Bash or Terminal request's command and its other
+// arguments as chips, "◆ key value" each on the panel color, sorted by key,
+// or ok false when the call carries no command.
+func approvalCommand(call core.ToolCall, raw json.RawMessage) (command string, chips []string, ok bool) {
+	if call.Name != "Bash" && call.Name != "Terminal" {
+		return "", nil, false
+	}
+	var args map[string]json.RawMessage
+	if json.Unmarshal(raw, &args) != nil || json.Unmarshal(args["command"], &command) != nil || strings.TrimSpace(command) == "" {
+		return "", nil, false
+	}
+	// The card must show exactly what would run. A control character would
+	// be stripped from the card but run by the shell, and the tool decodes
+	// keys case-insensitively, so a second spelling of "command" could win;
+	// either way the raw JSON, which escapes and lists everything, is shown.
+	if strings.ContainsFunc(command, func(r rune) bool {
+		return r != '\n' && r != '\t' && (unicode.IsControl(r) || !unicode.IsPrint(r) && !unicode.IsSpace(r))
+	}) {
+		return "", nil, false
+	}
+	for key := range args {
+		if key != "command" && strings.EqualFold(key, "command") {
+			return "", nil, false
+		}
+	}
+	delete(args, "command")
+	for _, key := range slices.Sorted(maps.Keys(args)) {
+		value := oneLine(string(args[key]))
+		var text string
+		if json.Unmarshal(args[key], &text) == nil {
+			value = oneLine(text)
+		}
+		chip := " ◆ " + oneLine(key) + " " + ansi.Truncate(value, 40, "…") + " "
+		chips = append(chips, ink(panel, coral).Render(chip))
+	}
+	return command, chips, true
 }
 
 func elapsed(d time.Duration) string {
