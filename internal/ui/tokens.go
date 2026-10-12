@@ -8,7 +8,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 // usage is what the sidebar reports: the session's persisted usage plus whatever

@@ -15,8 +15,8 @@ import (
 	"time"
 	"unicode"
 
-	"jarvis/agents"
-	"jarvis/internal/core"
+	"julia/agents"
+	"julia/internal/core"
 )
 
 const CompatibleDecisionsModel = "typesafe/jev-1.13"
@@ -59,7 +59,7 @@ type Config struct {
 	ContextBytes int    `json:"context_bytes,omitempty"`
 	Timeout      string `json:"timeout"`
 	// Browser is the Chrome or Chromium the Browser tool launches: an
-	// executable or a macOS .app bundle. Empty finds one; JARVIS_BROWSER
+	// executable or a macOS .app bundle. Empty finds one; JULIA_BROWSER
 	// overrides it.
 	Browser string `json:"browser,omitempty"`
 	// ReviewerModel is the model that reviews risky actions, as
@@ -203,9 +203,9 @@ func (c Config) Enables(provider string) bool {
 }
 
 // BrowserEnv names the environment variable that overrides Config.Browser.
-const BrowserEnv = "JARVIS_BROWSER"
+const BrowserEnv = "JULIA_BROWSER"
 
-// BrowserPath is the browser to launch: $JARVIS_BROWSER, else the
+// BrowserPath is the browser to launch: $JULIA_BROWSER, else the
 // configured one, else empty, which finds one.
 func (c Config) BrowserPath() string {
 	if path := os.Getenv(BrowserEnv); path != "" {
@@ -226,7 +226,7 @@ func Path() (string, error) {
 		}
 		d = filepath.Join(home, ".config")
 	}
-	return filepath.Join(d, "jarvis", "config.json"), nil
+	return filepath.Join(d, "julia", "config.json"), nil
 }
 func Load(path string) (Config, error) {
 	c := Default()
@@ -381,7 +381,7 @@ func IsDecisionsOnlyCompatibleModel(model string) bool {
 	return model == CompatibleDecisionsModel
 }
 
-// SupportsReasoning reports providers where JARVIS can send a mapped effort
+// SupportsReasoning reports providers where JULIA can send a mapped effort
 // setting instead of silently ignoring it.
 func SupportsReasoning(provider, baseURL string) bool {
 	if provider == "codex" {

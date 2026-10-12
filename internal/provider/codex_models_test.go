@@ -159,10 +159,10 @@ func TestCodexModelsHonorCancellation(t *testing.T) {
 // This opt-in smoke only reads app-server metadata; it never starts a thread or
 // turn and therefore does not consume an inference request.
 func TestCodexModelsLive(t *testing.T) {
-	if os.Getenv("JARVIS_CODEX_MODELS_LIVE") != "1" {
-		t.Skip("set JARVIS_CODEX_MODELS_LIVE=1 for installed Codex catalog smoke")
+	if os.Getenv("JULIA_CODEX_MODELS_LIVE") != "1" {
+		t.Skip("set JULIA_CODEX_MODELS_LIVE=1 for installed Codex catalog smoke")
 	}
-	binary := os.Getenv("JARVIS_CODEX_BINARY")
+	binary := os.Getenv("JULIA_CODEX_BINARY")
 	if binary == "" {
 		binary = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
 	}

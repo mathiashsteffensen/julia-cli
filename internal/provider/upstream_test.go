@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func TestOpenRouterRejectionReportsTheUpstreamReason(t *testing.T) {

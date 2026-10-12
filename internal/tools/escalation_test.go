@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
@@ -105,7 +105,7 @@ func TestEscalationFailureNeverExecutes(t *testing.T) {
 }
 
 func TestSandboxFailureDoesNotRetryOutsideSandbox(t *testing.T) {
-	if os.Getenv("JARVIS_SANDBOX_TEST") != "1" || runtime.GOOS != "darwin" {
+	if os.Getenv("JULIA_SANDBOX_TEST") != "1" || runtime.GOOS != "darwin" {
 		t.Skip("requires host macOS sandbox integration")
 	}
 	// Ask mode, because auto mode runs offline sandboxed Bash unreviewed.
@@ -184,8 +184,8 @@ func TestEscalationCanceledAfterReviewNeverExecutes(t *testing.T) {
 func TestEscalationPreservesSanitizedEnvironmentAndLimits(t *testing.T) {
 	e, _ := fixture(t, "auto", nil)
 	e.config.Review = func(context.Context, core.Approval) (core.Decision, error) { return core.Decision{Allow: true}, nil }
-	t.Setenv("JARVIS_ESCALATION_SECRET", "must-not-leak")
-	result := invoke(e, "Bash", escalationArgs("printf '%s' \"${JARVIS_ESCALATION_SECRET-unset}\""))
+	t.Setenv("JULIA_ESCALATION_SECRET", "must-not-leak")
+	result := invoke(e, "Bash", escalationArgs("printf '%s' \"${JULIA_ESCALATION_SECRET-unset}\""))
 	if result.IsError || result.Content != "unset" {
 		t.Fatal("inherited credential leaked", result)
 	}

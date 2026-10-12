@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 // WeeklyUsage reads account metadata without starting a conversation, consuming
@@ -19,7 +19,7 @@ func (c *Codex) WeeklyUsage(ctx context.Context) (*core.WeeklyUsage, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	directory, err := os.MkdirTemp("", "jarvis-usage-")
+	directory, err := os.MkdirTemp("", "julia-usage-")
 	if err != nil {
 		return nil, fmt.Errorf("create usage lookup workspace: %w", err)
 	}
@@ -33,7 +33,7 @@ func (c *Codex) WeeklyUsage(ctx context.Context) (*core.WeeklyUsage, error) {
 		return nil, err
 	}
 	defer client.close()
-	if _, err := client.call(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "jarvis_cli", "title": "JARVIS", "version": "0.1.0"}, "capabilities": map[string]any{"experimentalApi": true}}); err != nil {
+	if _, err := client.call(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "julia_cli", "title": "JULIA", "version": "0.1.0"}, "capabilities": map[string]any{"experimentalApi": true}}); err != nil {
 		return nil, fmt.Errorf("initialize Codex usage lookup: %w", err)
 	}
 	if err := client.send(map[string]any{"method": "initialized", "params": map[string]any{}}); err != nil {

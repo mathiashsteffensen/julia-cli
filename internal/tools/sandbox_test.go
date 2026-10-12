@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func TestReviewFallsBackToHuman(t *testing.T) {
@@ -59,12 +59,12 @@ func TestSeatbeltProfile(t *testing.T) {
 	}
 }
 
-// Run with JARVIS_SANDBOX_TEST=1 on a host that permits launching an OS sandbox.
+// Run with JULIA_SANDBOX_TEST=1 on a host that permits launching an OS sandbox.
 // Some parent sandboxes forbid nested sandbox creation; default unit tests do not
 // mistake that environmental limitation for successful containment.
 func TestSandboxIntegration(t *testing.T) {
-	if os.Getenv("JARVIS_SANDBOX_TEST") != "1" {
-		t.Skip("set JARVIS_SANDBOX_TEST=1 for host sandbox integration")
+	if os.Getenv("JULIA_SANDBOX_TEST") != "1" {
+		t.Skip("set JULIA_SANDBOX_TEST=1 for host sandbox integration")
 	}
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("unsupported OS")
@@ -103,12 +103,12 @@ func TestSandboxIntegration(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 3*time.Second {
 		t.Fatal("timeout failed", err, time.Since(start))
 	}
-	t.Setenv("JARVIS_TEST_SECRET", "must-not-leak")
-	out, err := e.runSandbox(context.Background(), "printf '%s' \"${JARVIS_TEST_SECRET-unset}\"", false, 5*time.Second)
+	t.Setenv("JULIA_TEST_SECRET", "must-not-leak")
+	out, err := e.runSandbox(context.Background(), "printf '%s' \"${JULIA_TEST_SECRET-unset}\"", false, 5*time.Second)
 	if err != nil || out != "unset" {
 		t.Fatal("environment leaked", out, err)
 	}
-	if os.Getenv("JARVIS_NETWORK_TEST") == "1" {
+	if os.Getenv("JULIA_NETWORK_TEST") == "1" {
 		out, err = e.runSandbox(context.Background(), "/usr/bin/curl --fail --silent --show-error --max-time 15 https://example.com", true, 20*time.Second)
 		if err != nil || !strings.Contains(out, "Example Domain") {
 			t.Fatal("authorized HTTPS request failed", out, err)
@@ -116,12 +116,12 @@ func TestSandboxIntegration(t *testing.T) {
 	}
 }
 
-// Run with JARVIS_SANDBOX_TEST=1. A loopback command serves and connects on
+// Run with JULIA_SANDBOX_TEST=1. A loopback command serves and connects on
 // localhost, IPv4 and IPv6, and reaches nothing else; an offline one cannot
 // even listen.
 func TestSandboxIntegrationLoopback(t *testing.T) {
-	if os.Getenv("JARVIS_SANDBOX_TEST") != "1" || runtime.GOOS != "darwin" {
-		t.Skip("set JARVIS_SANDBOX_TEST=1 for host macOS sandbox integration")
+	if os.Getenv("JULIA_SANDBOX_TEST") != "1" || runtime.GOOS != "darwin" {
+		t.Skip("set JULIA_SANDBOX_TEST=1 for host macOS sandbox integration")
 	}
 	e, _ := fixture(t, "auto", nil)
 	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "host-server") }))
@@ -202,7 +202,7 @@ func TestHostPorts(t *testing.T) {
 }
 
 func TestSandboxGitStatus(t *testing.T) {
-	if os.Getenv("JARVIS_SANDBOX_TEST") != "1" || runtime.GOOS != "darwin" {
+	if os.Getenv("JULIA_SANDBOX_TEST") != "1" || runtime.GOOS != "darwin" {
 		t.Skip("requires host macOS sandbox integration")
 	}
 	e, dir := fixture(t, "auto", nil)
@@ -262,7 +262,7 @@ func TestSandboxGitStatus(t *testing.T) {
 	if result := invoke(e, "Bash", map[string]any{"command": "git diff --stat"}); result.IsError || !strings.Contains(result.Content, "tracked.txt") {
 		t.Fatal("git diff failed", result.Content)
 	}
-	for _, command := range []string{"git add untracked.txt", "git config --local jarvis.test denied", "printf denied > .git/HEAD", "ln .git/config config-alias && printf denied > config-alias"} {
+	for _, command := range []string{"git add untracked.txt", "git config --local julia.test denied", "printf denied > .git/HEAD", "ln .git/config config-alias && printf denied > config-alias"} {
 		if result := invoke(e, "Bash", map[string]any{"command": command}); !result.IsError {
 			t.Fatalf("git metadata mutation escaped sandbox: %s", command)
 		}
@@ -274,14 +274,14 @@ func TestSandboxGitStatus(t *testing.T) {
 		t.Fatal("git credential data exposed", result.Content)
 	}
 	outside := filepath.Join(t.TempDir(), "included.conf")
-	if err := os.WriteFile(outside, []byte("[jarvis]\nsecret = outside-secret-fixture\n"), 0600); err != nil {
+	if err := os.WriteFile(outside, []byte("[julia]\nsecret = outside-secret-fixture\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	include := exec.Command("/usr/bin/git", "-C", dir, "config", "include.path", outside)
 	if out, err := include.CombinedOutput(); err != nil {
 		t.Fatalf("fixture include: %v: %s", err, out)
 	}
-	if result := invoke(e, "Bash", map[string]any{"command": "git config --get jarvis.secret"}); !result.IsError || strings.Contains(result.Content, "outside-secret-fixture") {
+	if result := invoke(e, "Bash", map[string]any{"command": "git config --get julia.secret"}); !result.IsError || strings.Contains(result.Content, "outside-secret-fixture") {
 		t.Fatal("outside git-config include was readable", result.Content)
 	}
 }
@@ -291,10 +291,10 @@ func TestScratchDirPersistsOutsideWorkspace(t *testing.T) {
 	}
 	e, dir := fixture(t, "auto", nil)
 	e.config.ScratchDir = filepath.Join(t.TempDir(), "session")
-	if r := invoke(e, "Bash", map[string]any{"command": `printf kept > "$JARVIS_SCRATCH/main.tf"`}); r.IsError {
+	if r := invoke(e, "Bash", map[string]any{"command": `printf kept > "$JULIA_SCRATCH/main.tf"`}); r.IsError {
 		t.Fatal(r.Content)
 	}
-	r := invoke(e, "Bash", map[string]any{"command": `cat "$JARVIS_SCRATCH/main.tf"`})
+	r := invoke(e, "Bash", map[string]any{"command": `cat "$JULIA_SCRATCH/main.tf"`})
 	if r.IsError || !strings.Contains(r.Content, "kept") {
 		t.Fatal(r.Content)
 	}

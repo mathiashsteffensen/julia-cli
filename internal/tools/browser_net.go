@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"jarvis/internal/browser"
+	"julia/internal/browser"
 
 	"golang.org/x/sys/unix"
 )
@@ -40,8 +40,8 @@ import (
 //
 // What a page may reach without asking: the loopback servers the agent's
 // own terminals listen on (the dev server a loopback Terminal runs), measured
-// before each Browser action, files in the workspace and $JARVIS_SCRATCH
-// (served by JARVIS itself, so Chrome never opens a path), and data: and
+// before each Browser action, files in the workspace and $JULIA_SCRATCH
+// (served by JULIA itself, so Chrome never opens a path), and data: and
 // blob: URLs a page makes. Other loopback servers are the machine's own
 // services, which often trust any local client, and need approval like any
 // origin. Every other origin waits for an approval that
@@ -474,7 +474,7 @@ func directoryListing(dir *os.File, path string) []byte {
 func (e *Executor) uploadCopies(paths []string) ([]string, error) {
 	st := e.browsing
 	if st.uploads == "" {
-		dir, err := os.MkdirTemp("", "jarvis-uploads-")
+		dir, err := os.MkdirTemp("", "julia-uploads-")
 		if err != nil {
 			return nil, err
 		}
@@ -520,7 +520,7 @@ func (e *Executor) uploadCopies(paths []string) ([]string, error) {
 }
 
 // keepDownload copies a finished download from the private directory Chrome
-// saves into to $JARVIS_SCRATCH/downloads, under the name the page
+// saves into to $JULIA_SCRATCH/downloads, under the name the page
 // suggested. The sandbox can write the scratch directory, so nothing in it
 // is followed: Chrome runs outside the sandbox, and a symlink planted for
 // downloads, or for the scratch directory itself, would otherwise have it

@@ -47,7 +47,7 @@ const (
 	maxUserRoles         = 32
 )
 
-// Builtin returns the roles JARVIS ships, sorted by name.
+// Builtin returns the roles JULIA ships, sorted by name.
 func Builtin() []Role {
 	entries, err := fs.ReadDir(builtin, ".")
 	if err != nil {

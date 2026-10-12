@@ -346,7 +346,7 @@ func clampCursors(emu *vt.Emulator) {
 
 // emulate runs f, which drives the emulator, with s.mu held. vt still panics
 // on sequences no clamp foresees, and a program's output must never take
-// JARVIS down. After a panic vt's state is unknown, so the screen freezes as
+// JULIA down. After a panic vt's state is unknown, so the screen freezes as
 // it was; output is still drained, so the program never blocks writing.
 func (s *Session) emulate(f func()) {
 	if s.frozen != nil {

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func questionCallFor(id string, question core.Question) core.ToolCall {

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 type Store struct {
@@ -36,7 +36,7 @@ func Default() (*Store, error) {
 	if base == "" {
 		base = filepath.Join(home, ".local", "state")
 	}
-	return &Store{Directory: filepath.Join(base, "jarvis", "sessions")}, nil
+	return &Store{Directory: filepath.Join(base, "julia", "sessions")}, nil
 }
 func New(directory, provider, model string) *core.Session {
 	now := time.Now()
@@ -146,7 +146,7 @@ func (s *Store) lock(id string) error {
 	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		f.Close()
 		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-			return errors.New("session is in use by another JARVIS process")
+			return errors.New("session is in use by another JULIA process")
 		}
 		return fmt.Errorf("lock session: %w", err)
 	}

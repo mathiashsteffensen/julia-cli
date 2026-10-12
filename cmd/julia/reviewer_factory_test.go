@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"jarvis/internal/config"
-	"jarvis/internal/core"
-	"jarvis/internal/provider"
+	"julia/internal/config"
+	"julia/internal/core"
+	"julia/internal/provider"
 )
 
 // Any accidental route back to the executing API model fails locally, before
@@ -206,8 +206,8 @@ func reviewerProtocolFixture(t *testing.T) (binary, capture string) {
 	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("JARVIS_TEST_REVIEWER_PROTOCOL", "1")
-	t.Setenv("JARVIS_TEST_REVIEWER_CAPTURE", capture)
+	t.Setenv("JULIA_TEST_REVIEWER_PROTOCOL", "1")
+	t.Setenv("JULIA_TEST_REVIEWER_CAPTURE", capture)
 	return binary, capture
 }
 
@@ -254,14 +254,14 @@ func assertReviewerProtocol(t *testing.T, capture string) {
 // TestReviewerFactoryProtocolProcess is a local, deterministic JSON-RPC process;
 // it performs no inference or tools and never connects to a provider.
 func TestReviewerFactoryProtocolProcess(t *testing.T) {
-	if os.Getenv("JARVIS_TEST_REVIEWER_PROTOCOL") != "1" {
+	if os.Getenv("JULIA_TEST_REVIEWER_PROTOCOL") != "1" {
 		return
 	}
 	os.Exit(runReviewerProtocolProcess())
 }
 
 func runReviewerProtocolProcess() int {
-	capture, err := os.OpenFile(os.Getenv("JARVIS_TEST_REVIEWER_CAPTURE"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	capture, err := os.OpenFile(os.Getenv("JULIA_TEST_REVIEWER_CAPTURE"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return 1
 	}

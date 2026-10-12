@@ -10,7 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func keyMsg(name string) tea.KeyPressMsg {
@@ -492,7 +492,7 @@ func TestQuestionWaitsBehindAPendingApproval(t *testing.T) {
 func TestCardCaptionsAndAnswerPreviewHideNothingImportant(t *testing.T) {
 	m, _ := askModel(t, sampleChoices)
 	card := ansi.Strip(strings.Join(m.question.card, "\n"))
-	for _, want := range []string{"JARVIS ASKS", "1 / 4", "Which storage backend", "SQLite", "recommended", "Embedded and zero-config.", "Postgres", "Flat JSON files", "Write your own answer", "esc skip"} {
+	for _, want := range []string{"JULIA ASKS", "1 / 4", "Which storage backend", "SQLite", "recommended", "Embedded and zero-config.", "Postgres", "Flat JSON files", "Write your own answer", "esc skip"} {
 		if !strings.Contains(card, want) {
 			t.Fatalf("card is missing %q:\n%s", want, card)
 		}
@@ -694,7 +694,7 @@ func TestQuestionEntriesRenderAsQuoteAndAnswer(t *testing.T) {
 func TestQuestionHistoryRestoresFromTheSavedSession(t *testing.T) {
 	arguments, _ := json.Marshal(sampleChoices)
 	answer, _ := json.Marshal(core.QuestionResult{Answer: "Postgres", Source: "option", Option: 2})
-	m := testModel(t, Config{Session: &core.Session{ID: "h", Directory: "/tmp/jarvis", Provider: "fake", Messages: []core.Message{
+	m := testModel(t, Config{Session: &core.Session{ID: "h", Directory: "/tmp/julia", Provider: "fake", Messages: []core.Message{
 		{Role: "user", Content: "decide"},
 		{Role: "assistant", ToolCalls: []core.ToolCall{{ID: "q1", Name: core.QuestionTool, Arguments: arguments}}},
 		{Role: "tool", ToolCallID: "q1", Content: string(answer)},

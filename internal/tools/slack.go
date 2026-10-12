@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 // The Slack tool is the bot the token in SLACK_BOT_TOKEN belongs to. It needs
@@ -118,7 +118,7 @@ type slackResponse struct {
 
 func (e *Executor) slack(ctx context.Context, call core.ToolCall) (string, error) {
 	if e.config.SlackToken == "" {
-		return "", errors.New("Slack is not configured: set " + SlackTokenEnv + " to a bot token and restart JARVIS")
+		return "", errors.New("Slack is not configured: set " + SlackTokenEnv + " to a bot token and restart JULIA")
 	}
 	var a slackArgs
 	if err := decode(call.Arguments, &a); err != nil {
@@ -380,7 +380,7 @@ func (e *Executor) slackCall(ctx context.Context, method string, params url.Valu
 		req.Header.Set("Authorization", "Bearer "+e.config.SlackToken)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "application/json")
-		req.Header.Set("User-Agent", "JARVIS/1.0 (slack)")
+		req.Header.Set("User-Agent", "JULIA/1.0 (slack)")
 		resp, err := e.webClient.Do(req)
 		if err != nil {
 			var requestError *url.Error

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net"
 
-	"jarvis/internal/sockets"
+	"julia/internal/sockets"
 )
 
 // chromeOwns reports whether a connection to the proxy comes from Chrome or

@@ -17,22 +17,22 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
-	"jarvis/agents"
-	"jarvis/internal/browser"
-	"jarvis/internal/config"
-	"jarvis/internal/core"
-	"jarvis/internal/instructions"
-	"jarvis/internal/provider"
-	"jarvis/internal/session"
-	"jarvis/internal/tools"
-	"jarvis/internal/ui"
+	"julia/agents"
+	"julia/internal/browser"
+	"julia/internal/config"
+	"julia/internal/core"
+	"julia/internal/instructions"
+	"julia/internal/provider"
+	"julia/internal/session"
+	"julia/internal/tools"
+	"julia/internal/ui"
 )
 
 const version = "0.1.0"
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "jarvis:", safe(err.Error()))
+		fmt.Fprintln(os.Stderr, "julia:", safe(err.Error()))
 		os.Exit(1)
 	}
 }
@@ -49,7 +49,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	flags := flag.NewFlagSet("jarvis", flag.ContinueOnError)
+	flags := flag.NewFlagSet("julia", flag.ContinueOnError)
 	var path, dir, prompt, modelFlag, reasoning, mode, endpoint, keyEnv, resume, timeout string
 	var cont, demo, jsonMode, showVersion bool
 	var snapshot int
@@ -69,7 +69,7 @@ func run() error {
 	flags.BoolVar(&showVersion, "version", false, "print version")
 	flags.IntVar(&snapshot, "snapshot", 0, "render an offline demo at this terminal width")
 	flags.Usage = func() {
-		fmt.Fprint(flags.Output(), "JARVIS · a quiet interface for ambitious work\n\nUsage: jarvis [flags]\n       jarvis doctor | login | sessions | config init\n")
+		fmt.Fprint(flags.Output(), "JULIA · a quiet interface for ambitious work\n\nUsage: julia [flags]\n       julia doctor | login | sessions | config init\n")
 		flags.PrintDefaults()
 	}
 	if err = flags.Parse(os.Args[1:]); err != nil {
@@ -79,7 +79,7 @@ func run() error {
 		return err
 	}
 	if showVersion {
-		fmt.Println("jarvis", version)
+		fmt.Println("julia", version)
 		return nil
 	}
 	cfg, err := config.Load(path)
@@ -160,7 +160,7 @@ func run() error {
 			return cmd.Run()
 		case "config":
 			if len(args) != 2 || args[1] != "init" {
-				return errors.New("usage: jarvis config init")
+				return errors.New("usage: julia config init")
 			}
 			if err = config.Init(path); err != nil {
 				return err
@@ -466,7 +466,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		consumer(event)
 	}
 	task := newTaskContext(s.Messages, prompt.Text)
-	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "jarvis-scratch", s.ID), Browser: r.cfg.BrowserPath(), SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv)})
+	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: r.cfg.BrowserPath(), SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv)})
 	if err != nil {
 		return err
 	}
@@ -618,7 +618,7 @@ func reviewerSummary(c config.Config) string {
 }
 
 func doctor(ctx context.Context, c config.Config, path string, roles []agents.Role) error {
-	fmt.Printf("JARVIS %s\nConfig    %s\nProvider  %s\nMode      %s\n", version, path, c.Provider, c.Mode)
+	fmt.Printf("JULIA %s\nConfig    %s\nProvider  %s\nMode      %s\n", version, path, c.Provider, c.Mode)
 	model, reasoning := modelSettings(c)
 	fmt.Printf("Model     %s\nReasoning %s\n", safe(model), safe(reasoning))
 	for _, line := range contextSummary(c) {
@@ -653,7 +653,7 @@ func doctor(ctx context.Context, c config.Config, path string, roles []agents.Ro
 		out, loginErr := cmd.CombinedOutput()
 		fmt.Println("Login    ", strings.TrimSpace(safe(string(out))))
 		if loginErr != nil {
-			fmt.Println("Run jarvis login to sign in.")
+			fmt.Println("Run julia login to sign in.")
 		}
 	} else {
 		fmt.Println("Codex     unavailable")
@@ -671,7 +671,7 @@ func doctor(ctx context.Context, c config.Config, path string, roles []agents.Ro
 	fmt.Println(browserSummary(ctx, c.BrowserPath()))
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	probeDir, err := os.MkdirTemp("", "jarvis-doctor-")
+	probeDir, err := os.MkdirTemp("", "julia-doctor-")
 	if err != nil {
 		return err
 	}
@@ -716,7 +716,7 @@ func browserSummary(ctx context.Context, explicit string) string {
 }
 
 // contextSummary is the doctor's view of the context budget. Only API providers
-// are summarized by JARVIS, so only they have a compaction point; Codex compacts
+// are summarized by JULIA, so only they have a compaction point; Codex compacts
 // its own threads. A leftover context_bytes is called out because it silently
 // stopped doing anything.
 func contextSummary(c config.Config) []string {

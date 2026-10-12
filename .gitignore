@@ -1,5 +1,5 @@
 /bin/
-/jarvis
+/julia
 *.log
 .DS_Store
 coverage.out

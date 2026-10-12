@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func TestConfigRejectsUnknownAndUnsafeModes(t *testing.T) {
@@ -174,7 +174,7 @@ func TestLegacyContextBytesLoadsButIsIgnored(t *testing.T) {
 }
 
 func TestInitWritesContextTokensWithoutLegacyBytes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "jarvis", "config.json")
+	path := filepath.Join(t.TempDir(), "julia", "config.json")
 	if err := Init(path); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestBrowserConfiguration(t *testing.T) {
 	}
 	t.Setenv(BrowserEnv, "~/chrome/chrome")
 	if got := cfg.BrowserPath(); got != "~/chrome/chrome" {
-		t.Fatalf("JARVIS_BROWSER does not override the configuration: %q", got)
+		t.Fatalf("JULIA_BROWSER does not override the configuration: %q", got)
 	}
 	if Default().Browser != "" {
 		t.Fatal("the default must find a browser, not name one")

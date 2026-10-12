@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"jarvis/internal/config"
-	"jarvis/internal/core"
-	"jarvis/internal/provider"
-	"jarvis/internal/session"
+	"julia/internal/config"
+	"julia/internal/core"
+	"julia/internal/provider"
+	"julia/internal/session"
 )
 
 func settingsSession() *core.Session {

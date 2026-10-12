@@ -16,7 +16,7 @@ import (
 )
 
 // maxMessage bounds one message from Chrome, so a runaway page cannot make
-// JARVIS buffer without limit. The largest legitimate messages are screenshots,
+// JULIA buffer without limit. The largest legitimate messages are screenshots,
 // which Screenshot keeps far below it.
 const maxMessage = 128 << 20
 

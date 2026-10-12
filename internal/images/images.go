@@ -18,7 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 
 	_ "golang.org/x/image/bmp"
 	xdraw "golang.org/x/image/draw"

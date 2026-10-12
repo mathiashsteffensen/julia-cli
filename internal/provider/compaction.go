@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openai"

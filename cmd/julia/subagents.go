@@ -7,9 +7,9 @@ import (
 	"slices"
 	"strings"
 
-	"jarvis/agents"
-	"jarvis/internal/config"
-	"jarvis/internal/tools"
+	"julia/agents"
+	"julia/internal/config"
+	"julia/internal/tools"
 )
 
 // rolesDir holds the user's own subagent roles, beside the configuration file

@@ -7,7 +7,7 @@ import (
 )
 
 func TestRememberedReasoningIsPerProvider(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "jarvis", "preferences.json")
+	path := filepath.Join(t.TempDir(), "julia", "preferences.json")
 	if p, err := LoadPreferences(path); err != nil || len(p.Reasoning) != 0 {
 		t.Fatalf("missing file: %+v %v", p, err)
 	}

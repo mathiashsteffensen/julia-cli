@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 type slackCallRecord struct {
@@ -103,7 +103,7 @@ func TestSlackPostResolvesUsersAndIsReviewed(t *testing.T) {
 
 func TestSlackReadsNeedNoReviewAndFormatTranscripts(t *testing.T) {
 	e, calls := slackFixture(t, "read-only", map[string]func(url.Values, int) *http.Response{
-		"conversations.replies": slackOK(`{"ok":true,"messages":[{"ts":"1.000","user":"U0OWNER","text":"Look into this","reply_count":2},{"ts":"1.001","thread_ts":"1.000","bot_id":"B1","username":"jarvis","text":"On it"},{"ts":"1.002","thread_ts":"1.000","user":"U9","text":"see attached","files":[{"name":"log.txt"},{}]}],"has_more":true}`),
+		"conversations.replies": slackOK(`{"ok":true,"messages":[{"ts":"1.000","user":"U0OWNER","text":"Look into this","reply_count":2},{"ts":"1.001","thread_ts":"1.000","bot_id":"B1","username":"julia","text":"On it"},{"ts":"1.002","thread_ts":"1.000","user":"U9","text":"see attached","files":[{"name":"log.txt"},{}]}],"has_more":true}`),
 		"conversations.history": slackOK(`{"ok":true,"messages":[{"ts":"3.000","user":"U9","text":"newest"},{"ts":"2.000","user":"U9","text":"older"}]}`),
 		"users.conversations": func(form url.Values, _ int) *http.Response {
 			if form.Get("cursor") == "" {
@@ -117,7 +117,7 @@ func TestSlackReadsNeedNoReviewAndFormatTranscripts(t *testing.T) {
 		return core.Decision{}, nil
 	}
 	r := invoke(e, "Slack", map[string]any{"action": "read_thread", "channel": "C0GENERAL", "thread_ts": "1.000", "limit": 3})
-	want := "[ts 1.000] owner (U0OWNER) (2 replies):\nLook into this\n\n[ts 1.001] bot:jarvis (in thread 1.000):\nOn it\n\n[ts 1.002] U9 (in thread 1.000; files: log.txt, unnamed):\nsee attached\n\n[more replies exist; raise limit to read them]"
+	want := "[ts 1.000] owner (U0OWNER) (2 replies):\nLook into this\n\n[ts 1.001] bot:julia (in thread 1.000):\nOn it\n\n[ts 1.002] U9 (in thread 1.000; files: log.txt, unnamed):\nsee attached\n\n[more replies exist; raise limit to read them]"
 	if r.IsError || r.Content != want {
 		t.Fatalf("thread:\n%s\nwant:\n%s", r.Content, want)
 	}

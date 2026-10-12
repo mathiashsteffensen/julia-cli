@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"testing"
 
-	"jarvis/agents"
-	"jarvis/internal/core"
+	"julia/agents"
+	"julia/internal/core"
 )
 
 func writePNG(t *testing.T, path string, w, h int) []byte {
@@ -76,13 +76,13 @@ func TestViewImageReadsTheScratchDirectory(t *testing.T) {
 	e, _, scratch, alias := imageFixture(t, "read-only")
 	writePNG(t, filepath.Join(scratch, "shots", "term.png"), 64, 32)
 	for _, path := range []string{
-		"$JARVIS_SCRATCH/shots/term.png",
-		"${JARVIS_SCRATCH}/shots/term.png",
-		filepath.Join(scratch, "shots", "term.png"),          // as $JARVIS_SCRATCH expands
+		"$JULIA_SCRATCH/shots/term.png",
+		"${JULIA_SCRATCH}/shots/term.png",
+		filepath.Join(scratch, "shots", "term.png"),          // as $JULIA_SCRATCH expands
 		filepath.Join(alias, "session", "shots", "term.png"), // as configured
 	} {
 		r := invoke(e, "ViewImage", map[string]any{"path": path})
-		if r.IsError || r.Content != "$JARVIS_SCRATCH/shots/term.png · 64×32 PNG" || len(r.Images) != 1 {
+		if r.IsError || r.Content != "$JULIA_SCRATCH/shots/term.png · 64×32 PNG" || len(r.Images) != 1 {
 			t.Fatalf("%s: %+v", path, r.Record())
 		}
 	}
@@ -105,19 +105,19 @@ func TestViewImageConfinement(t *testing.T) {
 		}
 	}
 	for path, want := range map[string]string{
-		filepath.Join(outside, "secret.png"):        "absolute paths must be inside $JARVIS_SCRATCH",
+		filepath.Join(outside, "secret.png"):        "absolute paths must be inside $JULIA_SCRATCH",
 		"../secret.png":                             "parent traversal",
-		"$JARVIS_SCRATCH/../secret.png":             "parent traversal",
-		filepath.Join(scratch, "..", "secret.png"):  "absolute paths must be inside $JARVIS_SCRATCH",
+		"$JULIA_SCRATCH/../secret.png":              "parent traversal",
+		filepath.Join(scratch, "..", "secret.png"):  "absolute paths must be inside $JULIA_SCRATCH",
 		".git/shot.png":                             "protected",
-		"$JARVIS_SCRATCH/.ssh/shot.png":             "protected",
+		"$JULIA_SCRATCH/.ssh/shot.png":              "protected",
 		"link.png":                                  "symlink",
 		"linked/secret.png":                         "symlink",
-		"$JARVIS_SCRATCH/link.png":                  "symlink",
-		"$JARVIS_SCRATCH/linked/secret.png":         "symlink",
+		"$JULIA_SCRATCH/link.png":                   "symlink",
+		"$JULIA_SCRATCH/linked/secret.png":          "symlink",
 		filepath.Join(scratch, "linked/secret.png"): "symlink",
-		"$JARVIS_SCRATCH":                           "file path is required",
-		"$JARVIS_SCRATCHY/secret.png":               "no such file",
+		"$JULIA_SCRATCH":                            "file path is required",
+		"$JULIA_SCRATCHY/secret.png":                "no such file",
 	} {
 		r := invoke(e, "ViewImage", map[string]any{"path": path})
 		if !r.IsError || len(r.Images) != 0 || !strings.Contains(r.Content, want) {

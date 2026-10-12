@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"jarvis/internal/browser"
+	"julia/internal/browser"
 )
 
 // The doctor names the Chrome the Browser tool would use and its version,
@@ -16,7 +16,7 @@ func TestDoctorBrowserSummary(t *testing.T) {
 	if missing != "Browser   browser /nonexistent/Chromium.app: not found" {
 		t.Fatalf("missing browser: %q", missing)
 	}
-	explicit := os.Getenv("JARVIS_BROWSER")
+	explicit := os.Getenv("JULIA_BROWSER")
 	binary, err := browser.Find(explicit)
 	if err != nil {
 		t.Skip("no Chrome to check: " + err.Error())

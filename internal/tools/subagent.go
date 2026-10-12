@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"jarvis/agents"
-	"jarvis/internal/core"
+	"julia/agents"
+	"julia/internal/core"
 )
 
 // SubagentReportBytes is how much of a child's report its delegating agent

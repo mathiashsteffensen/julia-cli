@@ -24,10 +24,10 @@ func TestTypeDrivesAControlledInput(t *testing.T) {
 		t.Fatalf("state = %s", got)
 	}
 	// Type replaces what is there, and submit presses Enter.
-	if _, err := f.p.Type(f.ctx, Target{Selector: "#search"}, "jarvis", true); err != nil {
+	if _, err := f.p.Type(f.ctx, Target{Selector: "#search"}, "julia", true); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.eval(t, "submitted.textContent"); got != `"searched jarvis"` {
+	if got := f.eval(t, "submitted.textContent"); got != `"searched julia"` {
 		t.Fatalf("submitted = %s", got)
 	}
 	if _, err := f.p.Type(f.ctx, Target{Text: "Notes"}, "line one\nline two ✓", false); err != nil {

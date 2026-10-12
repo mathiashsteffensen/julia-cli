@@ -46,7 +46,7 @@ func TestMain(m *testing.M) {
 func testBrowser(t *testing.T) *Browser {
 	t.Helper()
 	shared.once.Do(func() {
-		bin, err := Find(os.Getenv("JARVIS_BROWSER"))
+		bin, err := Find(os.Getenv("JULIA_BROWSER"))
 		if err != nil {
 			shared.skip = err.Error()
 			return
@@ -134,7 +134,7 @@ func open(t *testing.T, opts ...func(*ContextOptions)) *fixture {
 func launch(t *testing.T, opts Options) *Browser {
 	t.Helper()
 	testBrowser(t) // skips the test without a Chrome
-	bin, _ := Find(os.Getenv("JARVIS_BROWSER"))
+	bin, _ := Find(os.Getenv("JULIA_BROWSER"))
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	opts.Binary = bin
@@ -152,7 +152,7 @@ func openOn(t *testing.T, b *Browser, opts ...func(*ContextOptions)) *fixture {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
 	rec := &recorder{}
-	// As JARVIS browses: loopback only, so no test reaches the network.
+	// As JULIA browses: loopback only, so no test reaches the network.
 	o := ContextOptions{Policy: rec.policy, LoopbackOnly: true}
 	for _, f := range opts {
 		f(&o)

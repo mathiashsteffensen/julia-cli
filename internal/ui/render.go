@@ -17,7 +17,7 @@ import (
 	"charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 var (
@@ -229,7 +229,7 @@ func (m *model) layoutEntry(item entry) entryLayout {
 		}
 	case "assistant":
 		out.targets = []copyTarget{{"reply", item.text}}
-		add(" "+violetStyle.Bold(true).Render("✦ JARVIS"), rowMeta{gutter: 1, skip: true})
+		add(" "+violetStyle.Bold(true).Render("✦ JULIA"), rowMeta{gutter: 1, skip: true})
 		for i, segment := range splitFences(sanitize(item.text)) {
 			if i > 0 || strings.HasPrefix(strings.TrimLeft(segment.text, " \n"), "#") {
 				// A heading straight under the label would read as part of it.
@@ -554,14 +554,14 @@ func subagentRoles(tasks []subagentTask) string {
 
 // scratchPath shows a file in the session's scratch directory, which ViewImage
 // may be given as a long temporary path, the way the agent knows it:
-// $JARVIS_SCRATCH/shot.png.
+// $JULIA_SCRATCH/shot.png.
 func scratchPath(path string) string {
 	if !filepath.IsAbs(path) {
 		return path
 	}
-	_, session, ok := strings.Cut(filepath.ToSlash(path), "/jarvis-scratch/")
+	_, session, ok := strings.Cut(filepath.ToSlash(path), "/julia-scratch/")
 	if _, inside, ok2 := strings.Cut(session, "/"); ok && ok2 && inside != "" {
-		return "$JARVIS_SCRATCH/" + inside
+		return "$JULIA_SCRATCH/" + inside
 	}
 	return path
 }
@@ -571,7 +571,7 @@ func (m *model) View() tea.View {
 		return tea.NewView("")
 	}
 	contentWidth := m.width - 2*m.margin()
-	brand := coralStyle.Bold(true).Render("◆  JARVIS")
+	brand := coralStyle.Bold(true).Render("◆  JULIA")
 	caption := mutedStyle.Render("  YOUR PERSONAL AGENT")
 	if m.width < 65 {
 		caption = ""
@@ -610,7 +610,7 @@ func (m *model) View() tea.View {
 	v.AltScreen = true
 	v.BackgroundColor = background
 	v.ForegroundColor = cream
-	v.WindowTitle = "JARVIS — personal agent"
+	v.WindowTitle = "JULIA — personal agent"
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
 }
@@ -647,7 +647,7 @@ func (m *model) bottomView() string {
 		composerInput = m.picker.search.View() + "\n"
 	}
 	if m.busy {
-		composerTitle = label.Render("DRAFT") + note.Render(" · retained while JARVIS works")
+		composerTitle = label.Render("DRAFT") + note.Render(" · retained while JULIA works")
 	}
 	if m.question != nil {
 		composerTitle = label.Render("DRAFT") + note.Render(" · kept while you answer")
@@ -678,7 +678,7 @@ func (m *model) bottomView() string {
 func (m *model) welcome() string {
 	w := m.mainWidth
 	if m.bodyHeight < 15 || w < 65 {
-		content := coralStyle.Bold(true).Render("J A R V I S") + "\n\n" + creamStyle.Render("At your service, sir.") + "\n" + mutedStyle.Render("Give me something worth doing.")
+		content := coralStyle.Bold(true).Render("J U L I A") + "\n\n" + creamStyle.Render("At your service, sir.") + "\n" + mutedStyle.Render("Give me something worth doing.")
 		return lipgloss.Place(w, m.bodyHeight, lipgloss.Center, lipgloss.Center, content)
 	}
 	// The hero is the sidebar's wordmark at twice the width, with the starters
@@ -1087,7 +1087,7 @@ func RenderWelcome(width, height int, definitions ...core.ToolDefinition) string
 
 func renderPreview(width, height int, demo bool, definitions []core.ToolDefinition) string {
 	m := newModel(Config{
-		Session: &core.Session{ID: "a quiet kind of capable", Directory: "~/code/jarvis-cli", Provider: "codex", Model: "your selected model"},
+		Session: &core.Session{ID: "a quiet kind of capable", Directory: "~/code/julia-cli", Provider: "codex", Model: "your selected model"},
 		Mode:    "auto", Demo: demo, ToolDefinitions: definitions,
 	})
 	defer m.stop()
@@ -1107,7 +1107,7 @@ func demoEntries() []entry {
 		{role: "assistant", text: "I'll follow the execution boundary, inspect the cancellation path, and run the focused checks."},
 		{role: "tool", call: &core.ToolCall{Name: "Grep", Arguments: json.RawMessage(`{"pattern":"CommandContext|ProcessGroup|Approve","path":"internal/"}`)}, done: true, result: &core.ToolResult{Content: "12 matches across 3 files"}},
 		{role: "tool", call: &core.ToolCall{Name: "Read", Arguments: json.RawMessage(`{"path":"internal/sandbox/runner.go"}`)}, done: true, result: &core.ToolResult{Content: "Read 148 lines · execution boundary and process lifecycle"}},
-		{role: "tool", call: &core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"go test -race ./internal/sandbox/..."}`)}, done: true, result: &core.ToolResult{Content: "ok   jarvis/internal/sandbox   1.284s"}},
+		{role: "tool", call: &core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"go test -race ./internal/sandbox/..."}`)}, done: true, result: &core.ToolResult{Content: "ok   julia/internal/sandbox   1.284s"}},
 		{role: "assistant", text: "**The cancellation path is sound, sir.**\n\nThe runner signals the ordinary process group when a task is interrupted. Approval is checked before execution, and a denied action never reaches the shell.\n\nThe focused race checks passed. No files changed."},
 	}
 }

@@ -15,8 +15,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"jarvis/agents"
-	"jarvis/internal/core"
+	"julia/agents"
+	"julia/internal/core"
 )
 
 // questionWait bounds every wait for something that should already be happening.

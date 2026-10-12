@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 type decisionsQuestion struct {

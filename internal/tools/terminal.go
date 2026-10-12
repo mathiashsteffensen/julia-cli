@@ -16,9 +16,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"jarvis/internal/core"
-	"jarvis/internal/images"
-	"jarvis/internal/terminal"
+	"julia/internal/core"
+	"julia/internal/images"
+	"julia/internal/terminal"
 )
 
 // Terminal runs programs on virtual terminals that outlive a call, so the

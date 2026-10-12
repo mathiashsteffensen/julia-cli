@@ -22,7 +22,7 @@ func registerQueries(s *Session, emu *vt.Emulator) {
 
 	// XTVERSION: some programs pick features by terminal name.
 	emu.RegisterCsiHandler(ansi.Command('>', 0, 'q'), func(params ansi.Params) bool {
-		reply("\x1bP>|jarvis-vt\x1b\\")
+		reply("\x1bP>|julia-vt\x1b\\")
 		return true
 	})
 

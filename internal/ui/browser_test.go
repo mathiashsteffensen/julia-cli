@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func TestBrowserSummary(t *testing.T) {
@@ -136,7 +136,7 @@ func TestBrowserApprovalView(t *testing.T) {
 	m := testModel(t, Config{})
 	m.resize(110, 50)
 	args := `{"action":"navigate","url":"https://docs.example.com/guide","origins":["https://docs.example.com"],"page":"p1","page_url":"http://localhost:5173/","page_title":"Home"}`
-	m.pending = &ApprovalRequest{Approval: core.Approval{Call: core.ToolCall{Name: "Browser", Arguments: json.RawMessage(args)}, ExecutionMode: "browser", Network: true, Reason: "Open https://docs.example.com/guide in the JARVIS browser?"}}
+	m.pending = &ApprovalRequest{Approval: core.Approval{Call: core.ToolCall{Name: "Browser", Arguments: json.RawMessage(args)}, ExecutionMode: "browser", Network: true, Reason: "Open https://docs.example.com/guide in the JULIA browser?"}}
 	view := ansi.Strip(m.approvalView())
 	for _, want := range []string{"Browser  navigate · docs.example.com/guide", "Page", `p1 · "Home" · http://localhost:5173/`, "Approves for the rest of this turn", "https://docs.example.com", "Reaches beyond this machine"} {
 		if !strings.Contains(view, want) {
@@ -238,7 +238,7 @@ func TestBrowserApprovalKeys(t *testing.T) {
 	m := testModel(t, Config{})
 	m.resize(120, 50)
 	allow := `{"action":"allow","origins":["https://fonts.googleapis.com"],"page":"p1","page_url":"http://localhost:5173/","page_title":"Home"}`
-	m.pending = &ApprovalRequest{Approval: core.Approval{Call: core.ToolCall{Name: "Browser", Arguments: json.RawMessage(allow)}, ExecutionMode: "browser", Network: true, Reason: "Let the JARVIS browser load pages and requests from https://fonts.googleapis.com for the rest of this turn, without asking again?"}}
+	m.pending = &ApprovalRequest{Approval: core.Approval{Call: core.ToolCall{Name: "Browser", Arguments: json.RawMessage(allow)}, ExecutionMode: "browser", Network: true, Reason: "Let the JULIA browser load pages and requests from https://fonts.googleapis.com for the rest of this turn, without asking again?"}}
 	view := ansi.Strip(m.approvalView())
 	if !strings.Contains(view, "y / Enter  Allow for this turn") || strings.Contains(view, "Allow once") || strings.Count(view, "localhost:5173") != 1 {
 		t.Fatalf("allow panel:\n%s", view)
@@ -247,7 +247,7 @@ func TestBrowserApprovalKeys(t *testing.T) {
 		t.Fatalf("footer: %s", footer)
 	}
 	click := `{"action":"click","target":"button \"Save\" (e3)","page":"p2","page_url":"about:blank","opened_by":"http://external.test/phish"}`
-	m.pending = &ApprovalRequest{Approval: core.Approval{Call: core.ToolCall{Name: "Browser", Arguments: json.RawMessage(click)}, ExecutionMode: "browser", Reason: "Click this element on p2 in the JARVIS browser?"}}
+	m.pending = &ApprovalRequest{Approval: core.Approval{Call: core.ToolCall{Name: "Browser", Arguments: json.RawMessage(click)}, ExecutionMode: "browser", Reason: "Click this element on p2 in the JULIA browser?"}}
 	view = ansi.Strip(m.approvalView())
 	if !strings.Contains(view, "y / Enter  Allow once") || !strings.Contains(view, "p2 · about:blank · opened by http://external.test/phish") || strings.Contains(view, `"opened_by"`) {
 		t.Fatalf("click panel:\n%s", view)

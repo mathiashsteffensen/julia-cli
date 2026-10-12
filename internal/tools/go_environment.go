@@ -151,7 +151,7 @@ func (e *Executor) prepareGoEnvironment(ctx context.Context) (*goEnvironment, er
 			return nil, err
 		}
 		id := sha256.Sum256([]byte(e.directory))
-		env.CacheRoot = filepath.Join(base, "jarvis", "workspaces", hex.EncodeToString(id[:16]))
+		env.CacheRoot = filepath.Join(base, "julia", "workspaces", hex.EncodeToString(id[:16]))
 		if err := privateCacheDirectory(env.CacheRoot); err != nil {
 			return nil, err
 		}

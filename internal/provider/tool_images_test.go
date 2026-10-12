@@ -13,7 +13,7 @@ import (
 	"sync"
 	"testing"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 
 	"charm.land/fantasy"
 )

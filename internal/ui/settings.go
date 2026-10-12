@@ -11,8 +11,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"jarvis/internal/config"
-	"jarvis/internal/core"
+	"julia/internal/config"
+	"julia/internal/core"
 )
 
 type settingsPicker struct {
@@ -103,7 +103,7 @@ func (m *model) catalogFetch() (func(context.Context) ([]core.ModelOption, error
 	known := append([]core.ModelOption(nil), m.knownModels...)
 	codex := m.cfg.Models
 	if codex == nil && len(known) == 0 {
-		return nil, fmt.Errorf("no models to choose from; add provider/<model-id> entries to enabled_models in your JARVIS config")
+		return nil, fmt.Errorf("no models to choose from; add provider/<model-id> entries to enabled_models in your JULIA config")
 	}
 	return func(ctx context.Context) ([]core.ModelOption, error) {
 		if codex == nil {
@@ -600,7 +600,7 @@ func (m *model) cycleModel() tea.Cmd {
 	}
 	enabled := m.cfg.EnabledModels
 	if len(enabled) == 0 {
-		m.notice = "No enabled models to cycle. Add provider/<model-id> entries to enabled_models in your JARVIS config."
+		m.notice = "No enabled models to cycle. Add provider/<model-id> entries to enabled_models in your JULIA config."
 		return nil
 	}
 	current := slices.IndexFunc(enabled, func(option core.ModelOption) bool {

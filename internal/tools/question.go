@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 const (

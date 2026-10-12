@@ -8,7 +8,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 // Generous ceilings for what a record may hold: the tool already bounds both

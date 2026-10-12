@@ -27,7 +27,7 @@ var linuxNames = []string{
 }
 
 // Find returns the Chrome or Chromium executable to launch. explicit, when
-// set (from configuration or JARVIS_BROWSER), wins and must exist: a binary or
+// set (from configuration or JULIA_BROWSER), wins and must exist: a binary or
 // a macOS .app bundle. Otherwise Find looks for an installed browser (Google
 // Chrome, Chromium, Chrome for Testing, Brave, Edge) in /Applications and
 // ~/Applications, then in Playwright's and Puppeteer's caches (the newest full
@@ -102,7 +102,7 @@ func (f finder) find() (string, error) {
 			}
 		}
 	}
-	return "", fmt.Errorf("no Chrome or Chromium found (looked in %s). Install one with `npx playwright install chromium`, or point JARVIS_BROWSER at a Chrome executable", strings.Join(looked, ", "))
+	return "", fmt.Errorf("no Chrome or Chromium found (looked in %s). Install one with `npx playwright install chromium`, or point JULIA_BROWSER at a Chrome executable", strings.Join(looked, ", "))
 }
 
 func (f finder) playwrightCache() string {

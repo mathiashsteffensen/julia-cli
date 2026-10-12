@@ -4,7 +4,7 @@ import (
 	"context"
 	"slices"
 
-	"jarvis/internal/sockets"
+	"julia/internal/sockets"
 )
 
 // hostPorts lists the local ports the machine's own services listen on: every
@@ -13,7 +13,7 @@ import (
 // sandbox may connect to its own servers and to those, never to these: a
 // local database or daemon runs outside the sandbox and often trusts any
 // local client, which would carry a command beyond the sandbox unreviewed.
-// The browser's proxy, which JARVIS itself runs, is one of them.
+// The browser's proxy, which JULIA itself runs, is one of them.
 func (e *Executor) hostPorts(ctx context.Context) ([]int, error) {
 	_, host, err := e.loopbackListeners(ctx)
 	return host, err

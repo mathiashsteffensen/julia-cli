@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 const maxSkillBytes = 64 << 10

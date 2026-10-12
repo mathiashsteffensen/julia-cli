@@ -3,7 +3,7 @@ package ui
 import (
 	"context"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 // QuestionRequest bridges the AskUserQuestion tool to the terminal. Reply

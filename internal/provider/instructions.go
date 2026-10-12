@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 // Runtime instructions are reconstructed by the host for each Run. They are

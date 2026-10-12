@@ -11,7 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 // A Browser result that shows a page is drawn as the page: collapsed, one row

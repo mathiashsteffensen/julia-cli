@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func fixture(t *testing.T, mode string, approve core.Approver) (*Executor, string) {
@@ -120,7 +120,7 @@ func TestGrepHidesSecrets(t *testing.T) {
 	}
 }
 func TestYoloRunsEverythingWithoutSandboxOrReview(t *testing.T) {
-	t.Setenv("JARVIS_TEST_YOLO", "inherited")
+	t.Setenv("JULIA_TEST_YOLO", "inherited")
 	e, _ := fixture(t, "yolo", nil)
 	dir := e.directory // resolved, as $PWD reports it
 	// No reviewer and no approver: nothing may be asked in yolo mode.
@@ -132,8 +132,8 @@ func TestYoloRunsEverythingWithoutSandboxOrReview(t *testing.T) {
 		t.Fatalf("sandbox info %q", e.SandboxInfo())
 	}
 	for _, args := range []map[string]any{
-		{"command": "printf \"$JARVIS_TEST_YOLO:$JARVIS_SCRATCH\"", "network": true},
-		{"command": "printf \"$JARVIS_TEST_YOLO:$JARVIS_SCRATCH\"", "sandbox_permissions": "require_escalated", "justification": "host access"},
+		{"command": "printf \"$JULIA_TEST_YOLO:$JULIA_SCRATCH\"", "network": true},
+		{"command": "printf \"$JULIA_TEST_YOLO:$JULIA_SCRATCH\"", "sandbox_permissions": "require_escalated", "justification": "host access"},
 	} {
 		r := invoke(e, "Bash", args)
 		if r.IsError || !strings.HasPrefix(r.Content, "inherited:") || strings.Contains(r.Content, dir) {

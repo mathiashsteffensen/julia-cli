@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 // questionTools offers only AskUserQuestion and records the session's pending

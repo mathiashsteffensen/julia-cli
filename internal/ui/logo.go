@@ -8,16 +8,15 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Proportional, chamfered letters drawn with quadrant blocks in 23 columns.
-// The narrow I gives the V room for two diagonal strokes and a centered point.
+// Proportional, chamfered letters drawn with quadrant blocks in 18 columns.
+// The narrow I keeps the mark compact between the open U and L.
 // Vertical strokes are two pixels wide to balance the taller terminal cells.
 var logoLetters = [][6]string{
-	{"....##", "....##", "....##", "....##", "##..##", ".####."},             // J
-	{".####.", "##..##", "##..##", "######", "##..##", "##..##"},             // A
-	{"#####.", "##..##", "#####.", "##.##.", "##..##", "##..##"},             // R
-	{"##....##", "##....##", ".##..##.", ".##..##.", "..####..", "...##..."}, // V
-	{"####", ".##.", ".##.", ".##.", ".##.", "####"},                         // I
-	{".#####", "##....", ".####.", "....##", "....##", "#####."},             // S
+	{"....##", "....##", "....##", "....##", "##..##", ".####."}, // J
+	{"##..##", "##..##", "##..##", "##..##", "##..##", ".####."}, // U
+	{"##....", "##....", "##....", "##....", "##....", "######"}, // L
+	{"####", ".##.", ".##.", ".##.", ".##.", "####"},             // I
+	{".####.", "##..##", "##..##", "######", "##..##", "##..##"}, // A
 }
 
 // quadrants maps a cell's pixels (top-left, top-right, bottom-left,
@@ -136,6 +135,11 @@ func sidebarLogo(version string, width int) []string {
 		rule := strings.Repeat("╱", width-ansi.StringWidth(version)-gap)
 		footer = rail.Render(rule) + strings.Repeat(" ", gap) + mutedStyle.Render(version)
 	}
-	rows := append([]string{header, ""}, letters...)
+	// The mark is narrower than the sidebar; keep it centered under the crest.
+	indent := strings.Repeat(" ", max(0, (width-ansi.StringWidth(letters[0]))/2))
+	rows := []string{header, ""}
+	for _, row := range letters {
+		rows = append(rows, indent+row)
+	}
 	return append(rows, "", footer)
 }

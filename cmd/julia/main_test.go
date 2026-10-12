@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"jarvis/internal/config"
-	"jarvis/internal/core"
+	"julia/internal/config"
+	"julia/internal/core"
 )
 
 type instructionBackend struct {
@@ -100,7 +100,7 @@ func TestCLIReasoningAndModelOverridesConfigurationWithoutProviderCalls(t *testi
 		{"explicit empty clears configured effort", []string{"--model", "compatible/vendor/model", "--compatible-base-url", "http://127.0.0.1:1/v1", "--reasoning="}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			os.Args = append([]string{"jarvis", "--config", path, "--dir", dir, "--snapshot", "40"}, tc.flags...)
+			os.Args = append([]string{"julia", "--config", path, "--dir", dir, "--snapshot", "40"}, tc.flags...)
 			err := run()
 			if tc.wantError == "" && err != nil {
 				t.Fatal(err)

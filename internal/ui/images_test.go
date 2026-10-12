@@ -14,8 +14,8 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	"jarvis/internal/core"
-	"jarvis/internal/images"
+	"julia/internal/core"
+	"julia/internal/images"
 )
 
 var ctrlV = tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl}
@@ -171,7 +171,7 @@ func TestPastesInsideDialogsDoNotAttach(t *testing.T) {
 }
 
 func TestHistoryShowsImagesOfSavedMessages(t *testing.T) {
-	session := &core.Session{ID: "test", Directory: "/tmp/jarvis", Provider: "fake", Messages: []core.Message{{Role: "user", Content: "Look at [Image #1]", Images: []core.Image{fakeImage(640, 480)}}}}
+	session := &core.Session{ID: "test", Directory: "/tmp/julia", Provider: "fake", Messages: []core.Message{{Role: "user", Content: "Look at [Image #1]", Images: []core.Image{fakeImage(640, 480)}}}}
 	m := testModel(t, Config{Session: session})
 	if rendered := ansi.Strip(m.renderEntryContent(m.entries[0])); !strings.Contains(rendered, "▣ Image #1  PNG · 640×480") {
 		t.Fatalf("history entry:\n%s", rendered)

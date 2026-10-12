@@ -1,4 +1,4 @@
-module jarvis
+module julia
 
 go 1.27.0
 

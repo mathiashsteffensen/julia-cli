@@ -12,14 +12,14 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"jarvis/internal/core"
-	"jarvis/internal/images"
+	"julia/internal/core"
+	"julia/internal/images"
 
 	"golang.org/x/sys/unix"
 )
 
 // scratchVariable is how the agent knows the session scratch directory.
-const scratchVariable = "$JARVIS_SCRATCH"
+const scratchVariable = "$JULIA_SCRATCH"
 
 func viewImageDefinition() core.ToolDefinition {
 	return core.ToolDefinition{Name: "ViewImage", Description: fmt.Sprintf("Look at an image file (PNG, JPEG, GIF, WebP, TIFF or BMP, up to %d MiB), such as a screenshot or a rendered chart. It is scaled to at most %d px on its long side. Takes a workspace-relative path, or a file in %s written as %s/name.png or as its absolute path. Symlinks and protected credential/git paths are forbidden.", images.MaxFileBytes>>20, images.MaxEdge, scratchVariable, scratchVariable),
@@ -88,7 +88,7 @@ func (e *Executor) viewImage(ctx context.Context, call core.ToolCall) (core.Tool
 
 // openImage opens a ViewImage path without following symlinks and returns it
 // with the name the result shows: a workspace-relative path as Read takes it,
-// or a path inside the scratch directory as $JARVIS_SCRATCH/….
+// or a path inside the scratch directory as $JULIA_SCRATCH/….
 func (e *Executor) openImage(path string) (*os.File, string, error) {
 	inside, scratch, err := e.scratchPath(path)
 	if err != nil {
@@ -118,7 +118,7 @@ func (e *Executor) openImage(path string) (*os.File, string, error) {
 }
 
 // scratchPath reports whether path names a file in the scratch directory, as
-// $JARVIS_SCRATCH/… or absolutely, and returns it relative to that directory.
+// $JULIA_SCRATCH/… or absolutely, and returns it relative to that directory.
 // Any other absolute path is refused: outside the scratch directory only the
 // workspace is reachable, and only by relative path.
 func (e *Executor) scratchPath(path string) (string, bool, error) {
@@ -127,7 +127,7 @@ func (e *Executor) scratchPath(path string) (string, bool, error) {
 	}
 	var rest string
 	named := false
-	for _, variable := range []string{scratchVariable, "${JARVIS_SCRATCH}"} {
+	for _, variable := range []string{scratchVariable, "${JULIA_SCRATCH}"} {
 		if after, ok := strings.CutPrefix(path, variable); ok && (after == "" || after[0] == '/') {
 			rest, named = strings.TrimPrefix(after, "/"), true
 		}

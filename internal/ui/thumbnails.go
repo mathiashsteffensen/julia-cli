@@ -10,8 +10,8 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/kitty"
-	"jarvis/internal/core"
-	"jarvis/internal/images"
+	"julia/internal/core"
+	"julia/internal/images"
 )
 
 // Sent images are drawn inline as Kitty graphics, the same way as the wordmark:

@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Code blocks are drawn by JARVIS rather than Glamour: a filled card with a
+// Code blocks are drawn by JULIA rather than Glamour: a filled card with a
 // language label, highlighting in the house palette, and wrapped lines marked
 // as continuations so a copied command stays one command.
 var (

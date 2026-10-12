@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 // Models reads Codex's selectable model catalog without creating a conversation
@@ -20,7 +20,7 @@ func (c *Codex) Models(ctx context.Context) ([]core.ModelOption, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	directory, err := os.MkdirTemp("", "jarvis-models-")
+	directory, err := os.MkdirTemp("", "julia-models-")
 	if err != nil {
 		return nil, fmt.Errorf("create model catalog workspace: %w", err)
 	}
@@ -34,7 +34,7 @@ func (c *Codex) Models(ctx context.Context) ([]core.ModelOption, error) {
 		return nil, err
 	}
 	defer client.close()
-	if _, err := client.call(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "jarvis_cli", "title": "JARVIS", "version": "0.1.0"}, "capabilities": map[string]any{"experimentalApi": true}}); err != nil {
+	if _, err := client.call(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "julia_cli", "title": "JULIA", "version": "0.1.0"}, "capabilities": map[string]any{"experimentalApi": true}}); err != nil {
 		return nil, fmt.Errorf("initialize Codex model catalog: %w", err)
 	}
 	if err := client.send(map[string]any{"method": "initialized", "params": map[string]any{}}); err != nil {

@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"os"
 
-	"jarvis/internal/config"
-	"jarvis/internal/core"
-	"jarvis/internal/provider"
-	sessions "jarvis/internal/session"
+	"julia/internal/config"
+	"julia/internal/core"
+	"julia/internal/provider"
+	sessions "julia/internal/session"
 )
 
 // The executing model follows session settings; approval uses the configured reviewer.

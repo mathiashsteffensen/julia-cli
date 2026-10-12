@@ -187,7 +187,7 @@ func TestQueryReplies(t *testing.T) {
 	for _, want := range []string{
 		`\x1b[1;1R`,                         // DSR cursor position
 		`\x1b]11;rgb:1d1d/1f1f/2121\a`,      // OSC 11 dark background
-		`\x1bP>|jarvis-vt\x1b\\`,            // XTVERSION
+		`\x1bP>|julia-vt\x1b\\`,             // XTVERSION
 		`\x1b[6;30;15t`,                     // cell size
 		`\x1b[8;24;200t`,                    // size in cells
 		`\x1b]4;1;rgb:cccc/6666/6666\x1b\\`, // palette red
@@ -522,14 +522,14 @@ func TestCloseHangsUpAndLeavesNothingBehind(t *testing.T) {
 	}
 }
 
-// TestJarvisDemo drives JARVIS's own offline preview, a Bubble Tea v2 program
-// that probes its terminal at startup, when JARVIS_TERMINAL_DEMO=1.
-func TestJarvisDemo(t *testing.T) {
-	if os.Getenv("JARVIS_TERMINAL_DEMO") == "" {
-		t.Skip("set JARVIS_TERMINAL_DEMO=1 to build and drive jarvis --demo")
+// TestJuliaDemo drives JULIA's own offline preview, a Bubble Tea v2 program
+// that probes its terminal at startup, when JULIA_TERMINAL_DEMO=1.
+func TestJuliaDemo(t *testing.T) {
+	if os.Getenv("JULIA_TERMINAL_DEMO") == "" {
+		t.Skip("set JULIA_TERMINAL_DEMO=1 to build and drive julia --demo")
 	}
-	bin := t.TempDir() + "/jarvis"
-	if out, err := exec.Command("go", "build", "-o", bin, "jarvis/cmd/jarvis").CombinedOutput(); err != nil {
+	bin := t.TempDir() + "/julia"
+	if out, err := exec.Command("go", "build", "-o", bin, "julia/cmd/julia").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 	s := start(t, exec.Command(bin, "--demo"), 120, 40)
@@ -564,7 +564,7 @@ func emulator(t *testing.T, cols, rows int) *Session {
 	return s
 }
 
-// Output that once panicked vt, and with it JARVIS, is clamped to the screen
+// Output that once panicked vt, and with it JULIA, is clamped to the screen
 // as xterm does, including what a program drawing for its old size sends.
 func TestHostileOutputIsClamped(t *testing.T) {
 	for _, tc := range []struct {
@@ -649,7 +649,7 @@ func TestEmulatorPanicFreezesTheScreen(t *testing.T) {
 	}
 }
 
-// The same output from a real program leaves JARVIS and the program running.
+// The same output from a real program leaves JULIA and the program running.
 func TestHostileProgramKeepsRunning(t *testing.T) {
 	s := startBash(t, `printf '\e[1;100r\e[2L\e[Hdrawn'; sleep 30`, 80, 24)
 	waitFor(t, s, "drawn")

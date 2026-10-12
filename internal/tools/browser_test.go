@@ -21,9 +21,9 @@ import (
 	"testing"
 	"time"
 
-	"jarvis/agents"
-	"jarvis/internal/browser"
-	"jarvis/internal/core"
+	"julia/agents"
+	"julia/internal/browser"
+	"julia/internal/core"
 )
 
 // browserSite serves the pages the Browser tests drive on loopback, and
@@ -132,10 +132,10 @@ func (s *browserSite) count(path string) int {
 // http://external.test through site once that origin is approved.
 func browserFixture(t *testing.T, mode string, approve core.Approver, site *browserSite) *Executor {
 	t.Helper()
-	if _, err := browser.Find(os.Getenv("JARVIS_BROWSER")); err != nil {
+	if _, err := browser.Find(os.Getenv("JULIA_BROWSER")); err != nil {
 		t.Skip("no Chrome to test with: " + err.Error())
 	}
-	e, err := New(Config{Directory: t.TempDir(), Mode: mode, Approve: approve, Browser: os.Getenv("JARVIS_BROWSER"), ScratchDir: filepath.Join(t.TempDir(), "scratch")})
+	e, err := New(Config{Directory: t.TempDir(), Mode: mode, Approve: approve, Browser: os.Getenv("JULIA_BROWSER"), ScratchDir: filepath.Join(t.TempDir(), "scratch")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +311,7 @@ func TestBrowserPolicy(t *testing.T) {
 		{"file://" + workspace + "/keys/server.pem", "", true, "GET", "protected"},
 		{"file://" + scratch + "/report.html", "", true, "GET", ""},
 		{"file:///var/alias/scratch/report.html", "", true, "GET", ""},
-		{"file:///etc/hosts", "", true, "GET", "outside the workspace and $JARVIS_SCRATCH"},
+		{"file:///etc/hosts", "", true, "GET", "outside the workspace and $JULIA_SCRATCH"},
 		{"file://" + workspace + "/index.html", "https://docs.example.com/", true, "GET", "may not open local files"},
 		{"ftp://example.com/file", "", true, "GET", "ftp: URLs are not available"},
 	} {
@@ -678,13 +678,13 @@ func TestSnapshotDiff(t *testing.T) {
 	}
 }
 
-// Run with JARVIS_SANDBOX_TEST=1: the whole loop the tools are for. A static
+// Run with JULIA_SANDBOX_TEST=1: the whole loop the tools are for. A static
 // site is served from a loopback Terminal under the sandbox and looked at
 // in the Browser, all through Execute, in auto mode with no reviewer: none
-// of it needs one. JARVIS_BROWSER_SHOTS=<dir> keeps the screenshots.
+// of it needs one. JULIA_BROWSER_SHOTS=<dir> keeps the screenshots.
 func TestSandboxIntegrationBrowseLoopbackTerminal(t *testing.T) {
-	if os.Getenv("JARVIS_SANDBOX_TEST") != "1" {
-		t.Skip("set JARVIS_SANDBOX_TEST=1 for host sandbox integration")
+	if os.Getenv("JULIA_SANDBOX_TEST") != "1" {
+		t.Skip("set JULIA_SANDBOX_TEST=1 for host sandbox integration")
 	}
 	e := browserFixture(t, "auto", nil, nil)
 	os.MkdirAll(filepath.Join(e.directory, "site"), 0o755)
@@ -719,7 +719,7 @@ button { margin-top: 20px; background: #f49d89; border: 0; color: #1d1b22; paddi
 		t.Fatalf("click:\n%s", r.Content)
 	}
 	shots := []core.ToolResult{r, mustBrowse(t, e, map[string]any{"action": "emulate", "width": 390, "height": 844, "mobile": true, "scale": 2, "color_scheme": "dark", "image": true})}
-	if dir := os.Getenv("JARVIS_BROWSER_SHOTS"); dir != "" {
+	if dir := os.Getenv("JULIA_BROWSER_SHOTS"); dir != "" {
 		for i, shot := range shots {
 			os.WriteFile(filepath.Join(dir, fmt.Sprintf("loopback-%d.png", i+1)), shot.Images[0].Data, 0o644)
 		}
@@ -791,7 +791,7 @@ func TestBrowserDownloadsStayInScratch(t *testing.T) {
 		return seen
 	}
 	scratch, _ := e.scratchDir()
-	if notes := download(); !strings.Contains(notes, `downloaded "report.csv" (8 bytes) to $JARVIS_SCRATCH/downloads/report.csv`) {
+	if notes := download(); !strings.Contains(notes, `downloaded "report.csv" (8 bytes) to $JULIA_SCRATCH/downloads/report.csv`) {
 		t.Fatalf("notes:\n%s", notes)
 	}
 	if data, err := os.ReadFile(filepath.Join(scratch, "downloads", "report.csv")); err != nil || string(data) != "a,b\n1,2\n" {

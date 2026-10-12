@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-// Preferences is state JARVIS remembers between launches, separate from the
+// Preferences is state JULIA remembers between launches, separate from the
 // hand-edited configuration file.
 type Preferences struct {
 	// Reasoning holds the last explicitly selected effort per provider. Efforts
@@ -26,7 +26,7 @@ func PreferencesPath() (string, error) {
 		}
 		d = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(d, "jarvis", "preferences.json"), nil
+	return filepath.Join(d, "julia", "preferences.json"), nil
 }
 
 // LoadPreferences returns empty preferences when the file is missing.

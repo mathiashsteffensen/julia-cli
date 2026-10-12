@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"jarvis/agents"
-	"jarvis/internal/config"
-	"jarvis/internal/core"
-	"jarvis/internal/provider"
-	"jarvis/internal/session"
+	"julia/agents"
+	"julia/internal/config"
+	"julia/internal/core"
+	"julia/internal/provider"
+	"julia/internal/session"
 )
 
 // childSpend scripts what one delegated task's model calls cost and how it ends.
@@ -293,7 +293,7 @@ func TestDoctorContextSummary(t *testing.T) {
 	}
 }
 
-// Every config written by an earlier 'jarvis config init' carries context_bytes,
+// Every config written by an earlier 'julia config init' carries context_bytes,
 // and configs reject unknown keys, so the CLI must keep starting with it.
 func TestCLIStartsWithLegacyContextBytesAndValidatesContextTokens(t *testing.T) {
 	output, err := os.CreateTemp(t.TempDir(), "stdout")
@@ -320,7 +320,7 @@ func TestCLIStartsWithLegacyContextBytesAndValidatesContextTokens(t *testing.T) 
 			if err := os.WriteFile(path, []byte(tt.config), 0600); err != nil {
 				t.Fatal(err)
 			}
-			os.Args = []string{"jarvis", "--config", path, "--dir", dir, "--snapshot", "40"}
+			os.Args = []string{"julia", "--config", path, "--dir", dir, "--snapshot", "40"}
 			err := run()
 			if tt.wantError == "" && err != nil {
 				t.Fatal(err)

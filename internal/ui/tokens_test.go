@@ -11,7 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func TestCompactWhole(t *testing.T) {
@@ -90,7 +90,7 @@ func hasRow(rows []string, want string) bool {
 func TestSidebarShowsContextAndSessionTotals(t *testing.T) {
 	// A resumed session: the saved totals must show before any run starts.
 	saved := core.SessionUsage{Total: core.TokenUsage{Input: 20_000, CacheRead: 900_000, CacheWrite: 30_000, Output: 12_300}, Context: 138_000}
-	m := testModel(t, Config{Session: &core.Session{ID: "resumed", Directory: "/tmp/jarvis", Provider: "fake", Usage: saved}})
+	m := testModel(t, Config{Session: &core.Session{ID: "resumed", Directory: "/tmp/julia", Provider: "fake", Usage: saved}})
 	m.resize(128, 60)
 	rows := sidebarText(m)
 	for _, want := range []string{"CONTEXT", "53% · 138k / 256k", "TOKENS", "950k in · 12.3k out", "900k cached · 50k new", "ACTIVITY", "0 tool calls", "last call", "0 in · 0 out"} {
@@ -190,7 +190,7 @@ func TestRunUsageShowsLiveAndIsCountedOnce(t *testing.T) {
 		core.UsageEvent(core.TokenUsage{Input: 50, CacheRead: 5700, CacheWrite: 400, Output: 120}, 6600),
 		core.UsageEvent(core.TokenUsage{}, 7000), // a context update after tool results
 	}
-	session := &core.Session{ID: "live", Directory: "/tmp/jarvis", Provider: "fake", Usage: prior}
+	session := &core.Session{ID: "live", Directory: "/tmp/julia", Provider: "fake", Usage: prior}
 	m := testModel(t, Config{Session: session, Backend: usageBackend{events}})
 	m.resize(128, 60)
 	m.input.SetValue("go")
@@ -274,7 +274,7 @@ func TestContextShrinksAfterCompaction(t *testing.T) {
 }
 
 func TestClearResetsUsage(t *testing.T) {
-	session := &core.Session{ID: "old", Directory: "/tmp/jarvis", Provider: "fake", Usage: core.SessionUsage{Total: core.TokenUsage{Input: 1, CacheRead: 2, CacheWrite: 3, Output: 4}, Context: 50_000}}
+	session := &core.Session{ID: "old", Directory: "/tmp/julia", Provider: "fake", Usage: core.SessionUsage{Total: core.TokenUsage{Input: 1, CacheRead: 2, CacheWrite: 3, Output: 4}, Context: 50_000}}
 	m := testModel(t, Config{Session: session})
 	m.resize(128, 60)
 	m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 7, Output: 8}, 60_000))
@@ -292,7 +292,7 @@ func TestClearResetsUsage(t *testing.T) {
 }
 
 func TestSettingsChangeInSameConversationKeepsUsage(t *testing.T) {
-	m := testModel(t, Config{Demo: true, Session: &core.Session{ID: "same", Directory: "/tmp/jarvis", Provider: "codex", Model: "preview-balanced"}})
+	m := testModel(t, Config{Demo: true, Session: &core.Session{ID: "same", Directory: "/tmp/julia", Provider: "codex", Model: "preview-balanced"}})
 	before := m.usage()
 	if before == (core.SessionUsage{}) {
 		t.Fatal("demo session has no usage")
@@ -418,7 +418,7 @@ func TestSidebarNeverOverflowsItsColumn(t *testing.T) {
 func TestSidebarShowsEverySectionInOrder(t *testing.T) {
 	m := testModel(t, Config{
 		Version:         "0.1.0",
-		Session:         &core.Session{ID: "all", Directory: "/tmp/jarvis", Provider: "codex", Model: "selected", Reasoning: "high", Usage: core.SessionUsage{Context: 119_000}},
+		Session:         &core.Session{ID: "all", Directory: "/tmp/julia", Provider: "codex", Model: "selected", Reasoning: "high", Usage: core.SessionUsage{Context: 119_000}},
 		ToolDefinitions: []core.ToolDefinition{{Name: "Read"}},
 	})
 	m.resize(128, 24)
@@ -445,7 +445,7 @@ func TestSidebarShowsEverySectionInOrder(t *testing.T) {
 }
 
 func TestSidebarScrollsIndependently(t *testing.T) {
-	m := testModel(t, Config{Version: "0.1.0", Session: &core.Session{ID: "scroll", Directory: "/tmp/jarvis", Provider: "codex", Model: "selected"}, ToolDefinitions: []core.ToolDefinition{{Name: "Read"}}})
+	m := testModel(t, Config{Version: "0.1.0", Session: &core.Session{ID: "scroll", Directory: "/tmp/julia", Provider: "codex", Model: "selected"}, ToolDefinitions: []core.ToolDefinition{{Name: "Read"}}})
 	m.resize(128, 24)
 	lettering := strings.TrimSpace(ansi.Strip(logoLettering()[0]))
 	if rows := sidebarText(m); len(rows) != m.sidebarHeight() || !hasRow(rows, lettering) || hasRow(rows, "THE ESSENTIALS") {

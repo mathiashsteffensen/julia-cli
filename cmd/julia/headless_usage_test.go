@@ -13,8 +13,8 @@ import (
 	"sync"
 	"testing"
 
-	"jarvis/internal/core"
-	"jarvis/internal/session"
+	"julia/internal/core"
+	"julia/internal/session"
 )
 
 // tokenAPI is a scripted OpenAI-compatible endpoint. The conversation it serves
@@ -76,9 +76,9 @@ func runHeadlessAgainst(t *testing.T, api http.Handler, dir string, extra ...str
 	t.Cleanup(server.Close)
 	state := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", state)
-	t.Setenv("JARVIS_TEST_KEY", "fixture-key")
+	t.Setenv("JULIA_TEST_KEY", "fixture-key")
 	path := filepath.Join(t.TempDir(), "config.json")
-	config := fmt.Sprintf(`{"model":"compatible/test-model","compatible_base_url":%q,"api_key_env":"JARVIS_TEST_KEY","mode":"read-only","max_steps":8,"context_tokens":32000,"skill_paths":[]}`, server.URL+"/v1")
+	config := fmt.Sprintf(`{"model":"compatible/test-model","compatible_base_url":%q,"api_key_env":"JULIA_TEST_KEY","mode":"read-only","max_steps":8,"context_tokens":32000,"skill_paths":[]}`, server.URL+"/v1")
 	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func runHeadlessAgainst(t *testing.T, api http.Handler, dir string, extra ...str
 	oldArgs, oldStdout, oldStderr := os.Args, os.Stdout, os.Stderr
 	defer func() { os.Args, os.Stdout, os.Stderr = oldArgs, oldStdout, oldStderr }()
 	os.Stdout, os.Stderr = out, errs
-	os.Args = append([]string{"jarvis", "--config", path, "--dir", dir}, append(extra, "--prompt", "list the workspace")...)
+	os.Args = append([]string{"julia", "--config", path, "--dir", dir}, append(extra, "--prompt", "list the workspace")...)
 	runErr := run()
 	os.Stdout, os.Stderr = oldStdout, oldStderr
 	read := func(f *os.File) string {
@@ -109,7 +109,7 @@ func runHeadlessAgainst(t *testing.T, api http.Handler, dir string, extra ...str
 	if runErr != nil {
 		t.Fatalf("headless run failed: %v\nstderr:\n%s", runErr, stderr)
 	}
-	store := &session.Store{Directory: filepath.Join(state, "jarvis", "sessions")}
+	store := &session.Store{Directory: filepath.Join(state, "julia", "sessions")}
 	defer store.Close()
 	list, err := store.List()
 	if err != nil || len(list) != 1 {

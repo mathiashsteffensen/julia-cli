@@ -19,7 +19,7 @@ import (
 	"runtime"
 	"time"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 // Firecrawl's browser authorization for coding agents: the human signs in (or
@@ -117,7 +117,7 @@ func (e *Executor) searchKey(ctx context.Context, call core.ToolCall) (string, e
 		return key, nil
 	}
 	if e.config.SearchKeyFile == "" {
-		return "", errors.New("WebSearch is not configured: set " + WebSearchKeyEnv + " to a Firecrawl API key and restart JARVIS")
+		return "", errors.New("WebSearch is not configured: set " + WebSearchKeyEnv + " to a Firecrawl API key and restart JULIA")
 	}
 	key, err := e.setupWebSearch(ctx, call)
 	if err != nil {
@@ -131,7 +131,7 @@ func (e *Executor) setupWebSearch(ctx context.Context, call core.ToolCall) (stri
 	approval := core.Approval{
 		Call: call, Task: e.config.Task, Directory: e.directory,
 		Network: true, ExecutionMode: "firecrawl-setup",
-		Reason: "WebSearch uses Firecrawl and needs an API key. Allow JARVIS to open Firecrawl in your browser, where you sign in or create a free account and click Authorize? The key is then saved to " + e.config.SearchKeyFile + " (owner-only) and reused by later sessions. Set " + WebSearchKeyEnv + " instead to skip this.",
+		Reason: "WebSearch uses Firecrawl and needs an API key. Allow JULIA to open Firecrawl in your browser, where you sign in or create a free account and click Authorize? The key is then saved to " + e.config.SearchKeyFile + " (owner-only) and reused by later sessions. Set " + WebSearchKeyEnv + " instead to skip this.",
 	}
 	// Setup always needs a person at the browser, so it skips the automatic reviewer.
 	if err := e.authorizeRequest(ctx, approval, false); err != nil {
@@ -248,7 +248,7 @@ func (e *Executor) pollWebSearchAuthOnce(ctx context.Context, payload []byte) (k
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "JARVIS/1.0 (web search setup)")
+	req.Header.Set("User-Agent", "JULIA/1.0 (web search setup)")
 	resp, err := e.webClient.Do(req)
 	if err != nil {
 		return "", false, errWebSearchAuthTransport

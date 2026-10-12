@@ -17,8 +17,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"jarvis/agents"
-	"jarvis/internal/core"
+	"julia/agents"
+	"julia/internal/core"
 )
 
 type webRoundTrip func(*http.Request) (*http.Response, error)
@@ -86,7 +86,7 @@ func TestWebSearchRequestAndCompactResults(t *testing.T) {
 		if req.Header.Get("Authorization") != "Bearer "+testSearchKey || req.Header.Get("Content-Type") != "application/json" {
 			t.Fatal("missing Firecrawl authentication or content type")
 		}
-		if req.Header.Get("Cookie") != "" || req.Header.Get("Referer") != "" || !strings.HasPrefix(req.Header.Get("User-Agent"), "JARVIS/") {
+		if req.Header.Get("Cookie") != "" || req.Header.Get("Referer") != "" || !strings.HasPrefix(req.Header.Get("User-Agent"), "JULIA/") {
 			t.Fatal("search sent unexpected headers")
 		}
 		var body map[string]any
@@ -408,7 +408,7 @@ func setupFixture(t *testing.T, poll func(n int, body map[string]string) *http.R
 		return nil, nil
 	})
 	e.config.SearchKey = ""
-	e.config.SearchKeyFile = filepath.Join(t.TempDir(), "jarvis", "firecrawl.json")
+	e.config.SearchKeyFile = filepath.Join(t.TempDir(), "julia", "firecrawl.json")
 	e.config.Approve = func(context.Context, core.Approval) (core.Decision, error) {
 		return core.Decision{Allow: true}, nil
 	}

@@ -10,13 +10,13 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func testModel(t *testing.T, cfg Config) *model {
 	t.Helper()
 	if cfg.Session == nil {
-		cfg.Session = &core.Session{ID: "test", Directory: "/tmp/jarvis", Provider: "fake"}
+		cfg.Session = &core.Session{ID: "test", Directory: "/tmp/julia", Provider: "fake"}
 	}
 	if cfg.Mode == "" {
 		cfg.Mode = "ask"

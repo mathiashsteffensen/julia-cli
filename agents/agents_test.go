@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"jarvis/agents"
-	"jarvis/internal/tools"
+	"julia/agents"
+	"julia/internal/tools"
 )
 
 // childTools are the tools a subagent has, which a role may list.
@@ -38,7 +38,7 @@ func TestBuiltinRoles(t *testing.T) {
 				t.Errorf("%s lists %s, which a subagent does not have", role.Name, tool)
 			}
 		}
-		// Roles describe JARVIS's own tools, never another harness's.
+		// Roles describe JULIA's own tools, never another harness's.
 		for _, foreign := range []string{"contact_supervisor", "progress.md", "fetch_content", "source_check", "watchdog", "intercom", "pi ", "Codex", "Claude"} {
 			if strings.Contains(role.Prompt, foreign) || strings.Contains(role.Description, foreign) {
 				t.Errorf("%s mentions %q", role.Name, foreign)

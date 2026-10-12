@@ -1,4 +1,4 @@
-// Package ui is the provider-independent JARVIS terminal interface.
+// Package ui is the provider-independent JULIA terminal interface.
 package ui
 
 import (
@@ -18,9 +18,9 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
-	"jarvis/internal/core"
-	"jarvis/internal/images"
-	sessions "jarvis/internal/session"
+	"julia/internal/core"
+	"julia/internal/images"
+	sessions "julia/internal/session"
 )
 
 // ApprovalRequest bridges the permission engine to the terminal. Reply should

@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"jarvis/agents"
-	"jarvis/internal/config"
-	"jarvis/internal/core"
-	"jarvis/internal/session"
+	"julia/agents"
+	"julia/internal/config"
+	"julia/internal/core"
+	"julia/internal/session"
 )
 
 type delegationBackend struct{ parentID string }
@@ -208,10 +208,10 @@ func TestRuntimeSubagentRolesRunOnTheirModels(t *testing.T) {
 // A child whose backend cannot be made, such as one whose provider's key is
 // unset, fails with the reason before it is saved or announced.
 func TestRuntimeSubagentThatCannotStartIsNeitherSavedNorAnnounced(t *testing.T) {
-	t.Setenv("JARVIS_TEST_UNSET_KEY", "")
+	t.Setenv("JULIA_TEST_UNSET_KEY", "")
 	cfg := config.Default()
 	cfg.SkillPaths = []string{}
-	cfg.APIKeyEnv = "JARVIS_TEST_UNSET_KEY"
+	cfg.APIKeyEnv = "JULIA_TEST_UNSET_KEY"
 	cfg.CompatibleBaseURL = "https://openrouter.ai/api/v1"
 	cfg.Subagents = map[string]config.ModelEntry{"scout": {ID: "compatible/vendor/m"}}
 	backend := &roleBackend{children: map[string]roleChild{}, tasks: `{"tasks":[{"role":"scout","task":"map it"},{"role":"worker","task":"build it"}]}`}
@@ -243,7 +243,7 @@ func TestRuntimeSubagentThatCannotStartIsNeitherSavedNorAnnounced(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(backend.result, `"role":"scout","output":"","error":"compatible/vendor/m: set JARVIS_TEST_UNSET_KEY for the compatible provider"`) {
+	if !strings.Contains(backend.result, `"role":"scout","output":"","error":"compatible/vendor/m: set JULIA_TEST_UNSET_KEY for the compatible provider"`) {
 		t.Fatalf("the scout's failure is not explained: %s", backend.result)
 	}
 	if len(saved) != 1 || !slices.ContainsFunc(slices.Collect(maps.Values(saved)), func(title string) bool { return title == "Subagent worker: build it" }) {
@@ -340,7 +340,7 @@ func TestRolesSummary(t *testing.T) {
 	cfg.CompatibleBaseURL = "https://openrouter.ai/api/v1"
 	cfg.EnabledModels = []config.ModelEntry{{ID: "compatible/vendor/b", Reasoning: "xhigh"}}
 	cfg.Subagents = map[string]config.ModelEntry{"scout": {ID: "compatible/vendor/m", Reasoning: "low"}, "reviewer": {ID: "compatible/vendor/b"}, "oracle": {ID: "openai/c"}}
-	roles := append(agents.Builtin(), agents.Role{Name: "auditor", Source: "/home/me/.config/jarvis/agents/auditor.md"})
+	roles := append(agents.Builtin(), agents.Role{Name: "auditor", Source: "/home/me/.config/julia/agents/auditor.md"})
 	got := strings.Join(rolesSummary(cfg, roles), "\n")
 	for _, want := range []string{
 		"Subagent  scout       compatible/vendor/m · reasoning low",
@@ -348,7 +348,7 @@ func TestRolesSummary(t *testing.T) {
 		"Subagent  reviewer    compatible/vendor/b · reasoning xhigh",
 		"Subagent  oracle      openai/c\n",
 		"Subagent  worker      the delegating agent's model",
-		"Subagent  auditor     the delegating agent's model · /home/me/.config/jarvis/agents/auditor.md",
+		"Subagent  auditor     the delegating agent's model · /home/me/.config/julia/agents/auditor.md",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary lacks %q:\n%s", want, got)

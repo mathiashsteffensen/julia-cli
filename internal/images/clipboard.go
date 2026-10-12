@@ -11,7 +11,7 @@ import (
 	"runtime"
 	"strings"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 // Clipboard returns the image on the system clipboard: image data, such as a
@@ -62,7 +62,7 @@ const darwinScript = `on run argv
 end run`
 
 func darwinClipboard(ctx context.Context) (core.Image, error) {
-	file, err := os.CreateTemp("", "jarvis-clipboard-*")
+	file, err := os.CreateTemp("", "julia-clipboard-*")
 	if err != nil {
 		return core.Image{}, err
 	}

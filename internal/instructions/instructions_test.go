@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func writeSkill(t *testing.T, path, content string) {

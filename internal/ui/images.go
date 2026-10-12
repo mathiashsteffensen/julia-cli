@@ -12,8 +12,8 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	"jarvis/internal/core"
-	"jarvis/internal/images"
+	"julia/internal/core"
+	"julia/internal/images"
 )
 
 // attachment is an image pasted into the draft. The draft names it by its

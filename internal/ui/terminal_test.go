@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func TestTerminalSummary(t *testing.T) {
@@ -152,11 +152,11 @@ func TestTerminalCardFitsTheScreen(t *testing.T) {
 
 // A terminal that was stopped on purpose is not shown as a failure.
 func TestTerminalStoppedIsNotAnAlarm(t *testing.T) {
-	screen := parseTerminalScreenOrFail(t, "t1 · ./bin/jarvis --demo\nscreen 40×3 · cursor hidden · stopped\n1\tbye\n[rows 2–3 blank]")
+	screen := parseTerminalScreenOrFail(t, "t1 · ./bin/julia --demo\nscreen 40×3 · cursor hidden · stopped\n1\tbye\n[rows 2–3 blank]")
 	if screen.state != "stopped" || strings.Contains(screen.summary(), styleSequence(coralStyle)) || !strings.Contains(screen.summary(), styleSequence(mutedStyle)+"stopped") {
 		t.Fatalf("state %q, summary %q", screen.state, screen.summary())
 	}
-	crashed := parseTerminalScreenOrFail(t, "t1 · ./bin/jarvis\nscreen 40×3 · cursor hidden · killed by SIGSEGV\n1\tbye")
+	crashed := parseTerminalScreenOrFail(t, "t1 · ./bin/julia\nscreen 40×3 · cursor hidden · killed by SIGSEGV\n1\tbye")
 	if !strings.Contains(crashed.summary(), styleSequence(coralStyle)+"killed by SIGSEGV") {
 		t.Fatalf("crash summary %q", crashed.summary())
 	}

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"jarvis/agents"
-	"jarvis/internal/core"
+	"julia/agents"
+	"julia/internal/core"
 )
 
 func TestSubagentsConcurrentOrderedAndConfined(t *testing.T) {

@@ -154,10 +154,10 @@ func TestCodexWeeklyUsageErrorAndCancellation(t *testing.T) {
 
 // Reads only account quota metadata; never starts a turn or consumes reset credits.
 func TestCodexWeeklyUsageLive(t *testing.T) {
-	if os.Getenv("JARVIS_CODEX_USAGE_LIVE") != "1" {
-		t.Skip("set JARVIS_CODEX_USAGE_LIVE=1 for installed account usage smoke")
+	if os.Getenv("JULIA_CODEX_USAGE_LIVE") != "1" {
+		t.Skip("set JULIA_CODEX_USAGE_LIVE=1 for installed account usage smoke")
 	}
-	binary := os.Getenv("JARVIS_CODEX_BINARY")
+	binary := os.Getenv("JULIA_CODEX_BINARY")
 	if binary == "" {
 		binary = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
 	}

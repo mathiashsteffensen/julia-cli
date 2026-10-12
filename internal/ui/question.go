@@ -14,7 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 // questionGuard ignores keys right after a question appears, so a message the
@@ -676,7 +676,7 @@ func (m *model) assembleCard(q *questionState, width int, plan cardPlan, budget 
 
 func (m *model) cardTop(q *questionState, width int) string {
 	edge := lipgloss.NewStyle().Foreground(cardEdge)
-	left := edge.Render("╭─ ") + violetStyle.Bold(true).Render("✦ JARVIS ASKS") + " "
+	left := edge.Render("╭─ ") + violetStyle.Bold(true).Render("✦ JULIA ASKS") + " "
 	right := ""
 	if !q.freeform() {
 		right = " " + faintStyle.Render(fmt.Sprintf("%d / %d", q.selected+1, q.rows())) + " "

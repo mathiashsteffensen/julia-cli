@@ -18,7 +18,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 const (
@@ -111,7 +111,7 @@ func (e *Executor) webSearch(ctx context.Context, call core.ToolCall) (string, e
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
-	req.Header.Set("User-Agent", "JARVIS/1.0 (web search)")
+	req.Header.Set("User-Agent", "JULIA/1.0 (web search)")
 	resp, err := e.webClient.Do(req)
 	if err != nil {
 		var requestError *url.Error

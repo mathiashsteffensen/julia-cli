@@ -12,10 +12,10 @@ import (
 )
 
 // saveShot writes a screenshot where a person can look at it: the directory
-// in JARVIS_BROWSER_SHOTS, if set.
+// in JULIA_BROWSER_SHOTS, if set.
 func saveShot(t *testing.T, name string, img image.Image) {
 	t.Helper()
-	dir := os.Getenv("JARVIS_BROWSER_SHOTS")
+	dir := os.Getenv("JULIA_BROWSER_SHOTS")
 	if dir == "" {
 		return
 	}

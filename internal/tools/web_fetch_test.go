@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func scrapeJSON(markdown, title, source string, status int) string {

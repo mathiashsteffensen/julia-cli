@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"jarvis/internal/config"
-	"jarvis/internal/core"
+	"julia/internal/config"
+	"julia/internal/core"
 )
 
 // approvalTasks records the task context each approval request carried.

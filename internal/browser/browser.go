@@ -8,9 +8,9 @@
 // answered, and which files may be uploaded; the package enforces what it is
 // told and reports what happened as Notes and Logs.
 //
-// Chrome runs with a fresh throwaway profile, talks to JARVIS over a pipe
+// Chrome runs with a fresh throwaway profile, talks to JULIA over a pipe
 // rather than a debugging port, and is killed with every helper process on
-// Close, or by a watchdog when JARVIS dies without closing it. It is not run
+// Close, or by a watchdog when JULIA dies without closing it. It is not run
 // under Seatbelt: it sandboxes its own renderers, and a nested Seatbelt
 // profile breaks that sandbox.
 package browser
@@ -87,7 +87,7 @@ type Browser struct {
 	stderr    *tailWriter
 	exited    chan struct{}
 	proxy     *proxy    // where LoopbackOnly contexts send what is beyond loopback
-	watchdog  *exec.Cmd // kills Chrome if JARVIS dies without closing it
+	watchdog  *exec.Cmd // kills Chrome if JULIA dies without closing it
 	leash     *os.File  // the watchdog's pipe: it acts when this closes
 
 	mu       sync.Mutex
@@ -110,7 +110,7 @@ func Launch(ctx context.Context, opts Options) (*Browser, error) {
 			return nil, err
 		}
 	}
-	profile, err := os.MkdirTemp(opts.DataDir, "jarvis-browser-")
+	profile, err := os.MkdirTemp(opts.DataDir, "julia-browser-")
 	if err != nil {
 		return nil, fmt.Errorf("browser profile: %w", err)
 	}
@@ -208,8 +208,8 @@ func Launch(ctx context.Context, opts Options) (*Browser, error) {
 }
 
 // watch starts the watchdog: a shell in a process group of its own, out of
-// reach of the terminal's hangup, that waits on a pipe only JARVIS writes to.
-// When JARVIS dies without closing the browser (a closed terminal window,
+// reach of the terminal's hangup, that waits on a pipe only JULIA writes to.
+// When JULIA dies without closing the browser (a closed terminal window,
 // SIGKILL, a panic), the pipe ends and the watchdog kills Chrome's process
 // group and removes the profile. Without a shell the browser runs unwatched.
 func watch(chrome int, profile string) (*exec.Cmd, *os.File) {
@@ -218,7 +218,7 @@ func watch(chrome int, profile string) (*exec.Cmd, *os.File) {
 		return nil, nil
 	}
 	defer r.Close()
-	cmd := exec.Command("/bin/sh", "-c", `trap "" HUP INT TERM QUIT; read -r _; kill -9 -"$1" 2>/dev/null; sleep 1; rm -rf -- "$2"`, "jarvis-browser-watchdog", strconv.Itoa(chrome), profile)
+	cmd := exec.Command("/bin/sh", "-c", `trap "" HUP INT TERM QUIT; read -r _; kill -9 -"$1" 2>/dev/null; sleep 1; rm -rf -- "$2"`, "julia-browser-watchdog", strconv.Itoa(chrome), profile)
 	cmd.Stdin = r
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
@@ -407,7 +407,7 @@ func (b *Browser) attachTop(ev target.EventAttachedToTarget) {
 	c := b.contexts[info.BrowserContextID]
 	b.mu.Unlock()
 	if c == nil {
-		// Only pages JARVIS opened, in contexts it made, may run.
+		// Only pages JULIA opened, in contexts it made, may run.
 		s := b.conn.newSession(string(ev.SessionID), string(info.TargetID), info.Type, nil)
 		if info.Type == "page" {
 			b.root.send(target.CommandCloseTarget, target.CloseTargetParams{TargetID: info.TargetID})

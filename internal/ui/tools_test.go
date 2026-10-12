@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
-	"jarvis/agents"
-	"jarvis/internal/core"
-	"jarvis/internal/tools"
+	"julia/agents"
+	"julia/internal/core"
+	"julia/internal/tools"
 )
 
 func TestWebSearchToolSummary(t *testing.T) {

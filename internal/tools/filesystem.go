@@ -75,7 +75,7 @@ func (e *Executor) atomicWriteNoFollow(name string, b []byte, mode os.FileMode) 
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return err
 	}
-	temp := ".jarvis-write-" + hex.EncodeToString(nonce[:])
+	temp := ".julia-write-" + hex.EncodeToString(nonce[:])
 	fd, err := unix.Openat(int(parent.Fd()), temp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(mode.Perm()))
 	if err != nil {
 		return fmt.Errorf("create temporary file: %w", err)

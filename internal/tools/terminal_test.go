@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"jarvis/agents"
-	"jarvis/internal/core"
+	"julia/agents"
+	"julia/internal/core"
 )
 
 func terminalFixture(t *testing.T, mode string, approve core.Approver) *Executor {
@@ -513,7 +513,7 @@ func TestShellSharedByBashAndTerminal(t *testing.T) {
 		key, _, _ := strings.Cut(kv, "=")
 		keys = append(keys, key)
 	}
-	if got := strings.Join(keys[:22], " "); got != "PATH HOME TMPDIR TMP TEMP JARVIS_SCRATCH LANG LC_ALL TERM GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_TERMINAL_PROMPT GIT_OPTIONAL_LOCKS GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME GOCACHE GOMODCACHE GOPATH" {
+	if got := strings.Join(keys[:22], " "); got != "PATH HOME TMPDIR TMP TEMP JULIA_SCRATCH LANG LC_ALL TERM GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_TERMINAL_PROMPT GIT_OPTIONAL_LOCKS GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME GOCACHE GOMODCACHE GOPATH" {
 		t.Fatalf("Bash's environment changed: %s", got)
 	}
 }
@@ -544,19 +544,19 @@ func TestTerminalDeviceIsNotOpenedByName(t *testing.T) {
 	}
 }
 
-// Run with JARVIS_SANDBOX_TEST=1: builds JARVIS and drives its demo in a
+// Run with JULIA_SANDBOX_TEST=1: builds JULIA and drives its demo in a
 // sandboxed terminal, the hardest case: raw mode, the alternate screen, mouse
 // and paste modes, and terminal queries, all through Seatbelt.
-func TestSandboxIntegrationTerminalDrivesJarvis(t *testing.T) {
-	if os.Getenv("JARVIS_SANDBOX_TEST") != "1" {
-		t.Skip("set JARVIS_SANDBOX_TEST=1 for host sandbox integration")
+func TestSandboxIntegrationTerminalDrivesJulia(t *testing.T) {
+	if os.Getenv("JULIA_SANDBOX_TEST") != "1" {
+		t.Skip("set JULIA_SANDBOX_TEST=1 for host sandbox integration")
 	}
 	e := terminalFixture(t, "auto", nil)
-	if out, err := exec.Command("go", "build", "-o", filepath.Join(e.directory, "jarvis"), "jarvis/cmd/jarvis").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-o", filepath.Join(e.directory, "julia"), "julia/cmd/julia").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
-	r := terminalCall(t, e, map[string]any{"action": "start", "command": "./jarvis --demo", "cols": 120, "rows": 40, "wait_for": "What shall we work on", "timeout": 30})
-	if r.IsError || !strings.Contains(r.Content, "alt screen · mouse on · running") || !strings.Contains(r.Content, "✦ JARVIS") {
+	r := terminalCall(t, e, map[string]any{"action": "start", "command": "./julia --demo", "cols": 120, "rows": 40, "wait_for": "What shall we work on", "timeout": 30})
+	if r.IsError || !strings.Contains(r.Content, "alt screen · mouse on · running") || !strings.Contains(r.Content, "✦ JULIA") {
 		t.Fatalf("demo did not draw:\n%s", r.Content)
 	}
 	r = terminalCall(t, e, map[string]any{"action": "send", "id": "t1", "text": "hello", "wait_for": "› hello"})
@@ -567,7 +567,7 @@ func TestSandboxIntegrationTerminalDrivesJarvis(t *testing.T) {
 	if r.IsError || len(r.Images) != 1 {
 		t.Fatalf("keys:\n%s", r.Content)
 	}
-	if path := os.Getenv("JARVIS_TERMINAL_SCREENSHOT"); path != "" {
+	if path := os.Getenv("JULIA_TERMINAL_SCREENSHOT"); path != "" {
 		os.WriteFile(path, r.Images[0].Data, 0o644)
 	}
 }

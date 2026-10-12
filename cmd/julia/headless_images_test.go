@@ -17,7 +17,7 @@ import (
 	"sync"
 	"testing"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 // imageAPI is a scripted OpenAI-compatible endpoint: it asks to view shot.png,

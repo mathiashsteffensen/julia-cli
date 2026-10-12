@@ -14,8 +14,8 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/kitty"
-	"jarvis/internal/core"
-	"jarvis/internal/images"
+	"julia/internal/core"
+	"julia/internal/images"
 )
 
 // graphicsModel is a model in a terminal that has accepted Kitty graphics.
@@ -109,7 +109,7 @@ func TestSentImagesDrawAsThumbnails(t *testing.T) {
 }
 
 func TestHistoryThumbnailsUploadAfterTheFirstFrame(t *testing.T) {
-	session := &core.Session{ID: "test", Directory: "/tmp/jarvis", Provider: "fake", Messages: []core.Message{{Role: "user", Content: "[Image #1]", Images: []core.Image{pngImage(t, 40, 30)}}}}
+	session := &core.Session{ID: "test", Directory: "/tmp/julia", Provider: "fake", Messages: []core.Message{{Role: "user", Content: "[Image #1]", Images: []core.Image{pngImage(t, 40, 30)}}}}
 	m := testModel(t, Config{Session: session})
 	m.Update(tea.ColorProfileMsg{Profile: colorprofile.TrueColor})
 	m.Update(tea.EnvMsg{"TERM_PROGRAM=ghostty"})

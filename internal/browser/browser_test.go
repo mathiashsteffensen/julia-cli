@@ -32,7 +32,7 @@ func leftovers(pid int, profile string) []string {
 
 func TestCloseKillsEveryProcessAndRemovesProfile(t *testing.T) {
 	t.Parallel() // it mostly waits out timeouts, or on a browser of its own
-	bin, err := Find(os.Getenv("JARVIS_BROWSER"))
+	bin, err := Find(os.Getenv("JULIA_BROWSER"))
 	if err != nil {
 		t.Skip("no Chrome to test with: " + err.Error())
 	}
@@ -94,7 +94,7 @@ func TestCloseKillsEveryProcessAndRemovesProfile(t *testing.T) {
 }
 
 func TestUnexpectedExitIsReported(t *testing.T) {
-	bin, err := Find(os.Getenv("JARVIS_BROWSER"))
+	bin, err := Find(os.Getenv("JULIA_BROWSER"))
 	if err != nil {
 		t.Skip("no Chrome to test with: " + err.Error())
 	}
@@ -131,8 +131,8 @@ func TestUnexpectedExitIsReported(t *testing.T) {
 // closing it (a terminal window closed under it, SIGKILL, a panic, a test
 // timeout), the watchdog kills Chrome and removes the profile.
 func TestWatchdogKillsAnOrphanedBrowser(t *testing.T) {
-	if os.Getenv("JARVIS_WATCHDOG_CHILD") == "1" {
-		b, err := Launch(context.Background(), Options{Binary: os.Getenv("JARVIS_WATCHDOG_BINARY")})
+	if os.Getenv("JULIA_WATCHDOG_CHILD") == "1" {
+		b, err := Launch(context.Background(), Options{Binary: os.Getenv("JULIA_WATCHDOG_BINARY")})
 		if err != nil {
 			fmt.Println("error", err)
 			os.Exit(1)
@@ -141,12 +141,12 @@ func TestWatchdogKillsAnOrphanedBrowser(t *testing.T) {
 		time.Sleep(time.Minute) // until killed
 		return
 	}
-	bin, err := Find(os.Getenv("JARVIS_BROWSER"))
+	bin, err := Find(os.Getenv("JULIA_BROWSER"))
 	if err != nil {
 		t.Skip("no Chrome to test with: " + err.Error())
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestWatchdogKillsAnOrphanedBrowser$")
-	cmd.Env = append(os.Environ(), "JARVIS_WATCHDOG_CHILD=1", "JARVIS_WATCHDOG_BINARY="+bin)
+	cmd.Env = append(os.Environ(), "JULIA_WATCHDOG_CHILD=1", "JULIA_WATCHDOG_BINARY="+bin)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestLaunchFailureShowsChromeOutput(t *testing.T) {
 	}
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "jarvis-browser-") {
+		if strings.HasPrefix(e.Name(), "julia-browser-") {
 			t.Fatalf("profile %s left behind", e.Name())
 		}
 	}

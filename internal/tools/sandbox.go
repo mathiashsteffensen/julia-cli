@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 // boundedBuffer consumes all writes, retaining only its limit. A mutex makes
@@ -57,7 +57,7 @@ func (e *Executor) SandboxInfo() string {
 	return SandboxInfo()
 }
 func (e *Executor) CheckSandbox(ctx context.Context) error {
-	_, err := e.runSandbox(ctx, "printf jarvis-sandbox-ok", false, 5*time.Second)
+	_, err := e.runSandbox(ctx, "printf julia-sandbox-ok", false, 5*time.Second)
 	return err
 }
 
@@ -171,7 +171,7 @@ func (e *Executor) scratchDir() (string, error) {
 	}
 	dir := e.config.ScratchDir
 	if dir == "" {
-		temp, err := os.MkdirTemp("", "jarvis-scratch-")
+		temp, err := os.MkdirTemp("", "julia-scratch-")
 		if err != nil {
 			return "", err
 		}
@@ -271,7 +271,7 @@ func (e *Executor) shell(ctx context.Context, command string, reach netAccess, e
 	if escalated && runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		return shellCommand{}, errors.New("explicit host Bash execution requires macOS or Linux")
 	}
-	tmp, err := os.MkdirTemp("", "jarvis-sandbox-")
+	tmp, err := os.MkdirTemp("", "julia-sandbox-")
 	if err != nil {
 		return shellCommand{}, fmt.Errorf("sandbox temporary directory: %w", err)
 	}
@@ -338,7 +338,7 @@ func (e *Executor) shell(ctx context.Context, command string, reach netAccess, e
 		}
 		sh.args = append([]string{"-p", profile, "/bin/bash"}, sh.args...)
 	}
-	sh.env = []string{"PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + home, "TMPDIR=" + tmp, "TMP=" + tmp, "TEMP=" + tmp, "JARVIS_SCRATCH=" + scratch, "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8", "TERM=dumb", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.fsmonitor", "GIT_CONFIG_VALUE_0=false"}
+	sh.env = []string{"PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + home, "TMPDIR=" + tmp, "TMP=" + tmp, "TEMP=" + tmp, "JULIA_SCRATCH=" + scratch, "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8", "TERM=dumb", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.fsmonitor", "GIT_CONFIG_VALUE_0=false"}
 	if escalated {
 		// Keep the environment curated, but let host tools use their normal
 		// persistent configuration and cache locations when explicitly approved.
@@ -380,7 +380,7 @@ func (e *Executor) shell(ctx context.Context, command string, reach netAccess, e
 
 // hostShell prepares command for yolo mode: bash on the host as it is, with
 // the process environment, no sandbox and no private HOME or caches. Whoever
-// chose yolo mode runs JARVIS where the host itself is the boundary, such as
+// chose yolo mode runs JULIA where the host itself is the boundary, such as
 // a container made for one task, so the command sees what the process sees:
 // its tokens, its configured tools and its network. Only the scratch
 // directory is added. tty is as for shell.
@@ -389,7 +389,7 @@ func (e *Executor) hostShell(command, tty string) (shellCommand, error) {
 	if err != nil {
 		return shellCommand{}, fmt.Errorf("session scratch directory: %w", err)
 	}
-	env := append(os.Environ(), "JARVIS_SCRATCH="+scratch, "GIT_TERMINAL_PROMPT=0")
+	env := append(os.Environ(), "JULIA_SCRATCH="+scratch, "GIT_TERMINAL_PROMPT=0")
 	if tty == "" {
 		env = append(env, "TERM=dumb")
 	}
@@ -432,7 +432,7 @@ func seatbeltProfile(directory, tmp, scratch string, reach netAccess, closed []i
 		}
 	}
 	// Explicit denials override workspace grants, including symlink resolution.
-	pattern := `^.*/([.]ssh|[.]aws|[.]azure|[.]config|[.]codex|[.]jarvis|[.]gnupg|[.]kube|[.]netrc|[.]npmrc|[.]pypirc|[.]env[^/]*|credentials|credentials[.]json|auth[.]json|id_rsa[^/]*|id_ed25519[^/]*|[^/]+[.]pem|[^/]+[.]key)(/.*)?$`
+	pattern := `^.*/([.]ssh|[.]aws|[.]azure|[.]config|[.]codex|[.]julia|[.]gnupg|[.]kube|[.]netrc|[.]npmrc|[.]pypirc|[.]env[^/]*|credentials|credentials[.]json|auth[.]json|id_rsa[^/]*|id_ed25519[^/]*|[^/]+[.]pem|[^/]+[.]key)(/.*)?$`
 	// Seatbelt regex literals do not use Go's backslash escaping. Character
 	// classes keep punctuation literal and explicit letter classes also protect
 	// aliases on case-insensitive APFS volumes.

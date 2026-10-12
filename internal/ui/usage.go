@@ -7,7 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 const (

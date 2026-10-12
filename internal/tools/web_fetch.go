@@ -14,7 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 const (
@@ -82,7 +82,7 @@ func (e *Executor) webFetch(ctx context.Context, call core.ToolCall) (string, er
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
-	req.Header.Set("User-Agent", "JARVIS/1.0 (web fetch)")
+	req.Header.Set("User-Agent", "JULIA/1.0 (web fetch)")
 	resp, err := e.webClient.Do(req)
 	if err != nil {
 		var requestError *url.Error

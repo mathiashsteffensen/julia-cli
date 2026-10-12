@@ -14,7 +14,7 @@ import (
 )
 
 // The terminal's own selection cannot work here: mouse reporting is on, and a
-// row carries borders, gutters, and the sidebar. JARVIS selects and copies
+// row carries borders, gutters, and the sidebar. JULIA selects and copies
 // itself, from a map of every conversation row back to the text it shows.
 //
 //   drag          copies the selection, without gutters or card padding

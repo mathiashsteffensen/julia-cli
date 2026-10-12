@@ -114,7 +114,7 @@ func (t Target) check() error {
 const TargetTimeout = 5 * time.Second
 
 // objectGroup names the remote objects an action holds, released after it.
-const objectGroup = "jarvis"
+const objectGroup = "julia"
 
 // element is a resolved target: a node in one session's document.
 type element struct {
@@ -248,7 +248,7 @@ func (p *Page) scopes(ctx context.Context) []scope {
 					continue
 				}
 				if c.Frame.SecurityOrigin != origin {
-					world, err := cdp.Call(ctx, s, page.CreateIsolatedWorld, page.CreateIsolatedWorldParams{FrameID: c.Frame.ID, WorldName: "jarvis"})
+					world, err := cdp.Call(ctx, s, page.CreateIsolatedWorld, page.CreateIsolatedWorldParams{FrameID: c.Frame.ID, WorldName: "julia"})
 					if err == nil {
 						out = append(out, scope{s: s, context: world.ExecutionContextID})
 					}

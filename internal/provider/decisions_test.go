@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func TestReviewDecisionAPICombinesIndependentChecks(t *testing.T) {

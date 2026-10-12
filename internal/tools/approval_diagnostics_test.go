@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func TestAutomaticReviewIsVisibleBeforeReviewerAndHumanFallback(t *testing.T) {

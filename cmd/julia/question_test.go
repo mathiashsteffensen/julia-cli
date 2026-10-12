@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"jarvis/agents"
-	"jarvis/internal/config"
-	"jarvis/internal/core"
-	"jarvis/internal/session"
-	"jarvis/internal/ui"
+	"julia/agents"
+	"julia/internal/config"
+	"julia/internal/core"
+	"julia/internal/session"
+	"julia/internal/ui"
 )
 
 type questionBackend struct {
@@ -106,7 +106,7 @@ func TestRuntimeQuestionToolDeliversQuestionAndAnswer(t *testing.T) {
 	}{
 		{"option pick", withOptions, core.Question{Text: "Which database?", Options: options}, core.Answer{Text: "SQLite", Option: 2}, core.QuestionResult{Answer: "SQLite", Source: "option", Option: 2}},
 		{"freeform answer to options", withOptions, core.Question{Text: "Which database?", Options: options}, core.Answer{Text: "Use DuckDB"}, core.QuestionResult{Answer: "Use DuckDB", Source: "freeform"}},
-		{"freeform question", openEnded, core.Question{Text: "What should the project be called?"}, core.Answer{Text: "jarvis"}, core.QuestionResult{Answer: "jarvis", Source: "freeform"}},
+		{"freeform question", openEnded, core.Question{Text: "What should the project be called?"}, core.Answer{Text: "julia"}, core.QuestionResult{Answer: "julia", Source: "freeform"}},
 		{"skip", withOptions, core.Question{Text: "Which database?", Options: options}, core.Answer{Skipped: true}, core.QuestionResult{Skipped: true}},
 	}
 	for _, tc := range tests {

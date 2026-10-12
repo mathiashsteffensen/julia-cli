@@ -13,7 +13,7 @@ import (
 
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
-	"jarvis/internal/core"
+	"julia/internal/core"
 )
 
 func TestCompatibleCompactionSendsTranscriptAsDataWithoutTools(t *testing.T) {
