@@ -382,7 +382,7 @@ func TestSidebarNeverOverflowsItsColumn(t *testing.T) {
 				m := testModel(t, Config{Session: session, Mode: long, ContextWindow: window, CompatibleReasoning: true, ToolDefinitions: []core.ToolDefinition{{Name: "Read"}, {Name: long}, {Name: "Bash"}}})
 				m.inputTokens, m.outputTokens = math.MaxInt, -1
 				for height := 1; height <= 70; height++ {
-					m.bodyHeight = height
+					m.height = height + 3 // the sidebar fills every row below the header
 					lines := strings.Split(m.sidebar(), "\n")
 					if len(lines) != height {
 						t.Fatalf("%.8s usage %d window %d: %d rows at height %d", provider, i, window, len(lines), height)
@@ -422,7 +422,7 @@ func TestSidebarShowsEverySectionInOrder(t *testing.T) {
 		ToolDefinitions: []core.ToolDefinition{{Name: "Read"}},
 	})
 	m.resize(128, 24)
-	m.bodyHeight = 200 // room for the whole column, so nothing is scrolled out of view
+	m.height = 200 // room for the whole column, so nothing is scrolled out of view
 	rows := sidebarText(m)
 	text := strings.Join(rows, "\n")
 	at := 0
@@ -448,10 +448,10 @@ func TestSidebarScrollsIndependently(t *testing.T) {
 	m := testModel(t, Config{Version: "0.1.0", Session: &core.Session{ID: "scroll", Directory: "/tmp/jarvis", Provider: "codex", Model: "selected"}, ToolDefinitions: []core.ToolDefinition{{Name: "Read"}}})
 	m.resize(128, 24)
 	lettering := strings.TrimSpace(ansi.Strip(logoLettering()[0]))
-	if rows := sidebarText(m); len(rows) != m.bodyHeight || !hasRow(rows, lettering) || hasRow(rows, "THE ESSENTIALS") {
+	if rows := sidebarText(m); len(rows) != m.sidebarHeight() || !hasRow(rows, lettering) || hasRow(rows, "THE ESSENTIALS") {
 		t.Fatalf("a short sidebar should open on the masthead:\n%s", strings.Join(rows, "\n"))
 	}
-	x, y := m.margin()+m.mainWidth+4, 3+m.bodyHeight/2
+	x, y := m.margin()+m.mainWidth+4, 3+m.sidebarHeight()/2
 	if !m.overSidebar(x, y) || m.overSidebar(m.margin()+1, y) {
 		t.Fatal("sidebar hit test is wrong")
 	}
@@ -464,7 +464,7 @@ func TestSidebarScrollsIndependently(t *testing.T) {
 		m.Update(tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelDown})
 	}
 	rows := sidebarText(m)
-	if len(rows) != m.bodyHeight || !hasRow(rows, "Read") || hasRow(rows, lettering) {
+	if len(rows) != m.sidebarHeight() || !hasRow(rows, "Read") || hasRow(rows, lettering) {
 		t.Fatalf("scrolling down should end on the last section:\n%s", strings.Join(rows, "\n"))
 	}
 	bottom := m.sidebarOffset
@@ -476,5 +476,25 @@ func TestSidebarScrollsIndependently(t *testing.T) {
 	m.resize(128, 200)
 	if m.sidebar(); m.sidebarOffset != 0 {
 		t.Fatalf("a sidebar that fits is still scrolled by %d", m.sidebarOffset)
+	}
+}
+
+func TestSidebarReachesTheBottomEdge(t *testing.T) {
+	for _, size := range [][2]int{{108, 20}, {128, 40}, {200, 60}} {
+		m := testModel(t, Config{Session: &core.Session{ID: "edge", Provider: "codex"}, ToolDefinitions: []core.ToolDefinition{{Name: "Read"}}})
+		m.resize(size[0], size[1])
+		lines := strings.Split(ansi.Strip(m.View().Content), "\n")
+		if len(lines) != size[1] {
+			t.Fatalf("%v: %d rows", size, len(lines))
+		}
+		border := m.margin() + m.mainWidth + 2
+		for y := 3; y < size[1]; y++ {
+			if cells := []rune(lines[y]); len(cells) <= border || cells[border] != '│' {
+				t.Fatalf("%v: row %d has no sidebar border: %q", size, y, lines[y])
+			}
+		}
+		if footer := ansi.StringWidth(m.footer()); footer > m.mainWidth {
+			t.Fatalf("%v: footer is %d wide beside a %d-column main area", size, footer, m.mainWidth)
+		}
 	}
 }

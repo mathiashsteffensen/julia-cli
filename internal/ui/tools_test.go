@@ -115,7 +115,7 @@ func TestSidebarFitsRegisteredTools(t *testing.T) {
 func TestSidebarUsesSuppliedRegistry(t *testing.T) {
 	m := testModel(t, Config{ToolDefinitions: []core.ToolDefinition{{Name: "CustomSearch"}, {Name: "Delegate"}}})
 	m.resize(128, 52)
-	m.bodyHeight = 200 // the essentials close the sidebar; show the whole column
+	m.height = 200 // the essentials close the sidebar; show the whole column
 	view := ansi.Strip(m.sidebar())
 	for _, name := range []string{"CustomSearch", "Delegate"} {
 		if !strings.Contains(view, name) {

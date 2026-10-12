@@ -487,10 +487,12 @@ func (m *model) View() tea.View {
 	} else if len(m.entries) == 0 && m.pending == nil {
 		body = m.welcome()
 	}
+	body = lipgloss.NewStyle().Width(m.mainWidth).Height(m.bodyHeight).Render(body) + "\n" + m.bottomView()
 	if m.hasSidebar() {
-		body = lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(m.mainWidth).Height(m.bodyHeight).Render(body), "  ", m.sidebar())
+		// The sidebar runs from the header rule to the bottom edge, beside the composer.
+		body = lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(m.mainWidth).Render(body), "  ", m.sidebar())
 	}
-	view := header + "\n" + body + "\n" + m.bottomView()
+	view := header + "\n" + body
 	view = lipgloss.NewStyle().Padding(0, m.margin()).Background(background).Foreground(cream).Width(m.width).Render(view)
 	// Clamp every final row, including pathological filenames and narrow resizes.
 	lines := strings.Split(view, "\n")
@@ -597,8 +599,11 @@ func reasoningDisplay(provider, effort string) string {
 
 // overSidebar reports whether a screen cell falls inside the sidebar column.
 func (m *model) overSidebar(x, y int) bool {
-	return m.hasSidebar() && x >= m.margin()+m.mainWidth+2 && y >= 3 && y < 3+m.bodyHeight
+	return m.hasSidebar() && x >= m.margin()+m.mainWidth+2 && y >= 3 && y < 3+m.sidebarHeight()
 }
+
+// sidebarHeight is every row below the header's three.
+func (m *model) sidebarHeight() int { return max(1, m.height-3) }
 
 // scrollSidebar moves the sidebar by delta rows; sidebar clamps the offset.
 func (m *model) scrollSidebar(delta int) {
@@ -658,12 +663,13 @@ func (m *model) sidebar() string {
 	for _, section := range sections {
 		lines = append(append(lines, ""), section...)
 	}
-	m.sidebarOffset = max(0, min(m.sidebarOffset, len(lines)-m.bodyHeight))
+	height := m.sidebarHeight()
+	m.sidebarOffset = max(0, min(m.sidebarOffset, len(lines)-height))
 	lines = lines[m.sidebarOffset:]
-	if len(lines) > m.bodyHeight {
-		lines = lines[:m.bodyHeight]
+	if len(lines) > height {
+		lines = lines[:height]
 	}
-	return lipgloss.NewStyle().Width(26).Height(m.bodyHeight).BorderLeft(true).BorderStyle(lipgloss.NormalBorder()).BorderForeground(faint).PaddingLeft(2).Render(strings.Join(lines, "\n"))
+	return lipgloss.NewStyle().Width(26).Height(height).BorderLeft(true).BorderStyle(lipgloss.NormalBorder()).BorderForeground(faint).PaddingLeft(2).Render(strings.Join(lines, "\n"))
 }
 
 // Pack the registered names into rows; no tool names belong in the view.
@@ -811,18 +817,22 @@ func (m *model) footer() string {
 	if m.width < 62 {
 		return coralStyle.Render("enter") + mutedStyle.Render(" send · ") + violetStyle.Render("ctrl+p") + mutedStyle.Render(" models · ") + violetStyle.Render("/help")
 	}
+	// Shortcuts join in order of usefulness while they fit beside the sidebar,
+	// then show in their usual order.
+	extras := []string{"ctrl+o tools", "ctrl+p models", "drag copy", "ctrl+v image"}
+	shown := make([]bool, len(extras))
+	used := ansi.StringWidth("enter send  alt+enter newline  esc interrupt  /help")
+	for _, i := range []int{1, 0, 2, 3} {
+		if used+2+len(extras[i]) <= m.mainWidth {
+			used, shown[i] = used+2+len(extras[i]), true
+		}
+	}
 	left := coralStyle.Render("enter ") + mutedStyle.Render("send") + violetStyle.Render("  alt+enter ") + mutedStyle.Render("newline") + violetStyle.Render("  esc ") + mutedStyle.Render("interrupt") + violetStyle.Render("  /help")
-	if m.width >= 90 {
-		left += violetStyle.Render("  ctrl+o ") + mutedStyle.Render("tools")
-	}
-	if m.width >= 74 {
-		left += violetStyle.Render("  ctrl+p ") + mutedStyle.Render("models")
-	}
-	if m.width >= 100 {
-		left += violetStyle.Render("  drag ") + mutedStyle.Render("copy")
-	}
-	if m.width >= 116 {
-		left += violetStyle.Render("  ctrl+v ") + mutedStyle.Render("image")
+	for i, extra := range extras {
+		if shown[i] {
+			key, name, _ := strings.Cut(extra, " ")
+			left += violetStyle.Render("  "+key+" ") + mutedStyle.Render(name)
+		}
 	}
 	return left
 }
