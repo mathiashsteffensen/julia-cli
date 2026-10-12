@@ -200,8 +200,8 @@ func TestWeeklyUsageDemoIsOfflineAndFitsLayouts(t *testing.T) {
 			t.Fatal("demo scheduled account usage read")
 		}
 		view := m.View().Content
-		// On a very short sidebar the context gauge outranks the connection rows.
-		if (m.hasSidebar() && m.bodyHeight >= 6) != strings.Contains(ansi.Strip(view), "Weekly · 61% left") {
+		// The allowance sits under the masthead, so a short sidebar scrolls to it.
+		if strings.Contains(ansi.Strip(view), "Weekly · 61% left") && !m.hasSidebar() {
 			t.Fatalf("%v: allowance visibility differs from sidebar", size)
 		}
 		lines := strings.Split(view, "\n")

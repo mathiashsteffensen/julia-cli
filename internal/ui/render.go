@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"math"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -596,6 +595,17 @@ func reasoningDisplay(provider, effort string) string {
 	return "inherited"
 }
 
+// overSidebar reports whether a screen cell falls inside the sidebar column.
+func (m *model) overSidebar(x, y int) bool {
+	return m.hasSidebar() && x >= m.margin()+m.mainWidth+2 && y >= 3 && y < 3+m.bodyHeight
+}
+
+// scrollSidebar moves the sidebar by delta rows; sidebar clamps the offset.
+func (m *model) scrollSidebar(delta int) {
+	m.sidebarOffset = max(0, m.sidebarOffset+delta)
+	m.sidebar()
+}
+
 func (m *model) sidebar() string {
 	const width = 23
 	label := func(s string) string { return violetStyle.Bold(true).Render(s) }
@@ -612,67 +622,44 @@ func (m *model) sidebar() string {
 	if directory != "" {
 		directory = filepath.Clean(directory)
 	}
-	// Variants run from fullest to most compact. Without room for the provider
-	// row the model alone identifies the connection, and the reasoning effort and
-	// weekly allowance are the next to go.
-	title, name := label("CONNECTION"), value(modelName)
-	providerRow := cyanStyle.Render(ansi.Truncate(sanitize(provider), width, "…"))
-	connection := [][]string{{title, providerRow, name}, {title, name}}
+	connection := []string{label("CONNECTION"), cyanStyle.Render(ansi.Truncate(sanitize(provider), width, "…")), value(modelName)}
 	if showsReasoning(provider, m.cfg.CompatibleReasoning) {
-		effort := []string{mutedStyle.Render(ansi.Truncate("reasoning: "+sanitize(reasoning), width, "…"))}
 		if provider == "compatible" && reasoning == "provider default" {
-			effort = []string{mutedStyle.Render("reasoning:"), mutedStyle.Render("provider default")}
+			connection = append(connection, mutedStyle.Render("reasoning:"), mutedStyle.Render("provider default"))
+		} else {
+			connection = append(connection, mutedStyle.Render(ansi.Truncate("reasoning: "+sanitize(reasoning), width, "…")))
 		}
-		var weekly []string
 		if provider == "codex" {
-			weekly = []string{m.weeklyUsageLine()}
-		}
-		// The weekly allowance stays in every variant: it is why Codex users look here.
-		connection = [][]string{
-			slices.Concat([]string{title, providerRow, name}, effort, weekly),
-			slices.Concat([]string{title, name}, weekly, effort),
-			slices.Concat([]string{title, name}, weekly),
+			connection = append(connection, m.weeklyUsageLine())
 		}
 	}
 	// The per-call figures describe the last model call only; the session totals
 	// and the context estimate have their own sections.
 	activity := []string{label("ACTIVITY"), value(fmt.Sprintf("%d tool calls", m.toolCount)), mutedStyle.Render("last call"), mutedStyle.Render(ansi.Truncate(fmt.Sprintf("%s in · %s out", core.CompactTokens(m.inputTokens), core.CompactTokens(m.outputTokens)), width, "…"))}
-	var essentials [][]string
+	sections := [][]string{
+		{label("WORKSPACE"), value(filepath.Base(directory)), mutedStyle.Render(ansi.Truncate(directory, width, "…"))},
+		connection,
+		m.contextSection(label, width),
+		m.tokenSection(label, width),
+		activity,
+		{label("PERMISSIONS"), lipgloss.NewStyle().Foreground(green).Render(ansi.Truncate("◈ "+sanitize(m.cfg.Mode), width, "…")), mutedStyle.Render(ansi.Truncate(permissionCaption(m.cfg.Mode), width, "…"))},
+		{label("SESSION"), value(id)},
+	}
 	if rows := toolRows(m.cfg.ToolDefinitions, width); len(rows) > 0 {
-		lines := []string{faintStyle.Render(strings.Repeat("─", width)), "", label("THE ESSENTIALS")}
+		essentials := []string{faintStyle.Render(strings.Repeat("─", width)), "", label("THE ESSENTIALS")}
 		for _, row := range rows {
-			lines = append(lines, mutedStyle.Render(row))
+			essentials = append(essentials, mutedStyle.Render(row))
 		}
-		for n := len(lines); n > 3; n-- {
-			essentials = append(essentials, lines[:n])
-		}
+		sections = append(sections, essentials)
 	}
-	// Rank is survival order on a short terminal (1 is dropped last). The context
-	// gauge outlives everything: it is the figure that decides when to start over.
-	blocks := []sidebarBlock{
-		{4, [][]string{{label("WORKSPACE"), value(filepath.Base(directory)), mutedStyle.Render(ansi.Truncate(directory, width, "…"))}}},
-		{2, connection},
-		{1, m.contextVariants(label, width)},
-		{3, m.tokenVariants(label, width)},
-		{6, [][]string{activity}},
-		{5, [][]string{{label("PERMISSIONS"), lipgloss.NewStyle().Foreground(green).Render(ansi.Truncate("◈ "+sanitize(m.cfg.Mode), width, "…")), mutedStyle.Render(ansi.Truncate(permissionCaption(m.cfg.Mode), width, "…"))}}},
-		{7, [][]string{{label("SESSION"), value(id)}}},
-		{8, essentials},
+	// The masthead and every section always render in full; a sidebar taller than
+	// the body scrolls on its own under the mouse wheel.
+	lines := slices.Concat([]string{""}, sidebarLogo(m.cfg.Version, width))
+	for _, section := range sections {
+		lines = append(append(lines, ""), section...)
 	}
-	lines := fitSidebar(blocks, m.bodyHeight)
-	// Keep the masthead's existing visibility threshold, but reclaim up to two
-	// detail rows from the sidebar instead of collapsing the logo's inner spacing.
-	// Both the top margin and the gap before WORKSPACE remain fixed blank rows.
-	if all := fitSidebar(blocks, math.MaxInt32); len(all) < m.bodyHeight {
-		logo := sidebarLogo(m.cfg.Version, width)
-		if 1+len(logo)+len(all)-2 <= m.bodyHeight {
-			details := fitSidebar(blocks, m.bodyHeight-len(logo)-2)
-			if len(details) > 0 && details[0] == "" {
-				details = details[1:]
-			}
-			lines = slices.Concat([]string{""}, logo, []string{""}, details)
-		}
-	}
+	m.sidebarOffset = max(0, min(m.sidebarOffset, len(lines)-m.bodyHeight))
+	lines = lines[m.sidebarOffset:]
 	if len(lines) > m.bodyHeight {
 		lines = lines[:m.bodyHeight]
 	}

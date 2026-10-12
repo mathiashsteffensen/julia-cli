@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"jarvis/internal/core"
@@ -305,8 +306,8 @@ func TestSettingsChangeInSameConversationKeepsUsage(t *testing.T) {
 }
 
 func TestDemoPreviewsShowUsage(t *testing.T) {
-	// Retain the sidebar's display budget with the tall layout's extra spacing.
-	demo := ansi.Strip(RenderDemo(128, 45))
+	// Tall enough for the whole sidebar, so no section is scrolled out of view.
+	demo := ansi.Strip(RenderDemo(128, 70))
 	for _, want := range []string{"CONTEXT", "46% · 119k / 256k", "TOKENS", "511.7k in · 6.8k out", "412k cached · 100k new", "117.3k in · 1.3k out"} {
 		if !strings.Contains(demo, want) {
 			t.Errorf("demo preview is missing %q", want)
@@ -414,134 +415,66 @@ func TestSidebarNeverOverflowsItsColumn(t *testing.T) {
 	}
 }
 
-func TestSidebarDegradesInOrderOfValue(t *testing.T) {
+func TestSidebarShowsEverySectionInOrder(t *testing.T) {
 	m := testModel(t, Config{
-		Session:         &core.Session{ID: "deg", Directory: "/tmp/jarvis", Provider: "codex", Model: "selected", Reasoning: "high", Usage: core.SessionUsage{Context: 1000}},
+		Version:         "0.1.0",
+		Session:         &core.Session{ID: "all", Directory: "/tmp/jarvis", Provider: "codex", Model: "selected", Reasoning: "high", Usage: core.SessionUsage{Context: 119_000}},
 		ToolDefinitions: []core.ToolDefinition{{Name: "Read"}},
 	})
-	// Most valuable first. A section may only appear when every one before it does.
-	order := []struct{ name, marker string }{
-		{"context", "/ 256k"}, {"connection", "selected"}, {"tokens", "TOKENS"}, {"workspace", "WORKSPACE"},
-		{"permissions", "PERMISSIONS"}, {"activity", "ACTIVITY"}, {"session", "SESSION"}, {"essentials", "THE ESSENTIALS"},
-	}
-	complete := false
-	for height := 8; height <= 80; height++ {
-		m.resize(128, height)
-		text := ansi.Strip(m.sidebar())
-		missing := ""
-		for _, section := range order {
-			shown := strings.Contains(text, section.marker)
-			switch {
-			case shown && missing != "":
-				t.Fatalf("height %d (body %d): %s is shown while %s is not:\n%s", height, m.bodyHeight, section.name, missing, text)
-			case !shown && missing == "":
-				missing = section.name
-			}
-		}
-		if missing == "" {
-			complete = true
-		}
-	}
-	if !complete {
-		t.Error("no height shows every section")
-	}
-}
-
-func TestShortSidebarKeepsContextGaugeFirst(t *testing.T) {
-	for height := 8; height <= 18; height++ {
-		m := testModel(t, Config{Session: &core.Session{ID: "short", Directory: "/tmp/jarvis", Provider: "codex", Model: "selected", Usage: core.SessionUsage{Context: 128_000}}})
-		m.resize(128, height)
-		rows := sidebarText(m)
-		if !hasRow(rows, "50% · 128k / 256k") {
-			t.Errorf("height %d (body %d): context line was dropped:\n%s", height, m.bodyHeight, strings.Join(rows, "\n"))
-		}
-	}
-	m := testModel(t, Config{Session: &core.Session{ID: "tiny", Provider: "fake", Usage: core.SessionUsage{Context: 128_000}}})
-	m.resize(128, 8)
-	if rows := sidebarText(m); len(rows) != 1 || rows[0] != "50% · 128k / 256k" {
-		t.Errorf("a one-row sidebar should be the context line alone: %q", rows)
-	}
-}
-
-func TestShortSidebarFitsSectionsBeforeDetail(t *testing.T) {
-	// Spare rows buy detail only after every section that fits has its compact form,
-	// so a rich CONNECTION never crowds out the weekly allowance or the session
-	// totals the user asked to see. The gauge keeps its label at every height and
-	// its bar from 8 sidebar rows up.
-	for _, tt := range []struct {
-		provider string
-		height   int // terminal rows; the sidebar gets 11 fewer
-		want     []string
-	}{
-		{"codex", 17, []string{"CONTEXT", "Weekly · unavailable", "50% · 128k / 256k"}},
-		{"codex", 21, []string{"CONTEXT", "Weekly · unavailable", "50% · 128k / 256k", "TOKENS", "0 in · 0 out"}},
-		{"codex", 22, []string{"CONTEXT", "Weekly · unavailable", "50% · 128k / 256k", "TOKENS", "0 in · 0 out"}},
-		{"anthropic", 20, []string{"CONTEXT", "50% · 128k / 256k", "TOKENS", "0 in · 0 out"}},
-		{"anthropic", 40, []string{"CONTEXT", "50% · 128k / 256k", "TOKENS", "0 in · 0 out", "last call"}},
-	} {
-		m := testModel(t, Config{Session: &core.Session{ID: "short", Directory: "/tmp/jarvis", Provider: tt.provider, Model: "selected", Reasoning: "high", Usage: core.SessionUsage{Context: 128_000}}})
-		m.resize(128, tt.height)
-		rows := sidebarText(m)
-		for _, want := range tt.want {
-			if !hasRow(rows, want) {
-				t.Errorf("%s at %d rows (body %d): missing %q:\n%s", tt.provider, tt.height, m.bodyHeight, want, strings.Join(rows, "\n"))
-			}
-		}
-	}
-	// Detail still comes back as room allows: the whole gauge, then the reasoning row.
-	m := testModel(t, Config{Session: &core.Session{ID: "roomy", Directory: "/tmp/jarvis", Provider: "codex", Model: "selected", Reasoning: "high", Usage: core.SessionUsage{Context: 128_000}}})
-	m.resize(128, 40)
-	for _, want := range []string{"CONTEXT", "reasoning: high"} {
-		if rows := sidebarText(m); !hasRow(rows, want) {
-			t.Errorf("a tall sidebar is missing %q:\n%s", want, strings.Join(rows, "\n"))
-		}
-	}
-}
-
-func TestContextGaugeIsLabelledAtEveryHeightAndKeepsItsBar(t *testing.T) {
-	// The gauge once degraded to an anonymous "46% · 119k / 256k" under CONNECTION
-	// at a 40-row terminal, because lower-ranked sections soaked up the rows its
-	// bar needed. It must always sit under its own label, and keep its bar once
-	// the sidebar is tall enough for more than a glance.
-	for _, provider := range []string{"codex", "anthropic"} {
-		for height := 13; height <= 70; height++ {
-			m := testModel(t, Config{
-				Session:         &core.Session{ID: "gauge", Directory: "/tmp/jarvis", Provider: provider, Model: "selected", Reasoning: "high", Usage: core.SessionUsage{Context: 119_000}},
-				ToolDefinitions: []core.ToolDefinition{{Name: "Read"}},
-			})
-			m.resize(128, height)
-			rows := sidebarText(m)
-			label := -1
-			for i, row := range rows {
-				if row == "CONTEXT" {
-					label = i
-				}
-			}
-			if label < 0 {
-				t.Fatalf("%s at %d rows (body %d): the gauge lost its label:\n%s", provider, height, m.bodyHeight, strings.Join(rows, "\n"))
-			}
-			next := rows[label+1]
-			if m.bodyHeight >= 8 && !strings.HasPrefix(next, "━") {
-				t.Errorf("%s at %d rows (body %d): the gauge lost its bar (%q):\n%s", provider, height, m.bodyHeight, next, strings.Join(rows, "\n"))
-			}
-			if !strings.Contains(next, "46% · 119k / 256k") && !strings.Contains(rows[label+min(2, len(rows)-label-1)], "46% · 119k / 256k") {
-				t.Errorf("%s at %d rows (body %d): the figure is not under the CONTEXT label:\n%s", provider, height, m.bodyHeight, strings.Join(rows, "\n"))
-			}
-		}
-	}
-}
-
-func TestSidebarMastheadOnlyTakesSpareRows(t *testing.T) {
-	m := testModel(t, Config{Version: "0.1.0", Session: &core.Session{ID: "logo", Directory: "/tmp/jarvis", Provider: "codex", Model: "selected"}})
-	m.resize(128, 80)
-	rows := sidebarText(m)
-	for _, row := range sidebarLogo(m.cfg.Version, 23) {
-		if want := strings.TrimSpace(ansi.Strip(row)); want != "" && !hasRow(rows, want) {
-			t.Fatalf("tall sidebar is missing masthead row %q:\n%s", want, strings.Join(rows, "\n"))
-		}
-	}
 	m.resize(128, 24)
-	if text := ansi.Strip(m.sidebar()); strings.Contains(text, strings.TrimSpace(ansi.Strip(logoLettering()[0]))) {
-		t.Fatalf("short sidebar spent rows on the masthead:\n%s", text)
+	m.bodyHeight = 200 // room for the whole column, so nothing is scrolled out of view
+	rows := sidebarText(m)
+	text := strings.Join(rows, "\n")
+	at := 0
+	for _, want := range []string{
+		strings.TrimSpace(ansi.Strip(logoLettering()[0])), "v0.1.0",
+		"WORKSPACE", "CONNECTION", "reasoning: high", "Weekly", "CONTEXT", "46% · 119k / 256k",
+		"TOKENS", "0 cached · 0 new", "ACTIVITY", "last call", "PERMISSIONS", "SESSION", "THE ESSENTIALS", "Read",
+	} {
+		i := strings.Index(text[at:], want)
+		if i < 0 {
+			t.Fatalf("missing %q after row offset %d:\n%s", want, at, text)
+		}
+		at += i + len(want)
+	}
+	for i, row := range rows {
+		if row == "CONTEXT" && !strings.HasPrefix(rows[i+1], "━") {
+			t.Errorf("the gauge lost its bar: %q", rows[i+1])
+		}
+	}
+}
+
+func TestSidebarScrollsIndependently(t *testing.T) {
+	m := testModel(t, Config{Version: "0.1.0", Session: &core.Session{ID: "scroll", Directory: "/tmp/jarvis", Provider: "codex", Model: "selected"}, ToolDefinitions: []core.ToolDefinition{{Name: "Read"}}})
+	m.resize(128, 24)
+	lettering := strings.TrimSpace(ansi.Strip(logoLettering()[0]))
+	if rows := sidebarText(m); len(rows) != m.bodyHeight || !hasRow(rows, lettering) || hasRow(rows, "THE ESSENTIALS") {
+		t.Fatalf("a short sidebar should open on the masthead:\n%s", strings.Join(rows, "\n"))
+	}
+	x, y := m.margin()+m.mainWidth+4, 3+m.bodyHeight/2
+	if !m.overSidebar(x, y) || m.overSidebar(m.margin()+1, y) {
+		t.Fatal("sidebar hit test is wrong")
+	}
+	// The wheel over the conversation leaves the sidebar where it is.
+	m.Update(tea.MouseWheelMsg{X: m.margin() + 1, Y: y, Button: tea.MouseWheelDown})
+	if m.sidebarOffset != 0 {
+		t.Fatal("the conversation's wheel scrolled the sidebar")
+	}
+	for range 200 {
+		m.Update(tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelDown})
+	}
+	rows := sidebarText(m)
+	if len(rows) != m.bodyHeight || !hasRow(rows, "Read") || hasRow(rows, lettering) {
+		t.Fatalf("scrolling down should end on the last section:\n%s", strings.Join(rows, "\n"))
+	}
+	bottom := m.sidebarOffset
+	m.Update(tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelUp})
+	if m.sidebarOffset != bottom-1 {
+		t.Fatalf("wheel up moved %d -> %d", bottom, m.sidebarOffset)
+	}
+	// Growing the terminal pulls the offset back so the column never shows a gap.
+	m.resize(128, 200)
+	if m.sidebar(); m.sidebarOffset != 0 {
+		t.Fatalf("a sidebar that fits is still scrolled by %d", m.sidebarOffset)
 	}
 }

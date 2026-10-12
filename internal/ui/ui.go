@@ -101,20 +101,21 @@ type approvalMsg struct{ request ApprovalRequest }
 type tickMsg time.Time
 
 type model struct {
-	cfg        Config
-	input      textarea.Model
-	viewport   viewport.Model
-	spinner    activityModel
-	width      int
-	height     int
-	mainWidth  int
-	bodyHeight int
-	entries    []entry
-	markdown   *glamour.TermRenderer
-	lines      []string // the conversation as rendered, one per row
-	rows       []rowRef // what each of those rows shows, for copying
-	selection  *selection
-	lastClick  struct {
+	cfg           Config
+	input         textarea.Model
+	viewport      viewport.Model
+	spinner       activityModel
+	width         int
+	height        int
+	mainWidth     int
+	bodyHeight    int
+	sidebarOffset int // rows of the sidebar scrolled out of view
+	entries       []entry
+	markdown      *glamour.TermRenderer
+	lines         []string // the conversation as rendered, one per row
+	rows          []rowRef // what each of those rows shows, for copying
+	selection     *selection
+	lastClick     struct {
 		at  time.Time
 		row int
 	}
@@ -491,6 +492,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseReleaseMsg:
 		return m, m.mouseUp(msg)
 	case tea.MouseWheelMsg:
+		if m.overSidebar(msg.X, msg.Y) {
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				m.scrollSidebar(-1)
+			case tea.MouseWheelDown:
+				m.scrollSidebar(1)
+			}
+			return m, nil
+		}
 		if m.picker != nil && m.pending == nil {
 			return m, nil
 		}
