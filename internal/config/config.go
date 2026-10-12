@@ -25,20 +25,22 @@ const MinContextTokens = 32000
 
 type Config struct {
 	SkillPaths []string `json:"skill_paths,omitempty"`
-	Provider   string   `json:"provider"`
-	// Model and ModelReasoning are the "model" entry: a model ID, or an object
-	// with an id and the reasoning effort that model starts with.
+	// Provider, Model and ModelReasoning come from the "model" entry:
+	// provider/<model-id>, or an object with that id and the reasoning effort
+	// the model starts with. A bare "codex" is Codex's own configured model.
+	Provider       string `json:"-"`
 	Model          string `json:"-"`
 	ModelReasoning string `json:"-"`
-	// CompatibleModels are the switchable compatible models, each a model ID
-	// or an object with an id and the reasoning effort it starts with.
-	CompatibleModels []ModelEntry `json:"compatible_models,omitempty"`
-	BaseURL          string       `json:"base_url,omitempty"`
-	APIKeyEnv        string       `json:"api_key_env,omitempty"`
-	Mode             string       `json:"mode"`
-	CodexBinary      string       `json:"codex_binary,omitempty"`
-	Reasoning        string       `json:"reasoning,omitempty"`
-	MaxSteps         int          `json:"max_steps"`
+	// EnabledModels are the models the picker lists and ctrl+n cycles, each
+	// provider/<model-id> or an object with that id and a reasoning effort.
+	EnabledModels []ModelEntry `json:"enabled_models,omitempty"`
+	// CompatibleBaseURL is the endpoint of the compatible provider.
+	CompatibleBaseURL string `json:"compatible_base_url,omitempty"`
+	APIKeyEnv         string `json:"api_key_env,omitempty"`
+	Mode              string `json:"mode"`
+	CodexBinary       string `json:"codex_binary,omitempty"`
+	Reasoning         string `json:"reasoning,omitempty"`
+	MaxSteps          int    `json:"max_steps"`
 	// ContextTokens is the context window assumed for every model; compaction
 	// triggers at a fraction of it.
 	ContextTokens int `json:"context_tokens"`
@@ -54,9 +56,27 @@ type Config struct {
 	Browser string `json:"browser,omitempty"`
 	// ReviewerModel is the model that reviews risky actions, as
 	// provider/<model-id>: codex/gpt-6-luna, or compatible/<model-id> for a
-	// model served through base_url's Decisions API. Empty is the default
-	// Codex reviewer.
+	// model served through compatible_base_url's Decisions API. Empty is the
+	// default Codex reviewer.
 	ReviewerModel string `json:"reviewer_model,omitempty"`
+}
+
+// Providers are the providers a model ID may name.
+var Providers = []string{"codex", "openai", "anthropic", "google", "compatible"}
+
+// SplitModel splits provider/<model-id> at its first slash; the model ID may
+// itself contain slashes. A bare provider name has an empty model ID.
+func SplitModel(id string) (provider, model string) {
+	provider, model, _ = strings.Cut(id, "/")
+	return provider, model
+}
+
+// JoinModel is SplitModel's inverse; an empty model ID leaves the provider.
+func JoinModel(provider, model string) string {
+	if model == "" {
+		return provider
+	}
+	return provider + "/" + model
 }
 
 // ReviewerProviders are the providers reviewer_model may name.
@@ -69,12 +89,12 @@ func (c Config) Reviewer() (provider, model string) {
 	if c.ReviewerModel == "" {
 		return "codex", ""
 	}
-	provider, model, _ = strings.Cut(c.ReviewerModel, "/")
-	return provider, model
+	return SplitModel(c.ReviewerModel)
 }
 
-// ModelEntry is a model in the configuration: a bare model ID in JSON, or
-// {"id": "...", "reasoning": "high"} to give it a starting reasoning effort.
+// ModelEntry is a model in the configuration: provider/<model-id> in JSON, or
+// {"id": "provider/<model-id>", "reasoning": "high"} to give it a starting
+// reasoning effort.
 type ModelEntry struct {
 	ID        string `json:"id"`
 	Reasoning string `json:"reasoning,omitempty"`
@@ -91,7 +111,7 @@ func (m *ModelEntry) UnmarshalJSON(data []byte) error {
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&e); err != nil {
-		return fmt.Errorf(`a model is a model ID or {"id": "<model-id>", "reasoning": "<effort>"}: %w`, err)
+		return fmt.Errorf(`a model is "provider/<model-id>" or {"id": "provider/<model-id>", "reasoning": "<effort>"}: %w`, err)
 	}
 	if e.ID == "" {
 		return errors.New(`a model object needs an "id"`)
@@ -108,7 +128,8 @@ func (m ModelEntry) MarshalJSON() ([]byte, error) {
 	return json.Marshal(entry(m))
 }
 
-// UnmarshalJSON reads "model" as a ModelEntry into Model and ModelReasoning.
+// UnmarshalJSON reads "model" as a ModelEntry into Provider, Model and
+// ModelReasoning.
 // Unknown keys are refused here too: Load's DisallowUnknownFields does not
 // reach a custom unmarshaler.
 func (c *Config) UnmarshalJSON(data []byte) error {
@@ -123,7 +144,8 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if file.Model != nil {
-		c.Model, c.ModelReasoning = file.Model.ID, file.Model.Reasoning
+		c.Provider, c.Model = SplitModel(file.Model.ID)
+		c.ModelReasoning = file.Model.Reasoning
 	}
 	return nil
 }
@@ -133,28 +155,34 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	file := struct {
 		fields
 		Model *ModelEntry `json:"model,omitempty"`
-	}{fields: fields(c)}
-	if c.Model != "" {
-		file.Model = &ModelEntry{ID: c.Model, Reasoning: c.ModelReasoning}
-	}
+	}{fields: fields(c), Model: &ModelEntry{ID: JoinModel(c.Provider, c.Model), Reasoning: c.ModelReasoning}}
 	return json.Marshal(file)
 }
 
 // ReasoningFor is the reasoning effort configured for a provider's model: the
-// "model" entry's, or for the compatible provider its compatible_models
-// entry's. Empty means the model has none of its own.
+// "model" entry's, else its enabled_models entry's. Empty means the model has
+// none of its own.
 func (c Config) ReasoningFor(provider, model string) string {
 	if provider == c.Provider && model == c.Model && c.ModelReasoning != "" {
 		return c.ModelReasoning
 	}
-	if provider == "compatible" {
-		for _, entry := range c.CompatibleModels {
-			if entry.ID == model {
-				return entry.Reasoning
-			}
+	id := JoinModel(provider, model)
+	for _, entry := range c.EnabledModels {
+		if entry.ID == id {
+			return entry.Reasoning
 		}
 	}
 	return ""
+}
+
+// Enables reports whether enabled_models lists a model of provider.
+func (c Config) Enables(provider string) bool {
+	for _, entry := range c.EnabledModels {
+		if p, _ := SplitModel(entry.ID); p == provider {
+			return true
+		}
+	}
+	return false
 }
 
 // BrowserEnv names the environment variable that overrides Config.Browser.
@@ -212,53 +240,37 @@ func (c Config) Validate() error {
 			return errors.New("skill_paths must not contain empty paths")
 		}
 	}
-	switch c.Provider {
-	case "codex", "openai", "anthropic", "google", "compatible":
-	default:
-		return fmt.Errorf("unknown provider %q", c.Provider)
-	}
-	if c.Model != strings.TrimSpace(c.Model) || strings.IndexFunc(c.Model, unicode.IsControl) >= 0 {
-		return errors.New("model must be a provider model ID without surrounding whitespace or control characters")
-	}
-	if c.Provider == "compatible" && IsDecisionsOnlyCompatibleModel(c.Model) {
-		return fmt.Errorf("model %q is decisions-only and cannot generate chat responses; choose a chat model (set reviewer_model to compatible/%s to review actions with it)", c.Model, c.Model)
+	if err := c.validateModel("model", c.Provider, c.Model, c.ModelReasoning); err != nil {
+		return err
 	}
 	if c.ReviewerModel != "" {
 		reviewer, model := c.Reviewer()
 		if !contains(ReviewerProviders, reviewer) || model == "" || len(c.ReviewerModel) > 512 || c.ReviewerModel != strings.TrimSpace(c.ReviewerModel) || strings.IndexFunc(c.ReviewerModel, unicode.IsControl) >= 0 {
 			return fmt.Errorf("reviewer_model must be provider/<model-id> with provider %s, such as codex/gpt-6-luna or compatible/%s", strings.Join(ReviewerProviders, " or "), CompatibleDecisionsModel)
 		}
-		if reviewer == "compatible" && c.BaseURL == "" {
-			return errors.New("a compatible reviewer_model reviews actions through base_url; set base_url to the compatible API endpoint")
+		if reviewer == "compatible" && c.CompatibleBaseURL == "" {
+			return errors.New("a compatible reviewer_model reviews actions through compatible_base_url; set it to the compatible API endpoint")
 		}
 	}
-	if len(c.CompatibleModels) > 100 {
-		return errors.New("compatible_models may contain at most 100 model IDs")
+	if len(c.EnabledModels) > 100 {
+		return errors.New("enabled_models may contain at most 100 models")
 	}
-	seenCompatibleModels := make(map[string]bool, len(c.CompatibleModels))
-	for _, entry := range c.CompatibleModels {
-		model := entry.ID
-		if model == "" || len(model) > 512 || model != strings.TrimSpace(model) || strings.IndexFunc(model, unicode.IsControl) >= 0 {
-			return errors.New("compatible_models must contain model IDs without surrounding whitespace or control characters")
+	seenModels := make(map[string]bool, len(c.EnabledModels))
+	for _, entry := range c.EnabledModels {
+		provider, model := SplitModel(entry.ID)
+		if err := c.validateModel("enabled_models", provider, model, entry.Reasoning); err != nil {
+			return err
 		}
-		if seenCompatibleModels[model] {
-			return fmt.Errorf("compatible_models contains duplicate model ID %q", model)
+		if model == "" {
+			return fmt.Errorf("enabled_models %q needs a model ID: provider/<model-id>", entry.ID)
 		}
-		seenCompatibleModels[model] = true
-		if err := validateReasoning("compatible", c.BaseURL, entry.Reasoning); err != nil {
-			return fmt.Errorf("compatible_models %q: %w", model, err)
+		if seenModels[entry.ID] {
+			return fmt.Errorf("enabled_models contains %q twice", entry.ID)
 		}
+		seenModels[entry.ID] = true
 	}
-	if err := validateReasoning(c.Provider, c.BaseURL, c.Reasoning); err != nil {
+	if err := validateReasoning(c.Provider, c.CompatibleBaseURL, c.Reasoning); err != nil {
 		return err
-	}
-	if c.ModelReasoning != "" {
-		if c.Model == "" {
-			return errors.New("model reasoning needs a model id")
-		}
-		if err := validateReasoning(c.Provider, c.BaseURL, c.ModelReasoning); err != nil {
-			return fmt.Errorf("model %q: %w", c.Model, err)
-		}
 	}
 	switch c.Mode {
 	case "auto", "ask", "read-only":
@@ -277,6 +289,28 @@ func (c Config) Validate() error {
 	}
 	if len(c.Browser) > 4096 || c.Browser != strings.TrimSpace(c.Browser) || strings.IndexFunc(c.Browser, unicode.IsControl) >= 0 {
 		return errors.New("browser must be a path to a Chrome or Chromium executable or .app, without surrounding whitespace or control characters")
+	}
+	return nil
+}
+
+// validateModel checks one provider/<model-id> entry of the named field. Only
+// Codex may leave the model ID out, for its own configured model.
+func (c Config) validateModel(field, provider, model, reasoning string) error {
+	id := JoinModel(provider, model)
+	if !contains(Providers, provider) {
+		return fmt.Errorf("%s %q must be provider/<model-id> with provider %s", field, id, strings.Join(Providers, ", "))
+	}
+	if provider != "codex" && model == "" {
+		return fmt.Errorf("%s %q needs a model ID: %s/<model-id>", field, id, provider)
+	}
+	if len(model) > 512 || model != strings.TrimSpace(model) || strings.IndexFunc(model, unicode.IsControl) >= 0 {
+		return fmt.Errorf("%s model IDs must not have surrounding whitespace or control characters", field)
+	}
+	if provider == "compatible" && IsDecisionsOnlyCompatibleModel(model) {
+		return fmt.Errorf("%s %q is decisions-only and cannot generate chat responses; set reviewer_model to %s to review actions with it", field, id, id)
+	}
+	if err := validateReasoning(provider, c.CompatibleBaseURL, reasoning); err != nil {
+		return fmt.Errorf("%s %q: %w", field, id, err)
 	}
 	return nil
 }

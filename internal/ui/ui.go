@@ -61,11 +61,13 @@ type Config struct {
 	Demo                bool
 	CompatibleReasoning bool
 	Models              func(context.Context) ([]core.ModelOption, error)
-	CompatibleModels    []core.ModelOption
-	ApplySettings       func(*core.Session, string, string, string) error
-	WeeklyUsage         func(context.Context) (*core.WeeklyUsage, error)
-	Version             string // shown in the sidebar masthead
-	ContextWindow       int    // tokens the context gauge is measured against; <= 0 means core.DefaultContextWindow
+	// EnabledModels are the configured enabled_models, which the picker lists
+	// first and ctrl+n cycles.
+	EnabledModels []core.ModelOption
+	ApplySettings func(*core.Session, string, string, string) error
+	WeeklyUsage   func(context.Context) (*core.WeeklyUsage, error)
+	Version       string // shown in the sidebar masthead
+	ContextWindow int    // tokens the context gauge is measured against; <= 0 means core.DefaultContextWindow
 	// Hangup ends the interface when the terminal is gone, as a closed
 	// window's SIGHUP says, after the running task has stopped and cleaned
 	// up: its terminals and browser killed, not orphaned.
@@ -163,11 +165,10 @@ type model struct {
 	reasoningCycleSequence uint64
 	reasoningCyclePending  int
 	reasoningCycleCancel   context.CancelFunc
-	// compatibleModels is the switchable catalog for the compatible provider.
-	// It starts from the saved compatible_models and remembers any
-	// compatible model the session has used, so the provider stays reachable
-	// after the user switches to Codex and back.
-	compatibleModels []core.ModelOption
+	// knownModels are the picker's models besides Codex's catalog: the enabled
+	// models, then any other model the session has used, so it stays
+	// reachable after switching away from it.
+	knownModels []core.ModelOption
 }
 
 // Run owns terminal lifetime and waits for a cancelled backend before returning.
@@ -218,7 +219,7 @@ func newModel(cfg Config) *model {
 	m := &model{
 		cfg: cfg, input: input, viewport: viewport.New(),
 		status: "Ready", lifetime: ctx, stop: stop, now: time.Now(), clipboard: systemClipboard, clipboardImage: images.Clipboard,
-		compatibleModels: append([]core.ModelOption(nil), cfg.CompatibleModels...),
+		knownModels: append([]core.ModelOption(nil), cfg.EnabledModels...),
 	}
 	m.viewport.FillHeight = true
 	m.loadHistory()
@@ -468,6 +469,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+p" {
 			return m, m.openPicker("model")
 		}
+		if msg.String() == "ctrl+n" {
+			return m, m.cycleModel()
+		}
 		if msg.String() == "shift+tab" {
 			return m, m.cycleReasoning()
 		}
@@ -562,7 +566,7 @@ func (m *model) submit() tea.Cmd {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- **Ctrl+P** or `/model` opens model search · **Tab/Shift+Tab** switch catalogs in the picker\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
 		case "/ask", "/ask text":
 			if !m.cfg.Demo {
 				m.notice = "Unknown command. /help lists the essentials."

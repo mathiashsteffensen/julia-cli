@@ -49,17 +49,16 @@ func run() error {
 		return err
 	}
 	flags := flag.NewFlagSet("jarvis", flag.ContinueOnError)
-	var path, dir, prompt, backend, model, reasoning, mode, endpoint, keyEnv, resume, timeout string
+	var path, dir, prompt, modelFlag, reasoning, mode, endpoint, keyEnv, resume, timeout string
 	var cont, demo, jsonMode, showVersion bool
 	var snapshot int
 	flags.StringVar(&path, "config", configPath, "configuration file")
 	flags.StringVar(&dir, "dir", ".", "workspace directory")
 	flags.StringVar(&prompt, "prompt", "", "run one task without the TUI")
-	flags.StringVar(&backend, "provider", "", "codex, openai, anthropic, google, compatible")
-	flags.StringVar(&model, "model", "", "provider model ID (Codex defaults to your configured model)")
+	flags.StringVar(&modelFlag, "model", "", "provider/<model-id>: codex, openai, anthropic, google or compatible (bare codex uses your Codex model)")
 	flags.StringVar(&reasoning, "reasoning", "", "Reasoning effort (Codex model-supported value or OpenRouter value; model support varies)")
 	flags.StringVar(&mode, "mode", "", "auto, ask, or read-only")
-	flags.StringVar(&endpoint, "base-url", "", "custom API endpoint")
+	flags.StringVar(&endpoint, "compatible-base-url", "", "compatible provider API endpoint")
 	flags.StringVar(&keyEnv, "api-key-env", "", "environment variable containing API key")
 	flags.StringVar(&resume, "resume", "", "resume a saved session ID")
 	flags.StringVar(&timeout, "timeout", "", "maximum duration per task, e.g. 4h")
@@ -87,14 +86,9 @@ func run() error {
 		return err
 	}
 	// The "model" entry's reasoning belongs to that provider and model only.
-	if (backend != "" && backend != cfg.Provider) || (model != "" && model != cfg.Model) {
-		cfg.ModelReasoning = ""
-	}
-	if backend != "" {
-		cfg.Provider = backend
-	}
-	if model != "" {
-		cfg.Model = model
+	backend, model := config.SplitModel(modelFlag)
+	if modelFlag != "" && (backend != cfg.Provider || model != cfg.Model) {
+		cfg.Provider, cfg.Model, cfg.ModelReasoning = backend, model, ""
 	}
 	reasoningSet := false
 	flags.Visit(func(f *flag.Flag) {
@@ -107,7 +101,7 @@ func run() error {
 		cfg.Mode = mode
 	}
 	if endpoint != "" {
-		cfg.BaseURL = endpoint
+		cfg.CompatibleBaseURL = endpoint
 	}
 	if keyEnv != "" {
 		cfg.APIKeyEnv = keyEnv
@@ -295,9 +289,9 @@ func run() error {
 	uiConfig.Backend, uiConfig.Save, uiConfig.Approvals, uiConfig.Questions = runner, store.Save, approvals, questions
 	uiConfig.Hangup = hangup
 	uiConfig.ApplySettings = func(current *core.Session, selectedProvider, selectedModel, reasoning string) error {
-		if selectedProvider == "compatible" && len(cfg.CompatibleModels) > 0 {
-			if cfg.BaseURL == "" {
-				return errors.New("configure base_url for the compatible provider")
+		if selectedProvider == "compatible" && cfg.Enables("compatible") {
+			if cfg.CompatibleBaseURL == "" {
+				return errors.New("configure compatible_base_url for the compatible provider")
 			}
 			keyEnv := compatibleAPIKeyEnv(cfg)
 			if os.Getenv(keyEnv) == "" {
@@ -315,13 +309,11 @@ func run() error {
 		}
 		return nil
 	}
-	for _, entry := range cfg.CompatibleModels {
-		if config.IsDecisionsOnlyCompatibleModel(entry.ID) {
-			continue
-		}
-		uiConfig.CompatibleModels = append(uiConfig.CompatibleModels, core.ModelOption{ID: entry.ID, Name: entry.ID, Description: "Saved compatible model", DefaultReasoning: entry.Reasoning})
+	for _, entry := range cfg.EnabledModels {
+		provider, id := config.SplitModel(entry.ID)
+		uiConfig.EnabledModels = append(uiConfig.EnabledModels, core.ModelOption{Provider: provider, ID: id, Name: id, Description: "Enabled model", DefaultReasoning: entry.Reasoning})
 	}
-	uiConfig.CompatibleReasoning = config.SupportsReasoning("compatible", cfg.BaseURL)
+	uiConfig.CompatibleReasoning = config.SupportsReasoning("compatible", cfg.CompatibleBaseURL)
 	codexBinary := cfg.CodexBinary
 	if codex, ok := raw.(*provider.Codex); ok {
 		codexBinary = codex.Binary
@@ -388,7 +380,7 @@ func modelSettings(cfg config.Config) (model, reasoning string) {
 		reasoning = "not configurable for this provider"
 		if cfg.Provider == "codex" {
 			reasoning = "inherited from Codex"
-		} else if config.SupportsReasoning(cfg.Provider, cfg.BaseURL) {
+		} else if config.SupportsReasoning(cfg.Provider, cfg.CompatibleBaseURL) {
 			reasoning = "provider/model default"
 		}
 	}
@@ -590,7 +582,7 @@ func searchKeyFile(configPath string) string {
 func reviewerSummary(c config.Config) string {
 	reviewer, model := c.Reviewer()
 	if reviewer == "compatible" {
-		return fmt.Sprintf("Reviewer  Compatible %s · Decisions API at %s", safe(model), safe(c.BaseURL))
+		return fmt.Sprintf("Reviewer  Compatible %s · Decisions API at %s", safe(model), safe(c.CompatibleBaseURL))
 	}
 	if model == "" {
 		model = provider.CodexReviewerModel

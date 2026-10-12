@@ -78,7 +78,7 @@ func runHeadlessAgainst(t *testing.T, api http.Handler, dir string, extra ...str
 	t.Setenv("XDG_STATE_HOME", state)
 	t.Setenv("JARVIS_TEST_KEY", "fixture-key")
 	path := filepath.Join(t.TempDir(), "config.json")
-	config := fmt.Sprintf(`{"provider":"compatible","model":"test-model","base_url":%q,"api_key_env":"JARVIS_TEST_KEY","mode":"read-only","max_steps":8,"context_tokens":32000,"skill_paths":[]}`, server.URL+"/v1")
+	config := fmt.Sprintf(`{"model":"compatible/test-model","compatible_base_url":%q,"api_key_env":"JARVIS_TEST_KEY","mode":"read-only","max_steps":8,"context_tokens":32000,"skill_paths":[]}`, server.URL+"/v1")
 	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}

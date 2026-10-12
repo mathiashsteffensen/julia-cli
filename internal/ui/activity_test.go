@@ -152,7 +152,7 @@ func TestPickerActivityStopsAfterLoadingAndClosing(t *testing.T) {
 	if m.spinner.active {
 		t.Fatal("loaded catalog continued animating")
 	}
-	m.loadPickerModels("codex", false)
+	m.loadPickerModels(false)
 	if !m.spinner.active {
 		t.Fatal("catalog refresh did not restart the animation")
 	}

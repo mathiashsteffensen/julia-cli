@@ -40,14 +40,15 @@ jarvis --demo                  # offline UI preview
 jarvis sessions | login | doctor | config init
 ```
 
-Other flags: `--provider`, `--model`, `--reasoning`, `--mode`, `--base-url`,
+Other flags: `--model`, `--reasoning`, `--mode`, `--compatible-base-url`,
 `--api-key-env`, `--timeout`, `--config`. Run `jarvis -h` for the full list.
 
 | Key | Action |
 | --- | --- |
 | Enter / Alt+Enter | Send / new line |
 | Esc | Cancel the running task |
-| Ctrl+P or `/model` | Model picker |
+| Ctrl+P or `/model` | Model picker: every model in one list |
+| Ctrl+N | Switch to the next of your `enabled_models` |
 | Shift+Tab or `/reasoning` | Change reasoning effort |
 | Ctrl+O | Expand/collapse tool output |
 | Ctrl+V | Attach the clipboard's image (a screenshot, or an image file copied in Finder) |
@@ -73,7 +74,7 @@ terminal (OSC 52) over SSH.
 
 ## Providers
 
-| `provider` | Backend | API key env |
+| Provider | Backend | API key env |
 | --- | --- | --- |
 | `codex` (default) | Local Codex app-server, your ChatGPT sign-in | — |
 | `openai` | Responses API | `OPENAI_API_KEY` |
@@ -81,13 +82,15 @@ terminal (OSC 52) over SSH.
 | `google` | Gemini API | `GEMINI_API_KEY` |
 | `compatible` | OpenAI-compatible chat completions (OpenRouter, Ollama, …) | `OPENAI_API_KEY` or `--api-key-env` |
 
-API providers need an explicit `--model`. Reasoning effort is only supported on
-Codex and OpenRouter. Endpoints must be HTTPS unless they are on loopback.
+Models are named `provider/<model-id>`, in the config and in `--model`. A bare
+`codex` is the model your Codex is configured with; every other provider needs a
+model ID. Reasoning effort is only supported on Codex and OpenRouter. Endpoints
+must be HTTPS unless they are on loopback.
 
 ```sh
-jarvis --provider anthropic --model MODEL_ID
-jarvis --provider compatible --model MODEL_ID \
-  --base-url https://openrouter.ai/api/v1 --api-key-env OPENROUTER_API_KEY
+jarvis --model anthropic/MODEL_ID
+jarvis --model compatible/vendor/MODEL_ID \
+  --compatible-base-url https://openrouter.ai/api/v1 --api-key-env OPENROUTER_API_KEY
 ```
 
 ## Configuration
@@ -98,23 +101,22 @@ keys are only referenced by env var name.
 
 ```json
 {
-  "provider": "codex",
-  "model": "gpt-6-astra",
+  "model": "codex/gpt-6-astra",
   "reasoning": "medium",
   "mode": "auto",
   "max_steps": 256,
   "context_tokens": 256000,
   "timeout": "4h",
-  "base_url": "https://openrouter.ai/api/v1",
+  "compatible_base_url": "https://openrouter.ai/api/v1",
   "api_key_env": "OPENROUTER_API_KEY",
-  "compatible_models": ["vendor/model-a", {"id": "vendor/model-b", "reasoning": "high"}],
+  "enabled_models": ["codex/gpt-6-astra", {"id": "compatible/vendor/model-b", "reasoning": "high"}],
   "skill_paths": ["~/.codex/skills/coding-assistance-style/SKILL.md"],
   "browser": "/Applications/Chromium.app"
 }
 ```
 
-- `compatible_models` populates the second tab of the model picker. Codex models come from Codex itself.
-- `model` and each `compatible_models` entry are a model ID, or `{"id": "<model-id>", "reasoning": "<effort>"}` for a model that starts at that effort when you launch with it or pick it.
+- `enabled_models` come first in the model picker, ahead of the rest of Codex's catalog, and Ctrl+N cycles through them.
+- `model` and each `enabled_models` entry are `provider/<model-id>`, or `{"id": "provider/<model-id>", "reasoning": "<effort>"}` for a model that starts at that effort when you launch with it or switch to it.
 - `context_tokens` is the assumed window for every model. API providers compact the history at 85%.
 - `skill_paths` are extra instruction files added to every turn. If you omit it, JARVIS loads `coding-assistance-style/SKILL.md` from `$CODEX_HOME/skills` or `~/.agents/skills`. `[]` disables skills.
 - The last reasoning effort you picked for each provider is remembered in `~/.local/state/jarvis/preferences.json`. It applies at launch unless the model has its own `reasoning`, and `--reasoning` beats both.
@@ -212,10 +214,10 @@ text is untrusted: the agent treats it as data, never as instructions.
 **Reviewer.** `reviewer_model` in the config picks it, as `provider/<model-id>`.
 Unset, it is `codex/gpt-6-luna`: Codex with no reasoning, running in a
 read-only, no-network process. `compatible/<model-id>`, such as
-`compatible/typesafe/jev-1.13`, reviews instead through `base_url`'s Decisions
-API. Approval then requires ≥50% task relevance and >70% on each harm check.
-The reviewer sees the proposed action and your messages, but nothing else from
-the agent. A denial goes back to the
+`compatible/typesafe/jev-1.13`, reviews instead through `compatible_base_url`'s
+Decisions API. Approval then requires ≥50% task relevance and >70% on each harm
+check. The reviewer sees the proposed action and your messages, but nothing else
+from the agent. A denial goes back to the
 agent with the reason. After 3 denials in a row (or 20 in one turn), or when the
 reviewer fails, you are asked instead. In headless mode the action is denied.
 

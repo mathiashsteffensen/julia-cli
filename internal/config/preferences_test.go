@@ -44,7 +44,7 @@ func TestRememberedReasoningIsPerProvider(t *testing.T) {
 
 func TestRememberedReasoningIgnoredWhenInvalid(t *testing.T) {
 	cfg := Default()
-	cfg.Provider, cfg.Model, cfg.BaseURL = "compatible", "vendor/model", "https://example.com/v1"
+	cfg.Provider, cfg.Model, cfg.CompatibleBaseURL = "compatible", "vendor/model", "https://example.com/v1"
 	cfg.ApplyStartingReasoning(Preferences{Reasoning: map[string]string{"compatible": "high"}})
 	if cfg.Reasoning != "" {
 		t.Fatalf("applied unsupported effort %q", cfg.Reasoning)

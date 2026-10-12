@@ -66,6 +66,8 @@ type Prompt struct {
 
 // ModelOption describes a provider-advertised model and its reasoning controls.
 type ModelOption struct {
+	// Provider is the model's provider, such as codex or compatible.
+	Provider              string
 	ID, Name, Description string
 	ReasoningEfforts      []string
 	DefaultReasoning      string

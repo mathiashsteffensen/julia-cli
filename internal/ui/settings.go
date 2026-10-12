@@ -17,7 +17,6 @@ import (
 
 type settingsPicker struct {
 	kind     string
-	provider string
 	search   textinput.Model
 	selected int
 	loading  bool
@@ -60,9 +59,7 @@ func (m *model) openPicker(kind string) tea.Cmd {
 	}
 	m.invalidateReasoningCycle()
 	m.closePicker()
-	if m.cfg.Session.Provider == "compatible" {
-		m.rememberCompatibleModel(m.cfg.Session.Model)
-	}
+	m.rememberModel(m.cfg.Session.Provider, m.cfg.Session.Model)
 	search := textinput.New()
 	search.Prompt = "› "
 	search.Placeholder = "Search models by name or ID"
@@ -73,94 +70,72 @@ func (m *model) openPicker(kind string) tea.Cmd {
 	search.SetVirtualCursor(true)
 	search.SetWidth(max(8, m.mainWidth-8))
 	search.Focus()
-	catalog := m.cfg.Session.Provider
-	if kind == "reasoning" {
-		catalog = "codex"
-		if m.cfg.Session.Provider == "compatible" && m.cfg.CompatibleReasoning {
-			catalog = "compatible"
-		}
-	} else if catalog != "codex" && catalog != "compatible" {
-		catalogs := m.modelCatalogProviders()
-		if len(catalogs) > 0 {
-			catalog = catalogs[0]
-		}
-	}
-	m.picker = &settingsPicker{kind: kind, search: search, provider: catalog}
+	m.picker = &settingsPicker{kind: kind, search: search}
 	m.input.Blur()
 	m.notice = ""
 	if m.cfg.Demo {
-		m.models = previewModelOptions()
+		m.models = previewModelOptions(m.cfg.Session.Provider)
 		return textinput.Blink
 	}
-	return m.loadPickerModels(catalog, true)
+	return m.loadPickerModels(true)
 }
 
-func (m *model) modelCatalogProviders() []string {
-	var providers []string
-	if m.cfg.Models != nil || m.cfg.Session.Provider == "codex" {
-		providers = append(providers, "codex")
-	}
-	if len(m.compatibleModels) > 0 || m.cfg.Session.Provider == "compatible" {
-		providers = append(providers, "compatible")
-	}
-	if len(providers) == 0 {
-		providers = append(providers, m.cfg.Session.Provider)
-	}
-	return providers
-}
-
-// rememberCompatibleModel keeps a compatible model in the switchable catalog.
-// Without a saved compatible_models entry, a session that used an unsaved model
-// would lose that model after switching providers.
-func (m *model) rememberCompatibleModel(model string) {
+// rememberModel keeps a model the session used in the picker, so a model
+// missing from enabled_models stays reachable after switching away from it.
+func (m *model) rememberModel(provider, model string) {
 	if model == "" {
 		return
 	}
-	for _, option := range m.compatibleModels {
-		if option.ID == model {
+	for _, option := range m.knownModels {
+		if option.Provider == provider && option.ID == model {
 			return
 		}
 	}
-	option := core.ModelOption{ID: model, Name: model, Description: "Current compatible model"}
-	m.compatibleModels = append(m.compatibleModels, option)
+	m.knownModels = append(m.knownModels, core.ModelOption{Provider: provider, ID: model, Name: model, Description: "Current model · not in enabled_models"})
 }
 
-func (m *model) catalogFetch(provider string) (func(context.Context) ([]core.ModelOption, error), error) {
-	switch provider {
-	case "codex":
-		if m.cfg.Models == nil {
-			return nil, fmt.Errorf("Codex model catalog unavailable")
-		}
-		return m.cfg.Models, nil
-	case "compatible":
-		options := append([]core.ModelOption(nil), m.compatibleModels...)
-		if m.cfg.Session.Provider == "compatible" && m.cfg.Session.Model != "" {
-			found := false
-			for _, option := range options {
-				if option.ID == m.cfg.Session.Model {
-					found = true
-					break
-				}
-			}
-			if !found {
-				option := core.ModelOption{ID: m.cfg.Session.Model, Name: m.cfg.Session.Model, Description: "Current compatible model · not in the saved list"}
-				options = append(options, option)
-			}
-		}
-		if len(options) == 0 {
-			return nil, fmt.Errorf("no saved compatible models; add IDs to compatible_models in your JARVIS config")
-		}
-		return func(context.Context) ([]core.ModelOption, error) { return options, nil }, nil
-	default:
-		if provider == m.cfg.Session.Provider && m.cfg.Session.Model != "" {
-			option := core.ModelOption{ID: m.cfg.Session.Model, Name: m.cfg.Session.Model, Description: "Current provider model"}
-			return func(context.Context) ([]core.ModelOption, error) { return []core.ModelOption{option}, nil }, nil
-		}
-		return nil, fmt.Errorf("model catalog unavailable for %s", provider)
+// catalogFetch lists every model the picker offers in one list: the enabled
+// and remembered models first, then the rest of Codex's live catalog, whose
+// efforts also fill in the enabled Codex models. A Codex catalog failure still
+// returns the other models alongside the error.
+func (m *model) catalogFetch() (func(context.Context) ([]core.ModelOption, error), error) {
+	known := append([]core.ModelOption(nil), m.knownModels...)
+	codex := m.cfg.Models
+	if codex == nil && len(known) == 0 {
+		return nil, fmt.Errorf("no models to choose from; add provider/<model-id> entries to enabled_models in your JARVIS config")
 	}
+	return func(ctx context.Context) ([]core.ModelOption, error) {
+		if codex == nil {
+			return known, nil
+		}
+		catalog, err := codex(ctx)
+		if err != nil {
+			return known, fmt.Errorf("Codex models: %w", err)
+		}
+		return mergeCatalog(known, catalog), nil
+	}, nil
 }
 
-func (m *model) loadPickerModels(provider string, blink bool) tea.Cmd {
+// mergeCatalog adds Codex's catalog to the known models. A known Codex model
+// takes the catalog's details and efforts but keeps its own starting effort.
+func mergeCatalog(known, catalog []core.ModelOption) []core.ModelOption {
+	options := append([]core.ModelOption(nil), known...)
+	for _, entry := range catalog {
+		entry.Provider = "codex"
+		if option := modelOption(options, "codex", entry.ID); option != nil && option.ID == entry.ID {
+			reasoning := option.DefaultReasoning
+			*option = entry
+			if reasoning != "" {
+				option.DefaultReasoning = reasoning
+			}
+			continue
+		}
+		options = append(options, entry)
+	}
+	return options
+}
+
+func (m *model) loadPickerModels(blink bool) tea.Cmd {
 	if m.picker == nil {
 		return nil
 	}
@@ -168,12 +143,11 @@ func (m *model) loadPickerModels(provider string, blink bool) tea.Cmd {
 		m.picker.cancel()
 		m.picker.cancel = nil
 	}
-	m.picker.provider = provider
 	m.pickerSequence++
 	m.picker.sequence = m.pickerSequence
 	m.picker.err = ""
 	m.models = nil
-	fetch, err := m.catalogFetch(provider)
+	fetch, err := m.catalogFetch()
 	if err != nil {
 		m.picker.loading = false
 		m.spinner.stop()
@@ -232,7 +206,9 @@ func (m *model) receiveModels(msg modelsMsg) tea.Cmd {
 	m.picker.cancel = nil
 	if msg.err != nil {
 		m.picker.err = "Could not load models: " + oneLine(msg.err.Error()) + ". Esc to use a direct command."
-		return nil
+		if len(msg.options) == 0 {
+			return nil
+		}
 	}
 	m.models = msg.options
 	m.picker.selected = 0
@@ -248,22 +224,23 @@ func (m *model) receiveModels(msg modelsMsg) tea.Cmd {
 }
 
 func (m *model) currentModelOption() *core.ModelOption {
-	return modelOption(m.models, m.cfg.Session.Model)
+	return modelOption(m.models, m.cfg.Session.Provider, m.cfg.Session.Model)
 }
 
-func modelOption(options []core.ModelOption, model string) *core.ModelOption {
+// modelOption finds a provider's model; an empty model is its default.
+func modelOption(options []core.ModelOption, provider, model string) *core.ModelOption {
 	for i := range options {
-		if options[i].ID == model || (model == "" && options[i].IsDefault) {
+		if options[i].Provider == provider && (options[i].ID == model || (model == "" && options[i].IsDefault)) {
 			return &options[i]
 		}
 	}
 	return nil
 }
 
-func previewModelOptions() []core.ModelOption {
+func previewModelOptions(provider string) []core.ModelOption {
 	return []core.ModelOption{
-		{ID: "preview-balanced", Name: "Balanced", Description: "Offline example · everyday coding and research", ReasoningEfforts: []string{"low", "medium", "high"}, DefaultReasoning: "medium", IsDefault: true},
-		{ID: "preview-deep", Name: "Deep reasoning", Description: "Offline example · demanding, extended tasks", ReasoningEfforts: []string{"medium", "high"}, DefaultReasoning: "high"},
+		{Provider: provider, ID: "preview-balanced", Name: "Balanced", Description: "Offline example · everyday coding and research", ReasoningEfforts: []string{"low", "medium", "high"}, DefaultReasoning: "medium", IsDefault: true},
+		{Provider: provider, ID: "preview-deep", Name: "Deep reasoning", Description: "Offline example · demanding, extended tasks", ReasoningEfforts: []string{"medium", "high"}, DefaultReasoning: "high"},
 	}
 }
 
@@ -280,8 +257,8 @@ func (m *model) cycleReasoning() tea.Cmd {
 		m.reasoningCyclePending++
 		return nil
 	}
-	if m.cfg.Demo && modelOption(m.models, m.cfg.Session.Model) == nil {
-		m.models = previewModelOptions()
+	if m.cfg.Demo && m.currentModelOption() == nil {
+		m.models = previewModelOptions(m.cfg.Session.Provider)
 	}
 	if m.cfg.Session.Provider == "compatible" && m.cfg.CompatibleReasoning {
 		if err := m.cycleReasoningBy(1); err != nil {
@@ -289,7 +266,7 @@ func (m *model) cycleReasoning() tea.Cmd {
 		}
 		return nil
 	}
-	if option := modelOption(m.models, m.cfg.Session.Model); option != nil {
+	if option := m.currentModelOption(); option != nil {
 		if len(option.ReasoningEfforts) == 0 {
 			m.notice = "No reasoning efforts are listed for this model. Use /reasoning LEVEL to set one directly."
 			return nil
@@ -319,6 +296,7 @@ func (m *model) cycleReasoning() tea.Cmd {
 		options, err := m.cfg.Models(ctx)
 		options = append([]core.ModelOption(nil), options...)
 		for i := range options {
+			options[i].Provider = "codex"
 			options[i].ReasoningEfforts = append([]string(nil), options[i].ReasoningEfforts...)
 		}
 		return reasoningCycleMsg{sequence: sequence, sessionID: sessionID, model: modelID, options: options, err: err}
@@ -343,7 +321,7 @@ func (m *model) receiveReasoningCycle(msg reasoningCycleMsg) tea.Cmd {
 		return nil
 	}
 	m.models = msg.options
-	if modelOption(m.models, m.cfg.Session.Model) == nil {
+	if m.currentModelOption() == nil {
 		m.notice = "Current model is missing from the reasoning catalog. Use /reasoning LEVEL to set one directly."
 		return nil
 	}
@@ -357,7 +335,7 @@ func (m *model) cycleReasoningBy(steps int) error {
 	var efforts []string
 	if m.cfg.Session.Provider == "compatible" && m.cfg.CompatibleReasoning {
 		efforts = config.OpenRouterReasoningEfforts()
-	} else if option := modelOption(m.models, m.cfg.Session.Model); option != nil {
+	} else if option := m.currentModelOption(); option != nil {
 		efforts = option.ReasoningEfforts
 	}
 	if len(efforts) == 0 {
@@ -425,7 +403,8 @@ func (m *model) pickerChoices() []settingChoice {
 			if option.IsDefault {
 				detail = "Provider default · " + detail
 			}
-			choices = append(choices, settingChoice{value: option.ID, label: option.ID, detail: detail, active: m.picker.provider == m.cfg.Session.Provider && (option.ID == m.cfg.Session.Model || (m.cfg.Session.Model == "" && option.IsDefault))})
+			id := config.JoinModel(option.Provider, option.ID)
+			choices = append(choices, settingChoice{value: id, label: id, detail: detail, active: option.Provider == m.cfg.Session.Provider && (option.ID == m.cfg.Session.Model || (m.cfg.Session.Model == "" && option.IsDefault))})
 		}
 	}
 	query := strings.ToLower(strings.TrimSpace(m.picker.search.Value()))
@@ -444,34 +423,20 @@ func (m *model) updatePicker(msg tea.Msg) tea.Cmd {
 			m.closePicker()
 			return m.input.Focus()
 		case "tab", "shift+tab":
+			if m.picker.kind != "reasoning" {
+				return nil
+			}
 			m.picker.search.Reset()
 			m.picker.selected = 0
-			if m.picker.kind == "reasoning" {
-				m.picker.kind = "model"
-				m.picker.search.Placeholder = "Search models by name or ID"
-				for i, choice := range m.pickerChoices() {
-					if choice.active {
-						m.picker.selected = i
-						break
-					}
-				}
-				return nil
-			}
-			providers := m.modelCatalogProviders()
-			if len(providers) < 2 {
-				return nil
-			}
-			index := slices.Index(providers, m.picker.provider)
-			if index < 0 {
-				index = 0
-			}
-			delta := 1
-			if key.String() == "shift+tab" {
-				delta = -1
-			}
-			provider := providers[(index+delta+len(providers))%len(providers)]
+			m.picker.kind = "model"
 			m.picker.search.Placeholder = "Search models by name or ID"
-			return m.loadPickerModels(provider, false)
+			for i, choice := range m.pickerChoices() {
+				if choice.active {
+					m.picker.selected = i
+					break
+				}
+			}
+			return nil
 		case "up", "ctrl+p":
 			m.picker.selected = max(0, m.picker.selected-1)
 			return nil
@@ -496,7 +461,7 @@ func (m *model) updatePicker(msg tea.Msg) tea.Cmd {
 			choice := choices[min(m.picker.selected, len(choices)-1)]
 			provider, model, reasoning := m.cfg.Session.Provider, m.cfg.Session.Model, m.cfg.Session.Reasoning
 			if m.picker.kind == "model" {
-				provider, model = m.picker.provider, choice.value
+				provider, model = config.SplitModel(choice.value)
 			} else {
 				reasoning = choice.value
 			}
@@ -531,7 +496,7 @@ func (m *model) settingsCommand(prompt string) (bool, tea.Cmd) {
 		return true, cmd
 	}
 	if len(parts) != 2 {
-		m.notice = "Use /model ID or /reasoning LEVEL|default."
+		m.notice = "Use /model provider/ID or /reasoning LEVEL|default."
 		return true, nil
 	}
 	if kind == "reasoning" && !m.reasoningSettings() {
@@ -540,7 +505,12 @@ func (m *model) settingsCommand(prompt string) (bool, tea.Cmd) {
 	}
 	provider, model, reasoning := m.cfg.Session.Provider, m.cfg.Session.Model, m.cfg.Session.Reasoning
 	if kind == "model" {
+		// provider/ID switches provider; an ID without a known provider
+		// prefix is a model of the current provider.
 		model = parts[1]
+		if prefix, id := config.SplitModel(parts[1]); slices.Contains(config.Providers, prefix) {
+			provider, model = prefix, id
+		}
 	} else {
 		reasoning = parts[1]
 		if reasoning == "default" {
@@ -567,23 +537,16 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 		// can be restored below from its own catalog entry.
 		reasoning = ""
 	}
-	if provider == "compatible" && (modelChanged || providerChanged) {
+	if option := modelOption(m.cfg.EnabledModels, provider, model); option != nil && option.DefaultReasoning != "" && (modelChanged || providerChanged) {
+		// An enabled model starts at the effort its entry gives.
+		reasoning = option.DefaultReasoning
+	} else if provider == "compatible" && (modelChanged || providerChanged) {
 		// Compatible model support is not in the catalog, so do not carry a
-		// potentially unsupported effort to a different model; start at the
-		// effort its compatible_models entry gives, if any.
+		// potentially unsupported effort to a different model.
 		reasoning = ""
-		for _, option := range m.compatibleModels {
-			if option.ID == model {
-				reasoning = option.DefaultReasoning
-				break
-			}
-		}
 	} else if provider == "codex" && (modelChanged || providerChanged) {
-		for _, option := range m.models {
-			if option.ID == model && (reasoning == "" || (len(option.ReasoningEfforts) > 0 && !slices.Contains(option.ReasoningEfforts, reasoning))) {
-				reasoning, reset = option.DefaultReasoning, true
-				break
-			}
+		if option := modelOption(m.models, provider, model); option != nil && option.ID == model && (reasoning == "" || (len(option.ReasoningEfforts) > 0 && !slices.Contains(option.ReasoningEfforts, reasoning))) {
+			reasoning, reset = option.DefaultReasoning, true
 		}
 	}
 	next := cloneSession(m.cfg.Session)
@@ -600,8 +563,8 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 	m.invalidateReasoningCycle()
 	newConversation := next.ID != m.cfg.Session.ID
 	*m.cfg.Session = *next
-	if provider == "compatible" && !m.cfg.Demo {
-		m.rememberCompatibleModel(model)
+	if !m.cfg.Demo {
+		m.rememberModel(provider, model)
 	}
 	if newConversation {
 		m.entries = nil
@@ -609,7 +572,7 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 		m.refresh(true)
 		m.notice = "New " + m.modelProviderLabel(provider) + " conversation · " + model + ". Previous conversation saved."
 	} else {
-		m.notice = "Next turn: " + model
+		m.notice = "Next turn: " + config.JoinModel(provider, model)
 		if m.reasoningSettingsFor(provider) {
 			effort := reasoning
 			if effort == "" {
@@ -623,6 +586,32 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 	}
 	if m.cfg.Demo {
 		m.notice = "Preview only · " + m.notice
+	}
+	return nil
+}
+
+// cycleModel switches to the enabled model after the current one, as
+// shift+tab cycles reasoning efforts.
+func (m *model) cycleModel() tea.Cmd {
+	if m.busy {
+		m.notice = "Draft kept. Wait for this task, or Esc to interrupt before changing settings."
+		return nil
+	}
+	enabled := m.cfg.EnabledModels
+	if len(enabled) == 0 {
+		m.notice = "No enabled models to cycle. Add provider/<model-id> entries to enabled_models in your JARVIS config."
+		return nil
+	}
+	current := slices.IndexFunc(enabled, func(option core.ModelOption) bool {
+		return option.Provider == m.cfg.Session.Provider && option.ID == m.cfg.Session.Model
+	})
+	if current >= 0 && len(enabled) == 1 {
+		m.notice = "This is the only enabled model."
+		return nil
+	}
+	next := enabled[(current+1)%len(enabled)]
+	if err := m.applySettings(next.Provider, next.ID, m.cfg.Session.Reasoning); err != nil {
+		m.notice = "Settings unchanged: " + oneLine(err.Error())
 	}
 	return nil
 }
@@ -643,7 +632,7 @@ func oneLine(value string) string { return strings.Join(strings.Fields(sanitize(
 func (m *model) pickerView() string {
 	p := m.picker
 	width := m.mainWidth
-	title, subtitle := "CHOOSE A MODEL · "+strings.ToUpper(m.modelProviderLabel(p.provider)), "Search · Tab switches provider · API changes start fresh"
+	title, subtitle := "CHOOSE A MODEL", "Search · ctrl+n cycles enabled models · API changes start fresh"
 	if p.kind == "reasoning" {
 		name := m.cfg.Session.Model
 		if option := m.currentModelOption(); option != nil {

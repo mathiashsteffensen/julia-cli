@@ -93,7 +93,7 @@ func (c *Codex) Models(ctx context.Context) ([]core.ModelOption, error) {
 				continue
 			}
 			seenModels[item.Model] = true
-			model := core.ModelOption{ID: item.Model, Name: item.Name, Description: item.Description, DefaultReasoning: item.DefaultReasoning, IsDefault: item.IsDefault}
+			model := core.ModelOption{Provider: "codex", ID: item.Model, Name: item.Name, Description: item.Description, DefaultReasoning: item.DefaultReasoning, IsDefault: item.IsDefault}
 			if strings.TrimSpace(model.Name) == "" {
 				model.Name = model.ID
 			}

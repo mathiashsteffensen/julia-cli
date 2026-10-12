@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -137,23 +138,31 @@ func TestShiftTabReportsCatalogFailureWithoutChangingSettings(t *testing.T) {
 	}
 }
 
-func TestPickerSwitchesBetweenCodexAndSavedCompatibleModels(t *testing.T) {
+func TestPickerListsEveryModelInOneList(t *testing.T) {
 	cfg := settingsConfig()
-	cfg.CompatibleModels = []core.ModelOption{
-		{ID: "vendor/or-model-a", Name: "Compatible A", Description: "Saved model"},
-		{ID: "vendor/or-model-b", Name: "Compatible B"},
+	cfg.EnabledModels = []core.ModelOption{
+		{Provider: "compatible", ID: "vendor/or-model-a", Name: "Compatible A", Description: "Saved model"},
+		{Provider: "codex", ID: "next", Name: "next", DefaultReasoning: "low"},
 	}
 	m := testModel(t, cfg)
 	fetchPicker(t, m, m.openPicker("model"))
-	if m.picker.provider != "codex" || len(m.pickerChoices()) != 2 {
-		t.Fatal("picker did not open the live Codex catalog")
+	var labels []string
+	for _, choice := range m.pickerChoices() {
+		labels = append(labels, choice.label)
+	}
+	if want := []string{"compatible/vendor/or-model-a", "codex/next", "codex/current"}; !slices.Equal(labels, want) {
+		t.Fatalf("picker lists %v, want %v", labels, want)
+	}
+	if option := modelOption(m.models, "codex", "next"); option == nil || len(option.ReasoningEfforts) != 2 || option.DefaultReasoning != "low" {
+		t.Fatalf("an enabled Codex model did not merge with the catalog: %#v", option)
 	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	fetchPicker(t, m, cmd)
-	if m.picker.provider != "compatible" || len(m.pickerChoices()) != 2 {
-		t.Fatal("Tab did not switch to saved compatible models")
+	if cmd != nil || m.picker.kind != "model" {
+		t.Fatal("Tab still switches catalogs in the model picker")
 	}
 	m.input.SetValue("Keep this draft")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.picker != nil || m.cfg.Session.Provider != "compatible" || m.cfg.Session.Model != "vendor/or-model-a" || m.cfg.Session.Reasoning != "" {
 		t.Fatal("Compatible selection did not update provider/model or clear Codex reasoning")
@@ -162,21 +171,43 @@ func TestPickerSwitchesBetweenCodexAndSavedCompatibleModels(t *testing.T) {
 		t.Fatal("provider selection discarded the draft")
 	}
 	fetchPicker(t, m, m.openPicker("model"))
-	_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	fetchPicker(t, m, cmd)
-	if m.picker.provider != "codex" || len(m.pickerChoices()) != 2 {
-		t.Fatal("Tab did not switch back to Codex models")
-	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.cfg.Session.Provider != "codex" || m.cfg.Session.Model != "current" || m.cfg.Session.Reasoning != "medium" {
-		t.Fatal("Codex selection did not restore its model and default effort")
+		t.Fatal("Codex selection did not restore its model and default effort", m.cfg.Session)
+	}
+}
+
+func TestCtrlNCyclesEnabledModels(t *testing.T) {
+	cfg := settingsConfig()
+	cfg.CompatibleReasoning = true
+	cfg.EnabledModels = []core.ModelOption{
+		{Provider: "codex", ID: "current"},
+		{Provider: "compatible", ID: "vendor/a", DefaultReasoning: "high"},
+		{Provider: "codex", ID: "next"},
+	}
+	m := testModel(t, cfg)
+	var seen []string
+	for range 4 {
+		m.Update(tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
+		seen = append(seen, m.cfg.Session.Provider+"/"+m.cfg.Session.Model+"@"+m.cfg.Session.Reasoning)
+	}
+	if want := []string{"compatible/vendor/a@high", "codex/next@", "codex/current@", "compatible/vendor/a@high"}; !slices.Equal(seen, want) {
+		t.Fatalf("ctrl+n cycled %v, want %v", seen, want)
+	}
+
+	m = testModel(t, settingsConfig())
+	m.Update(tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
+	if m.cfg.Session.Model != "current" || !strings.Contains(m.notice, "enabled_models") {
+		t.Fatal("ctrl+n without enabled models changed settings or said nothing", m.notice)
 	}
 }
 
 func TestCompatibleModelStartsAtItsConfiguredReasoning(t *testing.T) {
 	cfg := settingsConfig()
 	cfg.CompatibleReasoning = true
-	cfg.CompatibleModels = []core.ModelOption{{ID: "vendor/a", Name: "vendor/a", DefaultReasoning: "high"}, {ID: "vendor/b", Name: "vendor/b"}}
+	cfg.EnabledModels = []core.ModelOption{{Provider: "compatible", ID: "vendor/a", Name: "vendor/a", DefaultReasoning: "high"}, {Provider: "compatible", ID: "vendor/b", Name: "vendor/b"}}
 	m := testModel(t, cfg)
 	if err := m.applySettings("compatible", "vendor/a", ""); err != nil {
 		t.Fatal(err)
@@ -203,7 +234,7 @@ func TestCompatibleReasoningChoicesAreGenericAndUnverified(t *testing.T) {
 	cfg := settingsConfig()
 	cfg.Session.Provider, cfg.Session.Model, cfg.Session.Reasoning = "compatible", modelID, "high"
 	cfg.CompatibleReasoning = true
-	cfg.CompatibleModels = []core.ModelOption{{ID: modelID, Name: modelID}}
+	cfg.EnabledModels = []core.ModelOption{{Provider: "compatible", ID: modelID, Name: modelID}}
 	m := testModel(t, cfg)
 	fetchPicker(t, m, m.openPicker("reasoning"))
 
@@ -241,7 +272,7 @@ func TestPickerSearchAndApplySelectSupportedEffort(t *testing.T) {
 		m.input.SetValue("A draft for the selected model")
 		fetchPicker(t, m, m.openPicker("model"))
 		m.Update(tea.PasteMsg{Content: "fast"})
-		if choices := m.pickerChoices(); len(choices) != 1 || choices[0].value != "next" {
+		if choices := m.pickerChoices(); len(choices) != 1 || choices[0].value != "codex/next" {
 			t.Fatalf("search failed: %#v", choices)
 		}
 		m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -431,7 +462,7 @@ func TestNextTurnReceivesChosenSettings(t *testing.T) {
 	b := settingsBackend{received: make(chan core.Session, 1)}
 	cfg.Backend = b
 	m := testModel(t, cfg)
-	m.input.SetValue("/model next")
+	m.input.SetValue("/model codex/next")
 	m.submit()
 	m.input.SetValue("/reasoning medium")
 	m.submit()

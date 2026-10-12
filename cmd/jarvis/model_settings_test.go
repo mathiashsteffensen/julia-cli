@@ -124,8 +124,8 @@ func TestIncompatibleModelSwitchStartsFreshAndPreservesPreviousSession(t *testin
 
 func TestCompatibleCatalogRequiresItsConfiguredAPIKey(t *testing.T) {
 	cfg := config.Default()
-	cfg.Provider, cfg.Model, cfg.BaseURL = "compatible", "provider/model", "https://openrouter.ai/api/v1"
-	cfg.APIKeyEnv, cfg.CompatibleModels = "OPENROUTER_API_KEY", []config.ModelEntry{{ID: "provider/model"}}
+	cfg.Provider, cfg.Model, cfg.CompatibleBaseURL = "compatible", "provider/model", "https://openrouter.ai/api/v1"
+	cfg.APIKeyEnv, cfg.EnabledModels = "OPENROUTER_API_KEY", []config.ModelEntry{{ID: "compatible/provider/model"}}
 	t.Setenv("OPENROUTER_API_KEY", "")
 	if _, _, err := newBackend(context.Background(), cfg, nil); err == nil || !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
 		t.Fatal("OpenRouter startup did not report its missing key", err)

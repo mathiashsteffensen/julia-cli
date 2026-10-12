@@ -22,21 +22,29 @@ func TestConfigRejectsUnknownAndUnsafeModes(t *testing.T) {
 	}
 }
 
-func TestCompatibleModelConfiguration(t *testing.T) {
+func TestEnabledModelConfiguration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	data := `{"compatible_models":["anthropic/claude-sonnet", "openai/gpt-model"]}`
+	data := `{"enabled_models":["anthropic/claude-sonnet", "compatible/openai/gpt-model", "codex/gpt-6-astra"],"compatible_base_url":"https://openrouter.ai/api/v1"}`
 	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
-	if err != nil || len(cfg.CompatibleModels) != 2 || cfg.CompatibleModels[1].ID != "openai/gpt-model" {
-		t.Fatalf("saved compatible models not loaded: %#v %v", cfg.CompatibleModels, err)
+	if err != nil || len(cfg.EnabledModels) != 3 || cfg.EnabledModels[1].ID != "compatible/openai/gpt-model" || !cfg.Enables("compatible") || cfg.Enables("google") {
+		t.Fatalf("enabled models not loaded: %#v %v", cfg.EnabledModels, err)
 	}
-	for _, models := range [][]ModelEntry{{{ID: ""}}, {{ID: " model"}}, {{ID: "bad\nmodel"}}, {{ID: "duplicate"}, {ID: "duplicate"}}} {
+	for _, models := range [][]ModelEntry{{{ID: ""}}, {{ID: "codex"}}, {{ID: "vendor/model"}}, {{ID: "openai/ model"}}, {{ID: "openai/bad\nmodel"}}, {{ID: "openai/m"}, {ID: "openai/m"}}, {{ID: "compatible/" + CompatibleDecisionsModel}}} {
 		cfg := Default()
-		cfg.CompatibleModels = models
+		cfg.EnabledModels, cfg.CompatibleBaseURL = models, "https://openrouter.ai/api/v1"
 		if err := cfg.Validate(); err == nil {
-			t.Fatalf("accepted invalid saved models %#v", models)
+			t.Fatalf("accepted invalid enabled models %#v", models)
+		}
+	}
+}
+
+func TestOldModelKeysAreRejected(t *testing.T) {
+	for _, data := range []string{`{"provider":"codex"}`, `{"compatible_models":["vendor/m"]}`, `{"base_url":"https://openrouter.ai/api/v1"}`, `{"model":"gpt-6-astra"}`} {
+		if _, err := Load(writeConfig(t, data)); err == nil {
+			t.Fatalf("accepted %s", data)
 		}
 	}
 }
@@ -44,7 +52,7 @@ func TestCompatibleModelConfiguration(t *testing.T) {
 func TestModelAndReasoningConfiguration(t *testing.T) {
 	for _, effort := range []string{"", "none", "minimal", "medium", "xhigh", "future-effort_v2"} {
 		cfg := Default()
-		cfg.Model, cfg.Reasoning = "provider/future-model", effort
+		cfg.Model, cfg.Reasoning = "future-model", effort
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("valid model/effort %q: %v", effort, err)
 		}
@@ -58,7 +66,7 @@ func TestModelAndReasoningConfiguration(t *testing.T) {
 	}
 	for _, provider := range []string{"openai", "anthropic", "google", "compatible"} {
 		cfg := Default()
-		cfg.Provider, cfg.Reasoning = provider, "medium"
+		cfg.Provider, cfg.Model, cfg.Reasoning = provider, "vendor-model", "medium"
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("silently accepted unmapped reasoning for %s", provider)
 		}
@@ -68,11 +76,11 @@ func TestModelAndReasoningConfiguration(t *testing.T) {
 		}
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"model":"gpt-6-astra","reasoning":"medium"}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"model":"codex/gpt-6-astra","reasoning":"medium"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
-	if err != nil || cfg.Model != "gpt-6-astra" || cfg.Reasoning != "medium" {
+	if err != nil || cfg.Provider != "codex" || cfg.Model != "gpt-6-astra" || cfg.Reasoning != "medium" {
 		t.Fatalf("settings not loaded: %#v %v", cfg, err)
 	}
 }
@@ -141,7 +149,7 @@ func TestLegacyContextBytesLoadsButIsIgnored(t *testing.T) {
 		t.Fatalf("context_tokens must win over legacy context_bytes: %d %v", cfg.ContextTokens, err)
 	}
 	// A full legacy file as 'config init' used to write it.
-	legacy := `{"provider":"codex","mode":"auto","codex_binary":"codex","max_steps":256,"context_bytes":160000,"timeout":"4h"}`
+	legacy := `{"model":"codex","mode":"auto","codex_binary":"codex","max_steps":256,"context_bytes":160000,"timeout":"4h"}`
 	cfg, err = Load(writeConfig(t, legacy))
 	if err != nil || cfg.ContextTokens != 256000 || cfg.MaxSteps != 256 {
 		t.Fatalf("legacy config: %+v %v", cfg, err)
@@ -199,7 +207,7 @@ func TestBrowserConfiguration(t *testing.T) {
 		}
 	}
 	// A config written before the key existed still loads.
-	if cfg, err := Load(writeConfig(t, `{"provider":"codex","mode":"auto","max_steps":256,"timeout":"4h"}`)); err != nil || cfg.Browser != "" {
+	if cfg, err := Load(writeConfig(t, `{"model":"codex","mode":"auto","max_steps":256,"timeout":"4h"}`)); err != nil || cfg.Browser != "" {
 		t.Fatalf("config without browser: %+v %v", cfg, err)
 	}
 }
@@ -211,7 +219,7 @@ func TestReviewerModelConfiguration(t *testing.T) {
 		{"compatible/" + CompatibleDecisionsModel, "compatible", CompatibleDecisionsModel},
 	} {
 		cfg := Default()
-		cfg.ReviewerModel, cfg.BaseURL = tc.value, "https://openrouter.ai/api/v1"
+		cfg.ReviewerModel, cfg.CompatibleBaseURL = tc.value, "https://openrouter.ai/api/v1"
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("rejected %q: %v", tc.value, err)
 		}
@@ -221,7 +229,7 @@ func TestReviewerModelConfiguration(t *testing.T) {
 	}
 	for _, value := range []string{"gpt-6-luna", "codex/", "openai/gpt-5", " codex/gpt-6-luna", "codex/bad\nmodel"} {
 		cfg := Default()
-		cfg.ReviewerModel, cfg.BaseURL = value, "https://openrouter.ai/api/v1"
+		cfg.ReviewerModel, cfg.CompatibleBaseURL = value, "https://openrouter.ai/api/v1"
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("accepted reviewer_model %q", value)
 		}
@@ -229,15 +237,15 @@ func TestReviewerModelConfiguration(t *testing.T) {
 	cfg := Default()
 	cfg.ReviewerModel = "compatible/" + CompatibleDecisionsModel
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("accepted a compatible reviewer without base_url")
+		t.Fatal("accepted a compatible reviewer without compatible_base_url")
 	}
 }
 
 func TestModelsAreIDsOrObjectsWithReasoning(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	data := `{"provider":"compatible","base_url":"https://openrouter.ai/api/v1",
-		"model":{"id":"mistral/mistral-large-4-0","reasoning":"high"},
-		"compatible_models":["deepseek/deepseek-v4.1-flash",{"id":"mistral/mistral-large-4-0","reasoning":"high"},{"id":"vendor/plain"}]}`
+	data := `{"compatible_base_url":"https://openrouter.ai/api/v1",
+		"model":{"id":"compatible/mistral/mistral-large-4-0","reasoning":"high"},
+		"enabled_models":["compatible/deepseek/deepseek-v4.1-flash",{"id":"compatible/mistral/mistral-large-4-0","reasoning":"high"},{"id":"codex/gpt-6-astra","reasoning":"xhigh"}]}`
 	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -245,20 +253,23 @@ func TestModelsAreIDsOrObjectsWithReasoning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Model != "mistral/mistral-large-4-0" || cfg.ModelReasoning != "high" {
-		t.Fatalf("model object not loaded: %q %q", cfg.Model, cfg.ModelReasoning)
+	if cfg.Provider != "compatible" || cfg.Model != "mistral/mistral-large-4-0" || cfg.ModelReasoning != "high" {
+		t.Fatalf("model object not loaded: %q %q %q", cfg.Provider, cfg.Model, cfg.ModelReasoning)
 	}
-	want := []ModelEntry{{ID: "deepseek/deepseek-v4.1-flash"}, {ID: "mistral/mistral-large-4-0", Reasoning: "high"}, {ID: "vendor/plain"}}
-	if len(cfg.CompatibleModels) != len(want) {
-		t.Fatalf("compatible_models = %#v", cfg.CompatibleModels)
+	want := []ModelEntry{{ID: "compatible/deepseek/deepseek-v4.1-flash"}, {ID: "compatible/mistral/mistral-large-4-0", Reasoning: "high"}, {ID: "codex/gpt-6-astra", Reasoning: "xhigh"}}
+	if len(cfg.EnabledModels) != len(want) {
+		t.Fatalf("enabled_models = %#v", cfg.EnabledModels)
 	}
 	for i := range want {
-		if cfg.CompatibleModels[i] != want[i] {
-			t.Fatalf("compatible_models[%d] = %#v, want %#v", i, cfg.CompatibleModels[i], want[i])
+		if cfg.EnabledModels[i] != want[i] {
+			t.Fatalf("enabled_models[%d] = %#v, want %#v", i, cfg.EnabledModels[i], want[i])
 		}
 	}
 	if got := cfg.ReasoningFor("compatible", "deepseek/deepseek-v4.1-flash"); got != "" {
 		t.Fatal("a bare model ID got reasoning", got)
+	}
+	if got := cfg.ReasoningFor("codex", "gpt-6-astra"); got != "xhigh" {
+		t.Fatal("an enabled Codex model lost its reasoning", got)
 	}
 	if got := cfg.ReasoningFor("codex", "mistral/mistral-large-4-0"); got != "" {
 		t.Fatal("the model's reasoning leaked to another provider", got)
@@ -270,10 +281,10 @@ func TestModelsAreIDsOrObjectsWithReasoning(t *testing.T) {
 		t.Fatal(err)
 	}
 	var again Config
-	if err := json.Unmarshal(encoded, &again); err != nil || again.Model != cfg.Model || again.ModelReasoning != "high" || len(again.CompatibleModels) != 3 {
+	if err := json.Unmarshal(encoded, &again); err != nil || again.Provider != "compatible" || again.Model != cfg.Model || again.ModelReasoning != "high" || len(again.EnabledModels) != 3 {
 		t.Fatalf("round trip lost models: %s %v", encoded, err)
 	}
-	if !strings.Contains(string(encoded), `"deepseek/deepseek-v4.1-flash"`) {
+	if !strings.Contains(string(encoded), `"compatible/deepseek/deepseek-v4.1-flash"`) {
 		t.Fatalf("a bare model ID was not written as a string: %s", encoded)
 	}
 }
@@ -281,11 +292,12 @@ func TestModelsAreIDsOrObjectsWithReasoning(t *testing.T) {
 func TestModelObjectsAreChecked(t *testing.T) {
 	for _, data := range []string{
 		`{"model":{"reasoning":"high"}}`,
-		`{"model":{"id":"m","effort":"high"}}`,
+		`{"model":{"id":"codex/m","effort":"high"}}`,
 		`{"model":42}`,
-		`{"compatible_models":[{"id":"m","reasoning":"high"}]}`,
-		`{"provider":"compatible","base_url":"https://openrouter.ai/api/v1","compatible_models":[{"id":"m","reasoning":"turbo"}]}`,
-		`{"provider":"openai","model":{"id":"m","reasoning":"high"}}`,
+		`{"model":"openai"}`,
+		`{"enabled_models":[{"id":"compatible/m","reasoning":"high"}]}`,
+		`{"compatible_base_url":"https://openrouter.ai/api/v1","enabled_models":[{"id":"compatible/m","reasoning":"turbo"}]}`,
+		`{"model":{"id":"openai/m","reasoning":"high"}}`,
 	} {
 		p := filepath.Join(t.TempDir(), "config.json")
 		if err := os.WriteFile(p, []byte(data), 0600); err != nil {
@@ -300,17 +312,17 @@ func TestModelObjectsAreChecked(t *testing.T) {
 func TestModelReasoningBeatsRememberedReasoning(t *testing.T) {
 	remembered := Preferences{Reasoning: map[string]string{"compatible": "low"}}
 	cfg := Default()
-	cfg.Provider, cfg.BaseURL = "compatible", "https://openrouter.ai/api/v1"
+	cfg.Provider, cfg.CompatibleBaseURL = "compatible", "https://openrouter.ai/api/v1"
 	cfg.Model, cfg.ModelReasoning = "vendor/a", "high"
 	cfg.ApplyStartingReasoning(remembered)
 	if cfg.Reasoning != "high" {
 		t.Fatal("the model's reasoning did not win", cfg.Reasoning)
 	}
 	cfg.Model, cfg.ModelReasoning, cfg.Reasoning = "vendor/b", "", ""
-	cfg.CompatibleModels = []ModelEntry{{ID: "vendor/b", Reasoning: "max"}}
+	cfg.EnabledModels = []ModelEntry{{ID: "compatible/vendor/b", Reasoning: "max"}}
 	cfg.ApplyStartingReasoning(remembered)
 	if cfg.Reasoning != "max" {
-		t.Fatal("the compatible_models entry's reasoning did not apply", cfg.Reasoning)
+		t.Fatal("the enabled_models entry's reasoning did not apply", cfg.Reasoning)
 	}
 	cfg.Model, cfg.Reasoning = "vendor/c", ""
 	cfg.ApplyStartingReasoning(remembered)

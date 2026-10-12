@@ -27,10 +27,15 @@ func newBackend(ctx context.Context, cfg config.Config, checkpoint func(*core.Se
 		return backend, approvalReviewer(cfg), nil
 	}
 	key := os.Getenv(cfg.KeyEnv())
-	if key == "" && (cfg.Provider != "compatible" || len(cfg.CompatibleModels) > 0) {
+	if key == "" && (cfg.Provider != "compatible" || cfg.Enables("compatible")) {
 		return nil, nil, fmt.Errorf("set %s for the %s provider", cfg.KeyEnv(), cfg.Provider)
 	}
-	backend, err := provider.NewAPI(ctx, provider.APIConfig{Provider: cfg.Provider, Model: cfg.Model, BaseURL: cfg.BaseURL, APIKey: key, Reasoning: cfg.Reasoning, MaxSteps: cfg.MaxSteps, ContextTokens: cfg.ContextTokens, Checkpoint: checkpoint})
+	// Only the compatible provider has a configurable endpoint.
+	baseURL := ""
+	if cfg.Provider == "compatible" {
+		baseURL = cfg.CompatibleBaseURL
+	}
+	backend, err := provider.NewAPI(ctx, provider.APIConfig{Provider: cfg.Provider, Model: cfg.Model, BaseURL: baseURL, APIKey: key, Reasoning: cfg.Reasoning, MaxSteps: cfg.MaxSteps, ContextTokens: cfg.ContextTokens, Checkpoint: checkpoint})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -68,7 +73,7 @@ func compatibleModelApprovalReviewer(cfg config.Config, model string) core.Appro
 		return provider.ReviewDecisionAPI(ctx, provider.APIConfig{
 			Provider: "compatible",
 			Model:    model,
-			BaseURL:  cfg.BaseURL,
+			BaseURL:  cfg.CompatibleBaseURL,
 			APIKey:   key,
 		}, approval)
 	}

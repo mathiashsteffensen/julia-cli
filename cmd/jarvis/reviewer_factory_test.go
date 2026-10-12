@@ -101,7 +101,7 @@ func TestDoctorShowsTheConfiguredReviewer(t *testing.T) {
 	if got := reviewerSummary(cfg); !strings.Contains(got, "Codex "+provider.CodexReviewerModel) {
 		t.Fatal(got)
 	}
-	cfg.ReviewerModel, cfg.BaseURL = "compatible/"+config.CompatibleDecisionsModel, "https://openrouter.ai/api/v1"
+	cfg.ReviewerModel, cfg.CompatibleBaseURL = "compatible/"+config.CompatibleDecisionsModel, "https://openrouter.ai/api/v1"
 	if got := reviewerSummary(cfg); !strings.Contains(got, "Compatible "+config.CompatibleDecisionsModel) || strings.Contains(got, "Codex") {
 		t.Fatal(got)
 	}
@@ -144,7 +144,7 @@ func TestConfiguredCompatibleModelReviewsWithProbability(t *testing.T) {
 	binary, _ := reviewerProtocolFixture(t)
 	cfg := reviewerFactoryConfig(t, "codex", binary)
 	cfg.ReviewerModel = "compatible/" + config.CompatibleDecisionsModel
-	cfg.BaseURL, cfg.APIKeyEnv = server.URL+"/api/v1", "REVIEWER_API_KEY"
+	cfg.CompatibleBaseURL, cfg.APIKeyEnv = server.URL+"/api/v1", "REVIEWER_API_KEY"
 	t.Setenv(cfg.APIKeyEnv, "reviewer-secret")
 	backend, review, err := newBackend(context.Background(), cfg, nil)
 	if err != nil || backend.Name() != "codex" {
@@ -186,7 +186,7 @@ func reviewerFactoryConfig(t *testing.T, name, binary string) config.Config {
 	if name == "codex" {
 		cfg.Reasoning = "high"
 	} else {
-		cfg.BaseURL = "https://unused.invalid"
+		cfg.CompatibleBaseURL = "https://unused.invalid"
 		t.Setenv(cfg.KeyEnv(), "fixture-key-never-sent")
 	}
 	return cfg

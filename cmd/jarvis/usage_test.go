@@ -305,7 +305,7 @@ func TestCLIStartsWithLegacyContextBytesAndValidatesContextTokens(t *testing.T) 
 	for _, tt := range []struct {
 		name, config, wantError string
 	}{
-		{"legacy config from config init", `{"provider":"codex","mode":"auto","codex_binary":"codex","max_steps":256,"context_bytes":160000,"timeout":"4h","skill_paths":[]}`, ""},
+		{"legacy config from config init", `{"model":"codex","mode":"auto","codex_binary":"codex","max_steps":256,"context_bytes":160000,"timeout":"4h","skill_paths":[]}`, ""},
 		{"legacy value is not validated", `{"context_bytes":5,"skill_paths":[]}`, ""},
 		{"new key", `{"context_tokens":128000,"skill_paths":[]}`, ""},
 		{"window too small", `{"context_tokens":1000,"skill_paths":[]}`, "context_tokens must be at least"},

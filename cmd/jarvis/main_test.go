@@ -72,7 +72,7 @@ func TestRuntimeRefreshesInstructionsWithoutExpandingToolAccess(t *testing.T) {
 func TestCLIReasoningAndModelOverridesConfigurationWithoutProviderCalls(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(`{"provider":"codex","model":"gpt-6-astra","reasoning":"medium","skill_paths":[]}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"model":"codex/gpt-6-astra","reasoning":"medium","skill_paths":[]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -91,11 +91,13 @@ func TestCLIReasoningAndModelOverridesConfigurationWithoutProviderCalls(t *testi
 	}{
 		{"configured defaults", nil, ""},
 		{"reasoning override", []string{"--reasoning", "high"}, ""},
-		{"future model", []string{"--model", "provider/future-model"}, ""},
+		{"future model", []string{"--model", "codex/future-model"}, ""},
+		{"bare codex model", []string{"--model", "codex"}, ""},
+		{"unknown provider", []string{"--model", "vendor/model"}, "provider/<model-id>"},
 		{"invalid effort override", []string{"--reasoning", "bad effort"}, "reasoning must"},
-		{"invalid model override", []string{"--model", " leading-space"}, "model must"},
-		{"API cannot ignore configured effort", []string{"--provider", "compatible"}, "Codex and OpenRouter-compatible sessions only"},
-		{"explicit empty clears configured effort", []string{"--provider", "compatible", "--reasoning="}, ""},
+		{"invalid model override", []string{"--model", "codex/ leading-space"}, "model IDs must"},
+		{"API cannot ignore configured effort", []string{"--model", "compatible/vendor/model", "--compatible-base-url", "http://127.0.0.1:1/v1"}, "Codex and OpenRouter-compatible sessions only"},
+		{"explicit empty clears configured effort", []string{"--model", "compatible/vendor/model", "--compatible-base-url", "http://127.0.0.1:1/v1", "--reasoning="}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			os.Args = append([]string{"jarvis", "--config", path, "--dir", dir, "--snapshot", "40"}, tc.flags...)

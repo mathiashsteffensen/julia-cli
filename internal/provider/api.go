@@ -76,7 +76,7 @@ func NewAPI(ctx context.Context, c APIConfig) (*API, error) {
 		p, err = openai.New(opts...)
 	case "compatible":
 		if c.BaseURL == "" {
-			return nil, errors.New("compatible provider requires base_url")
+			return nil, errors.New("compatible provider requires compatible_base_url")
 		}
 		p, err = openaicompat.New(openaicompat.WithAPIKey(c.APIKey), openaicompat.WithBaseURL(c.BaseURL), openaicompat.WithHTTPClient(client))
 	default:

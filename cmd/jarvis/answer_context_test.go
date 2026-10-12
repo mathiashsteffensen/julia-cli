@@ -219,7 +219,7 @@ func TestJevDenialReturnsToAgentAndSeesTheUsersAnswer(t *testing.T) {
 	defer server.Close()
 	cfg := config.Default()
 	cfg.Provider, cfg.ReviewerModel = "compatible", "compatible/"+config.CompatibleDecisionsModel
-	cfg.BaseURL, cfg.APIKeyEnv = server.URL+"/api/v1", "JEV_TEST_KEY"
+	cfg.CompatibleBaseURL, cfg.APIKeyEnv = server.URL+"/api/v1", "JEV_TEST_KEY"
 	t.Setenv(cfg.APIKeyEnv, "jev-secret")
 
 	networkCall := core.ToolCall{ID: "b0", Name: "Bash", Arguments: json.RawMessage(`{"command":"true","network":true}`)}
