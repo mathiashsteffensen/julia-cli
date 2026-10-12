@@ -71,6 +71,42 @@ func TestBackendFactoryUsesFixedCodexReviewerForEveryProvider(t *testing.T) {
 	}
 }
 
+func TestReviewerModelPicksTheCodexReviewer(t *testing.T) {
+	for _, name := range []string{"codex", "openai"} {
+		t.Run(name, func(t *testing.T) {
+			binary, capture := reviewerProtocolFixture(t)
+			cfg := reviewerFactoryConfig(t, name, binary)
+			cfg.ReviewerModel = "codex/gpt-review-fixture"
+			_, review, err := newBackend(context.Background(), cfg, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decision, err := review(context.Background(), core.Approval{Task: "Inspect the fixture", Call: core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
+			if err != nil || !decision.Allow {
+				t.Fatal("configured Codex reviewer failed", decision, err)
+			}
+			data, err := os.ReadFile(capture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), `"model":"gpt-review-fixture"`) || strings.Contains(string(data), provider.CodexReviewerModel) {
+				t.Fatal("review did not use reviewer_model", string(data))
+			}
+		})
+	}
+}
+
+func TestDoctorShowsTheConfiguredReviewer(t *testing.T) {
+	cfg := config.Default()
+	if got := reviewerSummary(cfg); !strings.Contains(got, "Codex "+provider.CodexReviewerModel) {
+		t.Fatal(got)
+	}
+	cfg.ReviewerModel, cfg.BaseURL = "compatible/"+config.CompatibleDecisionsModel, "https://openrouter.ai/api/v1"
+	if got := reviewerSummary(cfg); !strings.Contains(got, "Compatible "+config.CompatibleDecisionsModel) || strings.Contains(got, "Codex") {
+		t.Fatal(got)
+	}
+}
+
 func TestConfiguredCompatibleModelReviewsWithProbability(t *testing.T) {
 	var modelID, authorization string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +143,7 @@ func TestConfiguredCompatibleModelReviewsWithProbability(t *testing.T) {
 	defer server.Close()
 	binary, _ := reviewerProtocolFixture(t)
 	cfg := reviewerFactoryConfig(t, "codex", binary)
-	cfg.CompatibleModels = []string{compatibleApprovalModel}
+	cfg.ReviewerModel = "compatible/" + config.CompatibleDecisionsModel
 	cfg.BaseURL, cfg.APIKeyEnv = server.URL+"/api/v1", "REVIEWER_API_KEY"
 	t.Setenv(cfg.APIKeyEnv, "reviewer-secret")
 	backend, review, err := newBackend(context.Background(), cfg, nil)
@@ -118,7 +154,7 @@ func TestConfiguredCompatibleModelReviewsWithProbability(t *testing.T) {
 	if err != nil || !decision.Allow {
 		t.Fatal("compatible reviewer did not approve above threshold:", decision, err)
 	}
-	if modelID != compatibleApprovalModel || authorization != "Bearer reviewer-secret" {
+	if modelID != config.CompatibleDecisionsModel || authorization != "Bearer reviewer-secret" {
 		t.Fatal("review did not use the configured compatible model and key:", modelID, authorization)
 	}
 }

@@ -208,11 +208,13 @@ turn it into a LAN or localhost client. Downloads are saved where the sandbox ca
 reach and copied into `$JARVIS_SCRATCH/downloads` without following symlinks. Page
 text is untrusted: the agent treats it as data, never as instructions.
 
-**Reviewer.** By default this is Codex `gpt-6-luna` with no reasoning, running in
-a read-only, no-network process. If `compatible_models` lists `typesafe/jev-1.13`,
-that model reviews instead via `base_url`. In that case approval requires ≥50%
-task relevance and >70% on each harm check. The reviewer sees the proposed action
-and your messages, but nothing else from the agent. A denial goes back to the
+**Reviewer.** `reviewer_model` in the config picks it, as `provider/<model-id>`.
+Unset, it is `codex/gpt-6-luna`: Codex with no reasoning, running in a
+read-only, no-network process. `compatible/<model-id>`, such as
+`compatible/typesafe/jev-1.13`, reviews instead through `base_url`'s Decisions
+API. Approval then requires ≥50% task relevance and >70% on each harm check.
+The reviewer sees the proposed action and your messages, but nothing else from
+the agent. A denial goes back to the
 agent with the reason. After 3 denials in a row (or 20 in one turn), or when the
 reviewer fails, you are asked instead. In headless mode the action is denied.
 

@@ -46,6 +46,25 @@ type Config struct {
 	// executable or a macOS .app bundle. Empty finds one; JARVIS_BROWSER
 	// overrides it.
 	Browser string `json:"browser,omitempty"`
+	// ReviewerModel is the model that reviews risky actions, as
+	// provider/<model-id>: codex/gpt-6-luna, or compatible/<model-id> for a
+	// model served through base_url's Decisions API. Empty is the default
+	// Codex reviewer.
+	ReviewerModel string `json:"reviewer_model,omitempty"`
+}
+
+// ReviewerProviders are the providers reviewer_model may name.
+var ReviewerProviders = []string{"codex", "compatible"}
+
+// Reviewer splits reviewer_model into its provider and model ID. The model ID
+// may itself contain slashes; only the first separates the provider. Unset,
+// it is Codex with an empty model, which means Codex's default reviewer.
+func (c Config) Reviewer() (provider, model string) {
+	if c.ReviewerModel == "" {
+		return "codex", ""
+	}
+	provider, model, _ = strings.Cut(c.ReviewerModel, "/")
+	return provider, model
 }
 
 // BrowserEnv names the environment variable that overrides Config.Browser.
@@ -112,10 +131,16 @@ func (c Config) Validate() error {
 		return errors.New("model must be a provider model ID without surrounding whitespace or control characters")
 	}
 	if c.Provider == "compatible" && IsDecisionsOnlyCompatibleModel(c.Model) {
-		return fmt.Errorf("model %q is decisions-only and cannot generate chat responses; choose a chat model (it can remain in compatible_models for approval reviews)", c.Model)
+		return fmt.Errorf("model %q is decisions-only and cannot generate chat responses; choose a chat model (set reviewer_model to compatible/%s to review actions with it)", c.Model, c.Model)
 	}
-	if c.BaseURL == "" && containsDecisionsModel(c.CompatibleModels) {
-		return fmt.Errorf("compatible_models contains the decisions-only model %q, which reviews actions through base_url; set base_url to the compatible API endpoint", CompatibleDecisionsModel)
+	if c.ReviewerModel != "" {
+		reviewer, model := c.Reviewer()
+		if !contains(ReviewerProviders, reviewer) || model == "" || len(c.ReviewerModel) > 512 || c.ReviewerModel != strings.TrimSpace(c.ReviewerModel) || strings.IndexFunc(c.ReviewerModel, unicode.IsControl) >= 0 {
+			return fmt.Errorf("reviewer_model must be provider/<model-id> with provider %s, such as codex/gpt-6-luna or compatible/%s", strings.Join(ReviewerProviders, " or "), CompatibleDecisionsModel)
+		}
+		if reviewer == "compatible" && c.BaseURL == "" {
+			return errors.New("a compatible reviewer_model reviews actions through base_url; set base_url to the compatible API endpoint")
+		}
 	}
 	if len(c.CompatibleModels) > 100 {
 		return errors.New("compatible_models may contain at most 100 model IDs")
@@ -168,10 +193,6 @@ func (c Config) Validate() error {
 
 func IsDecisionsOnlyCompatibleModel(model string) bool {
 	return model == CompatibleDecisionsModel
-}
-
-func containsDecisionsModel(models []string) bool {
-	return contains(models, CompatibleDecisionsModel)
 }
 
 // SupportsReasoning reports providers where JARVIS can send a mapped effort

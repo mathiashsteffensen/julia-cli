@@ -19,11 +19,12 @@ func newBackend(ctx context.Context, cfg config.Config, checkpoint func(*core.Se
 		if err != nil {
 			return nil, nil, err
 		}
-		backend := &provider.Codex{Binary: binary, Model: cfg.Model, Reasoning: cfg.Reasoning, ReadOnly: cfg.Mode == "read-only", Checkpoint: checkpoint}
-		if hasCompatibleApprovalModel(cfg) {
-			return backend, compatibleModelApprovalReviewer(cfg), nil
+		reviewer, reviewModel := cfg.Reviewer()
+		backend := &provider.Codex{Binary: binary, Model: cfg.Model, Reasoning: cfg.Reasoning, ReadOnly: cfg.Mode == "read-only", Checkpoint: checkpoint, ReviewModel: reviewModel}
+		if reviewer == "codex" {
+			return backend, backend.Review, nil
 		}
-		return backend, backend.Review, nil
+		return backend, approvalReviewer(cfg), nil
 	}
 	key := os.Getenv(cfg.KeyEnv())
 	if key == "" && (cfg.Provider != "compatible" || len(cfg.CompatibleModels) > 0) {
@@ -36,37 +37,28 @@ func newBackend(ctx context.Context, cfg config.Config, checkpoint func(*core.Se
 	return backend, approvalReviewer(cfg), nil
 }
 
+// approvalReviewer is the reviewer_model's reviewer, never the executing model.
+func approvalReviewer(cfg config.Config) core.Approver {
+	reviewer, model := cfg.Reviewer()
+	if reviewer == "compatible" {
+		return compatibleModelApprovalReviewer(cfg, model)
+	}
+	return codexApprovalReviewer(cfg.CodexBinary, model)
+}
+
 // Resolve lazily so API sessions can still use reads and human approval when
 // Codex is unavailable. Review failures use the existing human fallback.
-func codexApprovalReviewer(binary string) core.Approver {
+func codexApprovalReviewer(binary, model string) core.Approver {
 	return func(ctx context.Context, approval core.Approval) (core.Decision, error) {
 		resolved, err := findCodex(binary)
 		if err != nil {
 			return core.Decision{}, fmt.Errorf("Codex approval reviewer unavailable: %w", err)
 		}
-		return (&provider.Codex{Binary: resolved}).Review(ctx, approval)
+		return (&provider.Codex{Binary: resolved, ReviewModel: model}).Review(ctx, approval)
 	}
 }
 
-const compatibleApprovalModel = config.CompatibleDecisionsModel
-
-func hasCompatibleApprovalModel(cfg config.Config) bool {
-	for _, model := range cfg.CompatibleModels {
-		if model == compatibleApprovalModel {
-			return true
-		}
-	}
-	return false
-}
-
-func approvalReviewer(cfg config.Config) core.Approver {
-	if hasCompatibleApprovalModel(cfg) {
-		return compatibleModelApprovalReviewer(cfg)
-	}
-	return codexApprovalReviewer(cfg.CodexBinary)
-}
-
-func compatibleModelApprovalReviewer(cfg config.Config) core.Approver {
+func compatibleModelApprovalReviewer(cfg config.Config, model string) core.Approver {
 	return func(ctx context.Context, approval core.Approval) (core.Decision, error) {
 		keyEnv := compatibleAPIKeyEnv(cfg)
 		key := os.Getenv(keyEnv)
@@ -75,7 +67,7 @@ func compatibleModelApprovalReviewer(cfg config.Config) core.Approver {
 		}
 		return provider.ReviewDecisionAPI(ctx, provider.APIConfig{
 			Provider: "compatible",
-			Model:    compatibleApprovalModel,
+			Model:    model,
 			BaseURL:  cfg.BaseURL,
 			APIKey:   key,
 		}, approval)

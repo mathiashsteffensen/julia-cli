@@ -30,7 +30,9 @@ type Codex struct {
 	Reasoning  string
 	ReadOnly   bool
 	Checkpoint func(*core.Session) error
-	start      func(context.Context, string, string) (*codexClient, error)
+	// ReviewModel is the model Review uses; empty is CodexReviewerModel.
+	ReviewModel string
+	start       func(context.Context, string, string) (*codexClient, error)
 }
 
 func (c *Codex) Name() string { return "codex" }
@@ -77,12 +79,21 @@ const codexServiceTier = "priority"
 const maxCodexMessage = 256 << 20
 
 // Approval latency must not depend on the executing model's settings.
+// CodexReviewerModel is the default; reviewer_model can name another.
 const (
 	CodexReviewerModel     = "gpt-6-luna"
 	CodexReviewerReasoning = "none"
 )
 
 const codexToolInstructions = `Execution architecture: native Codex execution tools are disabled. The registered dynamic tools, including WebSearch and, when listed, Subagent and AskUserQuestion, are executed by JARVIS, which enforces the current runtime policy. Use those tools and treat their results as the authority on permitted actions. Bash defaults to the workspace OS sandbox. When the current policy permits escalation and the task needs access unavailable there, use the Bash tool's sandbox_permissions=require_escalated with a concrete justification. This dynamic Bash argument requests JARVIS approval, not a native Codex execution request. JARVIS evaluates that exact unsandboxed command through its isolated reviewer or human approval flow; requesting it does not itself grant permission. Native shell, patch, MCP, web, and agent tools remain unavailable. Never bypass a host denial or attempt an alternative execution path to evade it. A tool result with an image (ViewImage, Terminal with image=true, or a Browser screenshot) called from code returns a string whose last line is a data:image URL: pass that line to image() and never text() the string, which only adds base64 to your context.`
+
+// reviewModel is the configured reviewer model, or CodexReviewerModel.
+func (c *Codex) reviewModel() string {
+	if c.ReviewModel != "" {
+		return c.ReviewModel
+	}
+	return CodexReviewerModel
+}
 
 func (c *Codex) Review(ctx context.Context, approval core.Approval) (core.Decision, error) {
 	data, err := reviewPayload(approval)
@@ -94,7 +105,7 @@ func (c *Codex) Review(ctx context.Context, approval core.Approval) (core.Decisi
 		return core.Decision{}, fmt.Errorf("create review workspace: %w", err)
 	}
 	defer os.RemoveAll(directory)
-	session := &core.Session{Directory: directory, Model: CodexReviewerModel, Reasoning: CodexReviewerReasoning}
+	session := &core.Session{Directory: directory, Model: c.reviewModel(), Reasoning: CodexReviewerReasoning}
 	schema := map[string]any{"type": "object", "properties": map[string]any{"allow": map[string]any{"type": "boolean"}, "reason": map[string]any{"type": "string"}}, "required": []string{"allow", "reason"}, "additionalProperties": false}
 	var text strings.Builder
 	err = c.run(ctx, session, core.Prompt{Text: string(data)}, nil, func(event core.Event) {
@@ -238,7 +249,7 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 		model = c.Model
 	}
 	if review {
-		model = CodexReviewerModel
+		model = c.reviewModel()
 	}
 	if model != "" {
 		params["model"] = model
@@ -271,8 +282,8 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 	if err = json.Unmarshal(threadData, &thread); err != nil || thread.Thread.ID == "" {
 		return errors.New("Codex returned no thread ID")
 	}
-	if review && thread.Model != CodexReviewerModel {
-		return fmt.Errorf("Codex approval reviewer requires model %q; server returned %q", CodexReviewerModel, thread.Model)
+	if review && thread.Model != c.reviewModel() {
+		return fmt.Errorf("Codex approval reviewer requires model %q; server returned %q", c.reviewModel(), thread.Model)
 	}
 	session.RemoteID = thread.Thread.ID
 	journal.ToolCatalog = catalog
@@ -326,7 +337,7 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 	// explicitly even when the user's saved preference is the empty sentinel.
 	turnParams["effort"] = reasoning
 	if review {
-		turnParams["model"] = CodexReviewerModel
+		turnParams["model"] = c.reviewModel()
 	}
 	if schema != nil {
 		turnParams["outputSchema"] = schema

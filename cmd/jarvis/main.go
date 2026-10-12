@@ -579,6 +579,18 @@ func searchKeyFile(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "firecrawl.json")
 }
 
+// reviewerSummary describes the reviewer_model for doctor.
+func reviewerSummary(c config.Config) string {
+	reviewer, model := c.Reviewer()
+	if reviewer == "compatible" {
+		return fmt.Sprintf("Reviewer  Compatible %s · Decisions API at %s", safe(model), safe(c.BaseURL))
+	}
+	if model == "" {
+		model = provider.CodexReviewerModel
+	}
+	return fmt.Sprintf("Reviewer  Codex %s · reasoning %s · priority", safe(model), provider.CodexReviewerReasoning)
+}
+
 func doctor(ctx context.Context, c config.Config, path string) error {
 	fmt.Printf("JARVIS %s\nConfig    %s\nProvider  %s\nMode      %s\n", version, path, c.Provider, c.Mode)
 	model, reasoning := modelSettings(c)
@@ -586,7 +598,7 @@ func doctor(ctx context.Context, c config.Config, path string) error {
 	for _, line := range contextSummary(c) {
 		fmt.Println(line)
 	}
-	fmt.Printf("Reviewer  Codex %s · reasoning %s · priority\n", provider.CodexReviewerModel, provider.CodexReviewerReasoning)
+	fmt.Println(reviewerSummary(c))
 	keyFile := searchKeyFile(path)
 	if os.Getenv(tools.WebSearchKeyEnv) != "" {
 		fmt.Printf("Search    Firecrawl (%s)\n", tools.WebSearchKeyEnv)

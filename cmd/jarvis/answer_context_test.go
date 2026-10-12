@@ -218,7 +218,7 @@ func TestJevDenialReturnsToAgentAndSeesTheUsersAnswer(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := config.Default()
-	cfg.Provider, cfg.CompatibleModels = "compatible", []string{compatibleApprovalModel}
+	cfg.Provider, cfg.ReviewerModel = "compatible", "compatible/"+config.CompatibleDecisionsModel
 	cfg.BaseURL, cfg.APIKeyEnv = server.URL+"/api/v1", "JEV_TEST_KEY"
 	t.Setenv(cfg.APIKeyEnv, "jev-secret")
 

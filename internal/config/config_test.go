@@ -202,3 +202,32 @@ func TestBrowserConfiguration(t *testing.T) {
 		t.Fatalf("config without browser: %+v %v", cfg, err)
 	}
 }
+
+func TestReviewerModelConfiguration(t *testing.T) {
+	for _, tc := range []struct{ value, provider, model string }{
+		{"", "codex", ""},
+		{"codex/gpt-6-luna", "codex", "gpt-6-luna"},
+		{"compatible/" + CompatibleDecisionsModel, "compatible", CompatibleDecisionsModel},
+	} {
+		cfg := Default()
+		cfg.ReviewerModel, cfg.BaseURL = tc.value, "https://openrouter.ai/api/v1"
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("rejected %q: %v", tc.value, err)
+		}
+		if provider, model := cfg.Reviewer(); provider != tc.provider || model != tc.model {
+			t.Fatalf("%q split into %q %q", tc.value, provider, model)
+		}
+	}
+	for _, value := range []string{"gpt-6-luna", "codex/", "openai/gpt-5", " codex/gpt-6-luna", "codex/bad\nmodel"} {
+		cfg := Default()
+		cfg.ReviewerModel, cfg.BaseURL = value, "https://openrouter.ai/api/v1"
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("accepted reviewer_model %q", value)
+		}
+	}
+	cfg := Default()
+	cfg.ReviewerModel = "compatible/" + CompatibleDecisionsModel
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("accepted a compatible reviewer without base_url")
+	}
+}
