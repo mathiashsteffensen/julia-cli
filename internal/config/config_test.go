@@ -11,7 +11,7 @@ import (
 )
 
 func TestConfigRejectsUnknownAndUnsafeModes(t *testing.T) {
-	for _, data := range []string{`{"mode":"yolo"}`, `{"provider":"typo"}`, `{"approve_everything":true}`, `{"openrouter_models":["vendor/model"]}`, `{"timeout":"0s"}`, `{} {}`} {
+	for _, data := range []string{`{"mode":"unattended"}`, `{"mode":"YOLO"}`, `{"workspace_instructions":["../AGENTS.md"]}`, `{"workspace_instructions":["docs/AGENTS.md"]}`, `{"workspace_instructions":[""]}`, `{"provider":"typo"}`, `{"approve_everything":true}`, `{"openrouter_models":["vendor/model"]}`, `{"timeout":"0s"}`, `{} {}`} {
 		p := filepath.Join(t.TempDir(), "config.json")
 		if err := os.WriteFile(p, []byte(data), 0600); err != nil {
 			t.Fatal(err)
@@ -19,6 +19,23 @@ func TestConfigRejectsUnknownAndUnsafeModes(t *testing.T) {
 		if _, err := Load(p); err == nil {
 			t.Fatalf("accepted %s", data)
 		}
+	}
+}
+
+func TestYoloModeAndWorkspaceInstructionsLoad(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(p, []byte(`{"mode":"yolo","workspace_instructions":["AGENTS.md","CLAUDE.md"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Mode != "yolo" || len(cfg.WorkspaceInstructions) != 2 || cfg.WorkspaceInstructions[1] != "CLAUDE.md" {
+		t.Fatalf("loaded %+v", cfg)
+	}
+	if Default().Mode != "auto" || Default().WorkspaceInstructions != nil {
+		t.Fatal("yolo or repository instructions must be opt-in")
 	}
 }
 

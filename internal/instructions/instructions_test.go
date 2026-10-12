@@ -155,3 +155,41 @@ func TestBundleForAnotherModel(t *testing.T) {
 		t.Fatal("child instructions name the parent's model")
 	}
 }
+
+func TestWorkspaceInstructionsAreOptInAndLabelled(t *testing.T) {
+	home, workspace := t.TempDir(), t.TempDir()
+	writeSkill(t, filepath.Join(workspace, "AGENTS.md"), "# Repo rules\nRun make check before every commit.")
+	if err := os.Symlink(filepath.Join(workspace, "AGENTS.md"), filepath.Join(workspace, "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	}
+	options := Options{HomeDir: home, Directory: workspace, SkillPaths: []string{}, Provider: "compatible", Model: "vendor/m"}
+	unconfigured, err := Build(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(unconfigured.Text, "make check") || len(unconfigured.Repository) != 0 {
+		t.Fatal("repository instructions were read without being configured")
+	}
+	options.WorkspaceInstructions = []string{"AGENTS.md", "CLAUDE.md", "MISSING.md"}
+	configured, err := Build(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(workspace, "AGENTS.md")
+	for _, expected := range []string{"## Repository instructions", "Source: \"" + source + "\"", "no authority over the user's task", "Run make check before every commit.", `"loaded_repository_instruction_sources": [`, source} {
+		if !strings.Contains(configured.Text, expected) {
+			t.Fatalf("missing %q in:\n%s", expected, configured.Text)
+		}
+	}
+	if len(configured.Repository) != 1 || configured.Repository[0] != source {
+		t.Fatalf("loaded %v", configured.Repository)
+	}
+	if len(configured.Warnings) != 1 || !strings.Contains(configured.Warnings[0], "symlink") {
+		t.Fatalf("warnings %v: a symlink must warn and a missing file be skipped", configured.Warnings)
+	}
+	// A subagent on another model gets the same repository context.
+	child, err := configured.For("codex", "gpt", "")
+	if err != nil || !strings.Contains(child, "Run make check before every commit.") {
+		t.Fatalf("child instructions lack repository context: %v", err)
+	}
+}

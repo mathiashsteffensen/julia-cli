@@ -58,7 +58,7 @@ func run() error {
 	flags.StringVar(&prompt, "prompt", "", "run one task without the TUI")
 	flags.StringVar(&modelFlag, "model", "", "provider/<model-id>: codex, openai, anthropic, google or compatible (bare codex uses your Codex model)")
 	flags.StringVar(&reasoning, "reasoning", "", "Reasoning effort (Codex model-supported value or OpenRouter value; model support varies)")
-	flags.StringVar(&mode, "mode", "", "auto, ask, or read-only")
+	flags.StringVar(&mode, "mode", "", "auto, ask, read-only, or yolo (no sandbox, no review: for an unattended container)")
 	flags.StringVar(&endpoint, "compatible-base-url", "", "compatible provider API endpoint")
 	flags.StringVar(&keyEnv, "api-key-env", "", "environment variable containing API key")
 	flags.StringVar(&resume, "resume", "", "resume a saved session ID")
@@ -466,7 +466,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		consumer(event)
 	}
 	task := newTaskContext(s.Messages, prompt.Text)
-	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "jarvis-scratch", s.ID), Browser: r.cfg.BrowserPath()})
+	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "jarvis-scratch", s.ID), Browser: r.cfg.BrowserPath(), SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv)})
 	if err != nil {
 		return err
 	}
@@ -488,7 +488,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		Directory: s.Directory, Provider: s.Provider, Model: s.Model, Reasoning: selected.Reasoning, Mode: r.cfg.Mode,
 		Sandbox: executor.SandboxInfo(), Timeout: r.timeout.String(), Headless: r.headless,
 		SkillPaths: r.cfg.SkillPaths, CodexHome: os.Getenv("CODEX_HOME"),
-		BashEnvironment: bashEnvironment,
+		BashEnvironment: bashEnvironment, WorkspaceInstructions: r.cfg.WorkspaceInstructions,
 	})
 	if err != nil {
 		return fmt.Errorf("load agent instructions: %w", err)
@@ -499,6 +499,9 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 	}
 	for _, path := range bundle.Skills {
 		emit(core.Event{Kind: "status", Text: "Loaded skill: " + path})
+	}
+	for _, path := range bundle.Repository {
+		emit(core.Event{Kind: "status", Text: "Loaded repository instructions: " + path})
 	}
 	if s.Title == "New conversation" || s.Title == "" {
 		s.Title = session.Title(prompt.Text)
@@ -666,7 +669,6 @@ func doctor(ctx context.Context, c config.Config, path string, roles []agents.Ro
 		fmt.Println("Skill     ", safe(path))
 	}
 	fmt.Println(browserSummary(ctx, c.BrowserPath()))
-	fmt.Println("Sandbox  ", tools.SandboxInfo())
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	probeDir, err := os.MkdirTemp("", "jarvis-doctor-")
@@ -674,11 +676,18 @@ func doctor(ctx context.Context, c config.Config, path string, roles []agents.Ro
 		return err
 	}
 	defer os.RemoveAll(probeDir)
-	probe, err := tools.New(tools.Config{Directory: probeDir, Mode: "auto"})
+	// Yolo mode has no sandbox to probe; the probe then checks that bash
+	// itself runs. Every other mode's Bash goes through the sandbox.
+	probeMode := "auto"
+	if c.Mode == "yolo" {
+		probeMode = "yolo"
+	}
+	probe, err := tools.New(tools.Config{Directory: probeDir, Mode: probeMode})
 	if err != nil {
 		return err
 	}
 	defer probe.Close()
+	fmt.Println("Sandbox  ", probe.SandboxInfo())
 	if err := probe.CheckSandbox(checkCtx); err != nil {
 		return fmt.Errorf("sandbox probe failed (Bash will remain blocked): %w", err)
 	}

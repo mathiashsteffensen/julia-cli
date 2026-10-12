@@ -48,6 +48,10 @@ type Config struct {
 	// Browser is the Chrome the Browser tool launches, from configuration or
 	// JARVIS_BROWSER; empty finds one (see browser.Find).
 	Browser string
+	// SlackToken is the bot token from SLACK_BOT_TOKEN; without it there is
+	// no Slack tool. SlackOwner is the user ID from SLACK_OWNER_USER_ID, the
+	// person the bot works for.
+	SlackToken, SlackOwner string
 }
 type Executor struct {
 	config    Config
@@ -87,7 +91,7 @@ func New(c Config) (*Executor, error) {
 	if c.Mode == "" {
 		c.Mode = "auto"
 	}
-	if c.Mode != "auto" && c.Mode != "ask" && c.Mode != "read-only" {
+	if c.Mode != "auto" && c.Mode != "ask" && c.Mode != "read-only" && c.Mode != "yolo" {
 		return nil, fmt.Errorf("invalid permission mode %q", c.Mode)
 	}
 	dir, err := filepath.Abs(c.Directory)
@@ -139,12 +143,19 @@ func str(description string) map[string]any {
 func integer(description string) map[string]any {
 	return map[string]any{"type": "integer", "description": description}
 }
-func (e *Executor) Definitions() []core.ToolDefinition { return Definitions(nil) }
+func (e *Executor) Definitions() []core.ToolDefinition {
+	return definitions(nil, e.config.SlackToken != "", e.config.SlackOwner)
+}
 
 // Definitions returns the same registry used by execution, without opening a
 // workspace. roles are the subagent roles the Subagent tool offers; with none,
-// there is no Subagent tool.
+// there is no Subagent tool. The Slack tool is offered when the process has a
+// bot token in SLACK_BOT_TOKEN.
 func Definitions(roles []agents.Role) []core.ToolDefinition {
+	return definitions(roles, SlackEnabled(), os.Getenv(SlackOwnerEnv))
+}
+
+func definitions(roles []agents.Role, slack bool, slackOwner string) []core.ToolDefinition {
 	path := str("Workspace-relative path. Absolute paths, symlinks and protected credential/git paths are forbidden.")
 	edits := map[string]any{"type": "array", "minItems": 1, "maxItems": 100, "items": schema(map[string]any{"old_string": str("Nonempty exact text occurring once"), "new_string": str("Replacement text")}, "old_string", "new_string")}
 	// Reading, editing, running, then the web: the sidebar packs the names in
@@ -161,6 +172,10 @@ func Definitions(roles []agents.Role) []core.ToolDefinition {
 		terminalDefinition(),
 		browserDefinition(),
 		webSearchDefinition(),
+		webFetchDefinition(),
+	}
+	if slack {
+		definitions = append(definitions, slackDefinition(slackOwner))
 	}
 	if len(roles) > 0 {
 		definitions = append(definitions, subagentDefinition(roles))
@@ -227,6 +242,10 @@ func (e *Executor) execute(ctx context.Context, call core.ToolCall, scope int) c
 		content, err = e.grep(ctx, call)
 	case "WebSearch":
 		content, err = e.webSearch(ctx, call)
+	case "WebFetch":
+		content, err = e.webFetch(ctx, call)
+	case "Slack":
+		content, err = e.slack(ctx, call)
 	case "Write", "Edit", "MultiEdit":
 		if e.config.Mode == "read-only" {
 			err = errors.New("read-only mode prohibits file changes")
@@ -580,6 +599,12 @@ func (e *Executor) authorize(ctx context.Context, call core.ToolCall, network, r
 func (e *Executor) authorizeRequest(ctx context.Context, a core.Approval, review bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if e.config.Mode == "yolo" {
+		// Nothing is reviewed in yolo mode: whoever runs the agent in it has
+		// made the container the boundary. The grant is still on record.
+		e.emit("status", "Yolo mode granted without review: "+a.Reason)
+		return nil
 	}
 	label := ""
 	if a.ExecutionMode == "unsandboxed" {

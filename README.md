@@ -111,6 +111,7 @@ keys are only referenced by env var name.
   "api_key_env": "OPENROUTER_API_KEY",
   "enabled_models": ["codex/gpt-6-astra", {"id": "compatible/vendor/model-b", "reasoning": "high"}],
   "skill_paths": ["~/.codex/skills/coding-assistance-style/SKILL.md"],
+  "workspace_instructions": ["AGENTS.md"],
   "browser": "/Applications/Chromium.app",
   "subagents": {
     "scout": "compatible/vendor/fast-model",
@@ -124,6 +125,7 @@ keys are only referenced by env var name.
 - `model` and each `enabled_models` entry are `provider/<model-id>`, or `{"id": "provider/<model-id>", "reasoning": "<effort>"}` for a model that starts at that effort when you launch with it or switch to it.
 - `context_tokens` is the assumed window for every model. API providers compact the history at 85%.
 - `skill_paths` are extra instruction files added to every turn. If you omit it, JARVIS loads `coding-assistance-style/SKILL.md` from `$CODEX_HOME/skills` or `~/.agents/skills`. `[]` disables skills.
+- `workspace_instructions` names files at the workspace root, such as `AGENTS.md` or `CLAUDE.md`, whose contents join every turn as the repository's own context, labelled as such and without authority over the task. Omitted, nothing is read from a repository: a cloned project's files are not trusted by default. A missing file is skipped; a symlink or a file over 64 KiB is a warning.
 - The last reasoning effort you picked for each provider is remembered in `~/.local/state/jarvis/preferences.json`. It applies at launch unless the model has its own `reasoning`, and `--reasoning` beats both.
 - `subagents` assigns a model to each [subagent role](#subagent-roles) by name, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`. A role without one runs on the delegating agent's model. An assigned model starts at its entry's effort, else at the parent's when it is the parent's model, else at the one `model` or `enabled_models` gives it. A compatible model needs `compatible_base_url` and that endpoint's key.
 - `browser` is the Chrome the Browser tool launches (an executable or `.app`); `JARVIS_BROWSER` overrides it. Without either, JARVIS looks for Chrome, Chromium, Chrome for Testing, Brave or Edge in `/Applications`, then in Playwright's and Puppeteer's caches. `npx playwright install chromium` provides one.
@@ -134,8 +136,8 @@ They contain transcripts and command output.
 ## Tools
 
 `Read`, `ViewImage`, `List`, `Grep`, `Edit`, `MultiEdit`, `Write`, `Bash`,
-`Terminal`, `Browser`, `WebSearch`, `Subagent` (up to 3 parallel child tasks), and
-`AskUserQuestion` (interactive only). File tools are confined to the workspace,
+`Terminal`, `Browser`, `WebSearch`, `WebFetch`, `Slack` (when a bot token is set),
+`Subagent` (up to 3 parallel child tasks), and `AskUserQuestion` (interactive only). File tools are confined to the workspace,
 refuse symlinks and credential paths, and cap output at 32 KiB.
 
 `ViewImage` shows the model an image from the workspace or `$JARVIS_SCRATCH`,
@@ -162,8 +164,18 @@ killed with every process it started, profile and crash dumps and all, when the
 turn ends, or by a watchdog should JARVIS die first. Ctrl+O shows a page's snapshot
 in its card, its changes lit as a diff.
 
-`WebSearch` uses Firecrawl. Set `FIRECRAWL_API_KEY`, or let the first search open
-a browser authorization flow that saves a key to `~/.config/jarvis/firecrawl.json`.
+`WebSearch` and `WebFetch` use Firecrawl: search returns titles, URLs and
+snippets, and fetch returns a public page's main content as Markdown, 24 KiB at
+a time. Set `FIRECRAWL_API_KEY`, or let the first call open a browser
+authorization flow that saves a key to `~/.config/jarvis/firecrawl.json`.
+
+`Slack` appears when `SLACK_BOT_TOKEN` holds a bot token: post a message, react
+to one, read a thread or channel, or list the channels the bot is in. Posting
+and reacting are reviewed in auto mode and approved in ask mode; reading is
+free. `SLACK_OWNER_USER_ID` tells the agent whose bot it is, so it can name the
+owner in a thread and message them directly. The bot needs the scopes
+`chat:write`, `reactions:write`, `channels:read`, `groups:read`,
+`channels:history`, `groups:history`, `im:history` and `im:write`.
 
 ### Subagent roles
 
@@ -174,7 +186,7 @@ of work, can limit the child to some tools, and can run it on its own model (see
 | Role | For | Tools |
 | --- | --- | --- |
 | `scout` | Fast reconnaissance: compressed context, with paths and line ranges, for another agent | Read, List, Grep, ViewImage, Bash |
-| `researcher` | Web research: a sourced brief that keeps evidence apart from inference | WebSearch, Browser, Read, List, Grep |
+| `researcher` | Web research: a sourced brief that keeps evidence apart from inference | WebSearch, WebFetch, Browser, Read, List, Grep |
 | `worker` | Implementation of a well-defined task or approved plan, validated | all |
 | `reviewer` | Evidence-backed review of a diff, plan or area of the code, by severity | Read, List, Grep, ViewImage, Bash |
 | `oracle` | A second opinion on a decision: drift, contradictions, hidden assumptions | Read, List, Grep, ViewImage, Bash |
@@ -208,6 +220,7 @@ every tool a subagent can have (all but `Subagent` and `AskUserQuestion`).
 | `auto` (default) | Reads, workspace edits, offline or loopback sandboxed Bash and terminals, and the Browser on the loopback servers its terminals started and workspace files run freely. Bash with network, escalated Bash, a networked terminal's start and every input to it, web searches, each new Browser origin (the machine's other loopback servers included), and text, keys, uploads and scripts sent to a page beyond loopback go to the reviewer model. |
 | `ask` | You approve every mutation, command, terminal start and input, search, and Browser action on a page (navigating, clicking, typing, scripts); looking at a page needs no approval. |
 | `read-only` | Only `Read`, `ViewImage`, `Grep`, and `List`. |
+| `yolo` | No sandbox and no review: Bash and terminals run directly on the host with the process environment, and every action is granted. For an unattended agent in a container that is itself the trust boundary, such as a one-task Cloud Run job. Set it explicitly in the config or with `--mode yolo`; it is never a fallback, and never for a machine you care about. |
 
 **Sandbox.** Bash runs under a deny-by-default Seatbelt profile. It can write
 only to the workspace (never `.git`), a temp dir, isolated Go caches, and

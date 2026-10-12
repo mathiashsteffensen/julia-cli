@@ -40,10 +40,15 @@ type Config struct {
 	// CompatibleBaseURL is the endpoint of the compatible provider.
 	CompatibleBaseURL string `json:"compatible_base_url,omitempty"`
 	APIKeyEnv         string `json:"api_key_env,omitempty"`
-	Mode              string `json:"mode"`
-	CodexBinary       string `json:"codex_binary,omitempty"`
-	Reasoning         string `json:"reasoning,omitempty"`
-	MaxSteps          int    `json:"max_steps"`
+	// Mode is the approval mode: auto, ask, read-only, or yolo. Yolo runs
+	// Bash and terminals directly on the host, outside any sandbox and with
+	// the process environment, and grants every action without review. It is
+	// for an unattended agent inside a container that is itself the trust
+	// boundary, and is never a fallback.
+	Mode        string `json:"mode"`
+	CodexBinary string `json:"codex_binary,omitempty"`
+	Reasoning   string `json:"reasoning,omitempty"`
+	MaxSteps    int    `json:"max_steps"`
 	// ContextTokens is the context window assumed for every model; compaction
 	// triggers at a fraction of it.
 	ContextTokens int `json:"context_tokens"`
@@ -66,6 +71,10 @@ type Config struct {
 	// provider/<model-id> or an object with that id and a reasoning effort. A
 	// role without one runs on the delegating agent's model.
 	Subagents map[string]ModelEntry `json:"subagents,omitempty"`
+	// WorkspaceInstructions names files at the workspace root, such as
+	// AGENTS.md, whose contents join the instructions as repository context.
+	// Empty reads none: a cloned repository's files are not trusted by default.
+	WorkspaceInstructions []string `json:"workspace_instructions,omitempty"`
 }
 
 // Providers are the providers a model ID may name.
@@ -297,9 +306,17 @@ func (c Config) Validate() error {
 		return err
 	}
 	switch c.Mode {
-	case "auto", "ask", "read-only":
+	case "auto", "ask", "read-only", "yolo":
 	default:
 		return fmt.Errorf("unknown approval mode %q", c.Mode)
+	}
+	if len(c.WorkspaceInstructions) > 8 {
+		return errors.New("at most 8 workspace_instructions files are allowed")
+	}
+	for _, name := range c.WorkspaceInstructions {
+		if name == "" || name != strings.TrimSpace(name) || len(name) > 255 || filepath.Base(name) != name || name == "." || name == ".." || strings.IndexFunc(name, unicode.IsControl) >= 0 {
+			return fmt.Errorf("workspace_instructions %q must be a plain file name at the workspace root, such as AGENTS.md", name)
+		}
 	}
 	if c.MaxSteps < 1 || c.MaxSteps > 10000 {
 		return errors.New("max_steps must be between 1 and 10000")

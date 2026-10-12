@@ -833,6 +833,8 @@ func permissionCaption(mode string) string {
 		return "Read-only access"
 	case "ask":
 		return "Ask before changes"
+	case "yolo":
+		return "Yolo: no sandbox"
 	default:
 		return "Enforced per action" // must fit the 23-column sidebar on one row
 	}

@@ -45,7 +45,7 @@ func TestBuiltinRoles(t *testing.T) {
 			}
 		}
 	}
-	for name, want := range map[string][]string{"scout": readOnly, "reviewer": readOnly, "oracle": readOnly, "researcher": {"WebSearch", "Browser", "Read", "List", "Grep"}, "worker": nil, "delegate": nil} {
+	for name, want := range map[string][]string{"scout": readOnly, "reviewer": readOnly, "oracle": readOnly, "researcher": {"WebSearch", "WebFetch", "Browser", "Read", "List", "Grep"}, "worker": nil, "delegate": nil} {
 		if role, _ := agents.Find(roles, name); !slices.Equal(role.Tools, want) {
 			t.Errorf("%s tools %v, want %v", name, role.Tools, want)
 		}

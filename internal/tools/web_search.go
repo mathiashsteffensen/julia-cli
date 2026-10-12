@@ -121,28 +121,8 @@ func (e *Executor) webSearch(ctx context.Context, call core.ToolCall) (string, e
 		return "", fmt.Errorf("Firecrawl search request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	// Error bodies are not echoed: they are remote content and may quote the request.
-	switch resp.StatusCode {
-	case http.StatusOK:
-	case http.StatusUnauthorized:
-		if e.config.SearchKeyFile != "" && key != e.envKey {
-			// A revoked saved key would otherwise fail forever; set up again next time.
-			e.config.SearchKey = ""
-			if err := os.Remove(e.config.SearchKeyFile); err == nil || errors.Is(err, os.ErrNotExist) {
-				return "", errors.New("Firecrawl rejected the saved API key (HTTP 401); it was removed, so the next WebSearch will set up Firecrawl again")
-			}
-		}
-		return "", fmt.Errorf("Firecrawl rejected the API key (HTTP 401); check %s", WebSearchKeyEnv)
-	case http.StatusForbidden:
-		return "", errors.New("Firecrawl refused the search (HTTP 403); the key may lack access")
-	case http.StatusPaymentRequired:
-		return "", errors.New("Firecrawl search unavailable: the account is out of credits (HTTP 402)")
-	case http.StatusTooManyRequests:
-		return "", errors.New("Firecrawl search rate limit reached (HTTP 429). No retry was attempted")
-	case http.StatusRequestTimeout:
-		return "", errors.New("Firecrawl search timed out (HTTP 408). No retry was attempted")
-	default:
-		return "", fmt.Errorf("Firecrawl search returned HTTP %d; redirects are not followed", resp.StatusCode)
+	if err := e.firecrawlStatus(resp.StatusCode, key, "search"); err != nil {
+		return "", err
 	}
 	contentType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if err != nil || contentType != "application/json" {
@@ -163,6 +143,34 @@ func (e *Executor) webSearch(ctx context.Context, call core.ToolCall) (string, e
 		return "", err
 	}
 	return formatWebSearch(results, args.Limit), nil
+}
+
+// firecrawlStatus turns a Firecrawl response status into the error the agent
+// sees. Error bodies are never echoed: they are remote content and may quote
+// the request. what names the operation, search or fetch.
+func (e *Executor) firecrawlStatus(status int, key, what string) error {
+	switch status {
+	case http.StatusOK:
+		return nil
+	case http.StatusUnauthorized:
+		if e.config.SearchKeyFile != "" && key != e.envKey {
+			// A revoked saved key would otherwise fail forever; set up again next time.
+			e.config.SearchKey = ""
+			if err := os.Remove(e.config.SearchKeyFile); err == nil || errors.Is(err, os.ErrNotExist) {
+				return errors.New("Firecrawl rejected the saved API key (HTTP 401); it was removed, so the next web call will set up Firecrawl again")
+			}
+		}
+		return fmt.Errorf("Firecrawl rejected the API key (HTTP 401); check %s", WebSearchKeyEnv)
+	case http.StatusForbidden:
+		return fmt.Errorf("Firecrawl refused the %s (HTTP 403); the key may lack access", what)
+	case http.StatusPaymentRequired:
+		return fmt.Errorf("Firecrawl %s unavailable: the account is out of credits (HTTP 402)", what)
+	case http.StatusTooManyRequests:
+		return fmt.Errorf("Firecrawl %s rate limit reached (HTTP 429). No retry was attempted", what)
+	case http.StatusRequestTimeout:
+		return fmt.Errorf("Firecrawl %s timed out (HTTP 408). No retry was attempted", what)
+	}
+	return fmt.Errorf("Firecrawl %s returned HTTP %d; redirects are not followed", what, status)
 }
 
 type webSearchResult struct {

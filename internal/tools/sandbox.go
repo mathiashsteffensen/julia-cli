@@ -50,7 +50,12 @@ func SandboxInfo() string {
 	}
 	return "unavailable: sandboxed Bash is disabled (no automatic fallback)"
 }
-func (e *Executor) SandboxInfo() string { return SandboxInfo() }
+func (e *Executor) SandboxInfo() string {
+	if e.config.Mode == "yolo" {
+		return "none: yolo mode runs Bash directly on the host, outside any sandbox, with the process environment"
+	}
+	return SandboxInfo()
+}
 func (e *Executor) CheckSandbox(ctx context.Context) error {
 	_, err := e.runSandbox(ctx, "printf jarvis-sandbox-ok", false, 5*time.Second)
 	return err
@@ -198,7 +203,9 @@ func (e *Executor) runBash(ctx context.Context, command string, reach netAccess,
 	}
 	defer os.RemoveAll(sh.tmp)
 	mode := "approved host command"
-	if !escalated {
+	if e.config.Mode == "yolo" {
+		mode = "host command"
+	} else if !escalated {
 		mode = "sandboxed command"
 	}
 	cmd := exec.CommandContext(runCtx, sh.path, sh.args...)
@@ -255,6 +262,9 @@ type shellCommand struct {
 // a Terminal program runs on, or empty for Bash; the profile then grants that
 // one device besides everything Bash may use.
 func (e *Executor) shell(ctx context.Context, command string, reach netAccess, escalated bool, tty string) (shellCommand, error) {
+	if e.config.Mode == "yolo" {
+		return e.hostShell(command, tty)
+	}
 	if !escalated && runtime.GOOS != "darwin" {
 		return shellCommand{}, errors.New("Bash requires macOS Seatbelt in this version; other platforms fail closed")
 	}
@@ -366,6 +376,24 @@ func (e *Executor) shell(ctx context.Context, command string, reach netAccess, e
 	}
 	prepared = true
 	return sh, nil
+}
+
+// hostShell prepares command for yolo mode: bash on the host as it is, with
+// the process environment, no sandbox and no private HOME or caches. Whoever
+// chose yolo mode runs JARVIS where the host itself is the boundary, such as
+// a container made for one task, so the command sees what the process sees:
+// its tokens, its configured tools and its network. Only the scratch
+// directory is added. tty is as for shell.
+func (e *Executor) hostShell(command, tty string) (shellCommand, error) {
+	scratch, err := e.scratchDir()
+	if err != nil {
+		return shellCommand{}, fmt.Errorf("session scratch directory: %w", err)
+	}
+	env := append(os.Environ(), "JARVIS_SCRATCH="+scratch, "GIT_TERMINAL_PROMPT=0")
+	if tty == "" {
+		env = append(env, "TERM=dumb")
+	}
+	return shellCommand{path: "/bin/bash", args: []string{"--noprofile", "--norc", "-c", command}, env: env}, nil
 }
 
 // seatbeltProfile is the sandbox for a command. closed are the local ports a

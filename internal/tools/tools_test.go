@@ -119,6 +119,38 @@ func TestGrepHidesSecrets(t *testing.T) {
 		t.Fatal(r.Content)
 	}
 }
+func TestYoloRunsEverythingWithoutSandboxOrReview(t *testing.T) {
+	t.Setenv("JARVIS_TEST_YOLO", "inherited")
+	e, _ := fixture(t, "yolo", nil)
+	dir := e.directory // resolved, as $PWD reports it
+	// No reviewer and no approver: nothing may be asked in yolo mode.
+	e.config.Review = func(context.Context, core.Approval) (core.Decision, error) {
+		t.Fatal("yolo mode consulted the reviewer")
+		return core.Decision{}, nil
+	}
+	if !strings.Contains(e.SandboxInfo(), "yolo") {
+		t.Fatalf("sandbox info %q", e.SandboxInfo())
+	}
+	for _, args := range []map[string]any{
+		{"command": "printf \"$JARVIS_TEST_YOLO:$JARVIS_SCRATCH\"", "network": true},
+		{"command": "printf \"$JARVIS_TEST_YOLO:$JARVIS_SCRATCH\"", "sandbox_permissions": "require_escalated", "justification": "host access"},
+	} {
+		r := invoke(e, "Bash", args)
+		if r.IsError || !strings.HasPrefix(r.Content, "inherited:") || strings.Contains(r.Content, dir) {
+			t.Fatalf("yolo Bash %v: %+v", args, r)
+		}
+	}
+	if r := invoke(e, "Write", map[string]any{"path": "note.txt", "content": "ok"}); r.IsError {
+		t.Fatalf("yolo Write: %+v", r)
+	}
+	if r := invoke(e, "Bash", map[string]any{"command": "cat note.txt && printf ' in %s' \"$PWD\""}); r.IsError || !strings.Contains(r.Content, "ok in "+dir) {
+		t.Fatalf("yolo Bash runs in the workspace: %+v", r)
+	}
+	if r := invoke(e, "Bash", map[string]any{"command": "exit 3"}); !r.IsError || !strings.Contains(r.Content, "host command failed") {
+		t.Fatalf("yolo Bash failure: %+v", r)
+	}
+}
+
 func TestBashRequiresReviewOrApproval(t *testing.T) {
 	e, _ := fixture(t, "auto", nil)
 	r := invoke(e, "Bash", map[string]any{"command": "true", "network": true})

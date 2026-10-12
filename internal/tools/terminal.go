@@ -333,7 +333,7 @@ func (e *Executor) terminal(ctx context.Context, call core.ToolCall, scope int) 
 }
 
 func (e *Executor) startTerminal(ctx context.Context, call core.ToolCall, a terminalArgs, scope int) (core.ToolResult, error) {
-	if runtime.GOOS != "darwin" {
+	if runtime.GOOS != "darwin" && e.config.Mode != "yolo" {
 		return core.ToolResult{}, errors.New("Terminal requires macOS Seatbelt in this version; other platforms fail closed")
 	}
 	if len(e.terminals) >= maxTerminals {
