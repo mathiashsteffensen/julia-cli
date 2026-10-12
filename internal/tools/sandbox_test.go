@@ -305,6 +305,31 @@ func TestScratchDirPersistsOutsideWorkspace(t *testing.T) {
 		}
 	}
 }
+func TestCloseRemovesOnlyEmptyScratchDir(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		e, _ := fixture(t, "auto", nil)
+		e.config.ScratchDir = filepath.Join(t.TempDir(), "session")
+		scratch, err := e.scratchDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(scratch, "downloads"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if keep {
+			if err := os.WriteFile(filepath.Join(scratch, "main.tf"), []byte("kept"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		e.Close()
+		if _, err := os.Stat(scratch); keep != (err == nil) {
+			t.Fatalf("keep=%v: scratch directory after Close: %v", keep, err)
+		}
+		if _, err := os.Stat(filepath.Join(scratch, "main.tf")); keep && err != nil {
+			t.Fatal("Close removed a kept scratch file")
+		}
+	}
+}
 func TestScratchDirRejectsWorkspace(t *testing.T) {
 	e, dir := fixture(t, "auto", nil)
 	e.config.ScratchDir = filepath.Join(dir, ".scratch")

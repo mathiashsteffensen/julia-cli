@@ -113,6 +113,12 @@ func (e *Executor) Close() error {
 	}
 	if e.ownScratch {
 		os.RemoveAll(e.scratch)
+	} else if e.scratch != "" {
+		// A session scratch directory outlives the turn only if something was
+		// left in it; scratchDir recreates it on the next use. os.Remove refuses
+		// a directory that is not empty.
+		os.Remove(filepath.Join(e.scratch, "downloads"))
+		os.Remove(e.scratch)
 	}
 	return e.root.Close()
 }
