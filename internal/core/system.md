@@ -51,7 +51,8 @@ relevant sections rather than whole files.
 
 Subagent children start with fresh conversations, so give each task the context it
 needs. Use it for independent work, give parallel editors disjoint files, and verify
-child results before relying on them.
+child results before relying on them. Give each task the role that fits it best; a
+role may run on another model and with fewer tools.
 
 WebSearch: without a Firecrawl key, the first call asks the user to authorize one in
 their browser. If they decline, setup fails, or search errors (credits, rate limits,

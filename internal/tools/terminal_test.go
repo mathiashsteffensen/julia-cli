@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"jarvis/agents"
 	"jarvis/internal/core"
 )
 
@@ -418,7 +419,7 @@ func TestTerminalSubagentScope(t *testing.T) {
 		t.Fatal(r.Content)
 	}
 	var child *openTerminal
-	executor := WithSubagents(e, func(ctx context.Context, _ string, tools core.ToolExecutor) (string, error) {
+	executor := WithSubagents(e, agents.Builtin(), func(ctx context.Context, _ agents.Role, _ string, tools core.ToolExecutor) (string, error) {
 		if r := terminalCall(t, tools, map[string]any{"action": "snapshot", "id": "t1"}); !r.IsError {
 			return "", errors.New("the child reached the parent's terminal")
 		}
@@ -432,7 +433,7 @@ func TestTerminalSubagentScope(t *testing.T) {
 		}
 		return "ok", nil
 	})
-	if r := executor.Execute(context.Background(), core.ToolCall{Name: "Subagent", Arguments: json.RawMessage(`{"tasks":["drive a terminal"]}`)}); r.IsError || strings.Contains(r.Content, `"error"`) {
+	if r := executor.Execute(context.Background(), core.ToolCall{Name: "Subagent", Arguments: json.RawMessage(`{"tasks":[{"role":"delegate","task":"drive a terminal"}]}`)}); r.IsError || strings.Contains(r.Content, `"error"`) {
 		t.Fatal(r.Content)
 	}
 	if len(e.terminals) != 1 || e.terminals[0].id != "t1" || child == nil || !child.session.State().Exited {

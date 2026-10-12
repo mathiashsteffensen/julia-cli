@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"jarvis/agents"
 	"jarvis/internal/core"
 )
 
@@ -58,7 +59,7 @@ func webFixture(t *testing.T, transport webRoundTrip) *Executor {
 
 func TestWebSearchRegisteredWithoutConfiguration(t *testing.T) {
 	e, _ := fixture(t, "auto", nil)
-	for _, definitions := range [][]core.ToolDefinition{Definitions(false), Definitions(true), e.Definitions(), WithSubagents(e, nil).Definitions()} {
+	for _, definitions := range [][]core.ToolDefinition{Definitions(nil), Definitions(agents.Builtin()), e.Definitions(), WithSubagents(e, agents.Builtin(), nil).Definitions()} {
 		found := 0
 		for _, definition := range definitions {
 			if definition.Name == "WebSearch" {

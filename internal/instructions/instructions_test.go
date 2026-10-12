@@ -125,3 +125,33 @@ func TestSpecialSkillFileCannotBlockStartup(t *testing.T) {
 		t.Fatal("skill loader blocked on a FIFO")
 	}
 }
+
+// A subagent on another model gets the same instructions, naming its own model,
+// without the skills being read again.
+func TestBundleForAnotherModel(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "style.md")
+	writeSkill(t, path, "# Personal style\nUse the policy.")
+	bundle, err := Build(Options{HomeDir: home, SkillPaths: []string{path}, Directory: "/work", Mode: "auto", Provider: "codex", Model: "gpt-6-astra", Reasoning: "high", Now: time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := bundle.For("codex", "gpt-6-astra", "high"); err != nil || again != bundle.Text {
+		t.Fatalf("the parent's own model renders differently: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	child, err := bundle.For("compatible", "minimax/minimax-m3", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{core.SystemPrompt, "Use the policy.", `"workspace": "/work"`, `"provider": "compatible"`, `"model": "minimax/minimax-m3"`, `"reasoning_effort": "provider default"`, "2026-10-12T09:00:00Z"} {
+		if !strings.Contains(child, want) {
+			t.Errorf("child instructions lack %q", want)
+		}
+	}
+	if strings.Contains(child, "gpt-6-astra") || strings.Contains(child, `"reasoning_effort": "high"`) {
+		t.Fatal("child instructions name the parent's model")
+	}
+}

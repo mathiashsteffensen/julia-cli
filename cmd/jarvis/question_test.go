@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"jarvis/agents"
 	"jarvis/internal/config"
 	"jarvis/internal/core"
 	"jarvis/internal/session"
@@ -33,6 +34,7 @@ func newQuestionRunner(backend core.Backend, ask core.Asker, subagents bool, dir
 	cfg.Mode = "read-only"
 	runner := &runtimeBackend{backend: backend, cfg: cfg, ask: ask, timeout: 30 * time.Second, parent: context.Background()}
 	if subagents {
+		runner.roles = agents.Builtin()
 		runner.makeBackend = func(context.Context, config.Config) (core.Backend, core.Approver, error) {
 			return backend, nil, nil
 		}
@@ -223,7 +225,7 @@ func TestRuntimeSubagentChildrenCannotAskTheUser(t *testing.T) {
 		if result := askQuestion(ctx, executor, `{"question":"May the parent ask?"}`); result.IsError || !strings.Contains(result.Content, `"yes"`) {
 			return fmt.Errorf("parent question failed: %+v", result)
 		}
-		result := executor.Execute(ctx, core.ToolCall{ID: "call-2", Name: "Subagent", Arguments: json.RawMessage(`{"tasks":["try to ask the user"]}`)})
+		result := executor.Execute(ctx, core.ToolCall{ID: "call-2", Name: "Subagent", Arguments: json.RawMessage(`{"tasks":[{"role":"delegate","task":"try to ask the user"}]}`)})
 		if result.IsError || strings.Contains(result.Content, `"error"`) || !strings.Contains(result.Content, "child done") {
 			return fmt.Errorf("subagent failed: %+v", result)
 		}

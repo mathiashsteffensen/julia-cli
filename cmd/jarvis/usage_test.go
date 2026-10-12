@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"jarvis/agents"
 	"jarvis/internal/config"
 	"jarvis/internal/core"
 	"jarvis/internal/provider"
@@ -53,9 +54,9 @@ func (b *usageBackend) Run(ctx context.Context, s *core.Session, prompt core.Pro
 		b.persisted = s.Usage
 		return nil
 	}
-	var tasks []string
+	var tasks []map[string]string
 	for task := range b.children {
-		tasks = append(tasks, task)
+		tasks = append(tasks, map[string]string{"role": "delegate", "task": task})
 	}
 	arguments, _ := json.Marshal(map[string]any{"tasks": tasks})
 	result := executor.Execute(ctx, core.ToolCall{ID: "delegate", Name: "Subagent", Arguments: arguments})
@@ -99,6 +100,7 @@ func TestSubagentSpendRollsUpIntoParentSessionOnce(t *testing.T) {
 			runner := &runtimeBackend{backend: backend, cfg: cfg, timeout: 10 * time.Second, parent: context.Background(),
 				makeBackend: func(context.Context, config.Config) (core.Backend, core.Approver, error) { return backend, nil, nil },
 				checkpoint:  func(s *core.Session) error { mu.Lock(); defer mu.Unlock(); saved[s.ID] = *s; return nil },
+				roles:       agents.Builtin(),
 			}
 			s := session.New(t.TempDir(), "fake", "model")
 			var usage []core.Event
@@ -211,6 +213,7 @@ func TestRuntimeProviderRecordedUsageIsCountedOnce(t *testing.T) {
 		runner := &runtimeBackend{backend: backend, cfg: cfg, timeout: 10 * time.Second, parent: context.Background()}
 		if withSubagents {
 			runner.makeBackend = func(context.Context, config.Config) (core.Backend, core.Approver, error) { return backend, nil, nil }
+			runner.roles = agents.Builtin()
 		}
 		s := session.New(t.TempDir(), "fake", "model")
 		if err := runner.Run(context.Background(), s, core.Prompt{Text: "task"}, nil, func(core.Event) {}); err != nil {

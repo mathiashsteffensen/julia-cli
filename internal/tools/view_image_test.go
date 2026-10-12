@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"testing"
 
+	"jarvis/agents"
 	"jarvis/internal/core"
 )
 
@@ -157,7 +158,7 @@ func TestViewImageExplainsWhatItCannotShow(t *testing.T) {
 }
 
 func TestViewImageIsRegistered(t *testing.T) {
-	for _, definitions := range [][]core.ToolDefinition{Definitions(false), Definitions(true)} {
+	for _, definitions := range [][]core.ToolDefinition{Definitions(nil), Definitions(agents.Builtin())} {
 		found := false
 		for _, definition := range definitions {
 			if definition.Name == "ViewImage" {

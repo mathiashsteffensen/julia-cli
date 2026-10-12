@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"jarvis/agents"
 	"jarvis/internal/core"
 )
 
@@ -138,10 +139,12 @@ func str(description string) map[string]any {
 func integer(description string) map[string]any {
 	return map[string]any{"type": "integer", "description": description}
 }
-func (e *Executor) Definitions() []core.ToolDefinition { return Definitions(false) }
+func (e *Executor) Definitions() []core.ToolDefinition { return Definitions(nil) }
 
-// Definitions returns the same registry used by execution, without opening a workspace.
-func Definitions(subagents bool) []core.ToolDefinition {
+// Definitions returns the same registry used by execution, without opening a
+// workspace. roles are the subagent roles the Subagent tool offers; with none,
+// there is no Subagent tool.
+func Definitions(roles []agents.Role) []core.ToolDefinition {
 	path := str("Workspace-relative path. Absolute paths, symlinks and protected credential/git paths are forbidden.")
 	edits := map[string]any{"type": "array", "minItems": 1, "maxItems": 100, "items": schema(map[string]any{"old_string": str("Nonempty exact text occurring once"), "new_string": str("Replacement text")}, "old_string", "new_string")}
 	// Reading, editing, running, then the web: the sidebar packs the names in
@@ -159,8 +162,8 @@ func Definitions(subagents bool) []core.ToolDefinition {
 		browserDefinition(),
 		webSearchDefinition(),
 	}
-	if subagents {
-		definitions = append(definitions, subagentDefinition())
+	if len(roles) > 0 {
+		definitions = append(definitions, subagentDefinition(roles))
 	}
 	return definitions
 }

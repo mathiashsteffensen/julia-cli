@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"jarvis/agents"
 	"jarvis/internal/config"
 	"jarvis/internal/core"
 	"jarvis/internal/session"
@@ -19,7 +24,7 @@ type delegationBackend struct{ parentID string }
 func (b *delegationBackend) Name() string { return "fake" }
 func (b *delegationBackend) Run(ctx context.Context, s *core.Session, prompt core.Prompt, executor core.ToolExecutor, emit core.Emit) error {
 	if s.ParentID == "" {
-		result := executor.Execute(ctx, core.ToolCall{Name: "Subagent", Arguments: json.RawMessage(`{"tasks":["delegated task one","delegated task two"]}`)})
+		result := executor.Execute(ctx, core.ToolCall{Name: "Subagent", Arguments: json.RawMessage(`{"tasks":[{"role":"delegate","task":"delegated task one"},{"role":"delegate","task":"delegated task two"}]}`)})
 		if result.IsError || strings.Contains(result.Content, `"error"`) {
 			return errors.New(result.Content)
 		}
@@ -60,7 +65,7 @@ func TestRuntimeSubagentsInheritSettingsAndAuthorization(t *testing.T) {
 	var mu sync.Mutex
 	saved := map[string]core.Session{}
 	approvalCalls := 0
-	runner := &runtimeBackend{backend: backend, cfg: cfg, timeout: 5 * time.Second, parent: context.Background(),
+	runner := &runtimeBackend{backend: backend, cfg: cfg, roles: agents.Builtin(), timeout: 5 * time.Second, parent: context.Background(),
 		makeBackend: func(_ context.Context, selected config.Config) (core.Backend, core.Approver, error) {
 			if selected.Model != "selected-model" || selected.Reasoning != "high" || selected.Mode != "ask" {
 				return nil, nil, errors.New("factory settings lost")
@@ -94,5 +99,259 @@ func TestRuntimeSubagentsInheritSettingsAndAuthorization(t *testing.T) {
 	}
 	if err := selectSessionModel(&cfg, &core.Session{ParentID: s.ID}, s.Directory, "", "", false, true); err == nil {
 		t.Fatal("child allowed to resume independently")
+	}
+}
+
+// roleBackend delegates its tasks, then records what each child ran with: its
+// session and its tools.
+type roleBackend struct {
+	tasks    string
+	mu       sync.Mutex
+	children map[string]roleChild // by task
+	result   string
+}
+
+type roleChild struct {
+	session core.Session
+	tools   []string
+}
+
+func (b *roleBackend) Name() string { return "fake" }
+func (b *roleBackend) Run(ctx context.Context, s *core.Session, prompt core.Prompt, executor core.ToolExecutor, _ core.Emit) error {
+	if s.ParentID == "" {
+		result := executor.Execute(ctx, core.ToolCall{Name: "Subagent", Arguments: json.RawMessage(b.tasks)})
+		if result.IsError {
+			return errors.New(result.Content)
+		}
+		b.result = result.Content
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.children[prompt.Text] = roleChild{session: *s, tools: toolNames(executor.Definitions())}
+	s.Messages = append(s.Messages, core.Message{Role: "assistant", Content: "report on " + prompt.Text})
+	return nil
+}
+
+func TestRuntimeSubagentRolesRunOnTheirModels(t *testing.T) {
+	cfg := config.Default()
+	cfg.SkillPaths = []string{}
+	cfg.APIKeyEnv = "ROUTER_KEY"
+	cfg.CompatibleBaseURL = "https://openrouter.ai/api/v1"
+	cfg.EnabledModels = []config.ModelEntry{{ID: "compatible/vendor/scout-model", Reasoning: "xhigh"}}
+	cfg.Subagents = map[string]config.ModelEntry{
+		"scout":    {ID: "compatible/vendor/scout-model"},
+		"reviewer": {ID: "codex/review-model", Reasoning: "low"},
+		"oracle":   {ID: "codex/parent-model"},
+	}
+	backend := &roleBackend{children: map[string]roleChild{}, tasks: `{"tasks":[
+		{"role":"scout","task":"map it"},
+		{"role":"reviewer","task":"check it"},
+		{"role":"oracle","task":"judge it"}]}`}
+	var mu sync.Mutex
+	made := map[string]config.Config{} // by provider/model
+	runner := &runtimeBackend{backend: backend, cfg: cfg, roles: agents.Builtin(), timeout: 5 * time.Second, parent: context.Background(),
+		makeBackend: func(_ context.Context, selected config.Config) (core.Backend, core.Approver, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			made[config.JoinModel(selected.Provider, selected.Model)] = selected
+			return backend, nil, nil
+		},
+	}
+	s := session.New(t.TempDir(), "codex", "parent-model")
+	s.Reasoning = "medium"
+	if err := runner.Run(context.Background(), s, core.Prompt{Text: "delegate"}, nil, func(core.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	// The roles' tools, in the registry's order.
+	readOnly := []string{"Read", "ViewImage", "List", "Grep", "Bash"}
+	for _, tc := range []struct {
+		task, role, provider, model, reasoning, keyEnv string
+		tools                                          []string
+	}{
+		// The model's configured effort, and the key that belongs to the compatible endpoint.
+		{"map it", "scout", "compatible", "vendor/scout-model", "xhigh", "ROUTER_KEY", readOnly},
+		{"check it", "reviewer", "codex", "review-model", "low", "ROUTER_KEY", readOnly},
+		// The parent's own model keeps the parent's effort.
+		{"judge it", "oracle", "codex", "parent-model", "medium", "ROUTER_KEY", readOnly},
+	} {
+		child, ok := backend.children[tc.task]
+		if !ok {
+			t.Fatalf("%s never ran", tc.role)
+		}
+		modelID := config.JoinModel(tc.provider, tc.model)
+		settings, ok := made[modelID]
+		if !ok || settings.Reasoning != tc.reasoning || settings.APIKeyEnv != tc.keyEnv {
+			t.Errorf("%s: backend made with %+v, want %s at %s with key %s", tc.role, settings, modelID, tc.reasoning, tc.keyEnv)
+		}
+		if child.session.Provider != tc.provider || child.session.Model != tc.model || child.session.Reasoning != tc.reasoning {
+			t.Errorf("%s: child session on %s/%s at %q", tc.role, child.session.Provider, child.session.Model, child.session.Reasoning)
+		}
+		role, _ := agents.Find(agents.Builtin(), tc.role)
+		for _, want := range []string{`"model": "` + tc.model + `"`, `"reasoning_effort": "` + tc.reasoning + `"`, "## Subagent role: " + tc.role + "\n\n" + role.Prompt} {
+			if !strings.Contains(child.session.Instructions, want) {
+				t.Errorf("%s: instructions lack %q", tc.role, want)
+			}
+		}
+		if child.session.Title != "Subagent "+tc.role+": "+tc.task {
+			t.Errorf("%s: title %q", tc.role, child.session.Title)
+		}
+		if !slices.Equal(child.tools, tc.tools) {
+			t.Errorf("%s: tools %v, want %v", tc.role, child.tools, tc.tools)
+		}
+		if !strings.Contains(backend.result, "("+tc.role+" on "+modelID+")") {
+			t.Errorf("%s: result does not say who answered: %s", tc.role, backend.result)
+		}
+	}
+}
+
+// A child whose backend cannot be made, such as one whose provider's key is
+// unset, fails with the reason before it is saved or announced.
+func TestRuntimeSubagentThatCannotStartIsNeitherSavedNorAnnounced(t *testing.T) {
+	t.Setenv("JARVIS_TEST_UNSET_KEY", "")
+	cfg := config.Default()
+	cfg.SkillPaths = []string{}
+	cfg.APIKeyEnv = "JARVIS_TEST_UNSET_KEY"
+	cfg.CompatibleBaseURL = "https://openrouter.ai/api/v1"
+	cfg.Subagents = map[string]config.ModelEntry{"scout": {ID: "compatible/vendor/m"}}
+	backend := &roleBackend{children: map[string]roleChild{}, tasks: `{"tasks":[{"role":"scout","task":"map it"},{"role":"worker","task":"build it"}]}`}
+	var mu sync.Mutex
+	saved := map[string]string{}
+	var statuses []string
+	runner := &runtimeBackend{backend: backend, cfg: cfg, roles: agents.Builtin(), timeout: 5 * time.Second, parent: context.Background(),
+		makeBackend: func(ctx context.Context, selected config.Config) (core.Backend, core.Approver, error) {
+			if selected.Provider == "compatible" {
+				return newBackend(ctx, selected, nil)
+			}
+			return backend, nil, nil
+		},
+		checkpoint: func(child *core.Session) error {
+			mu.Lock()
+			defer mu.Unlock()
+			saved[child.ID] = child.Title
+			return nil
+		},
+	}
+	s := session.New(t.TempDir(), "codex", "parent-model")
+	err := runner.Run(context.Background(), s, core.Prompt{Text: "delegate"}, nil, func(event core.Event) {
+		if event.Kind == "status" {
+			mu.Lock()
+			statuses = append(statuses, event.Text)
+			mu.Unlock()
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(backend.result, `"role":"scout","output":"","error":"compatible/vendor/m: set JARVIS_TEST_UNSET_KEY for the compatible provider"`) {
+		t.Fatalf("the scout's failure is not explained: %s", backend.result)
+	}
+	if len(saved) != 1 || !slices.ContainsFunc(slices.Collect(maps.Values(saved)), func(title string) bool { return title == "Subagent worker: build it" }) {
+		t.Fatalf("saved children %v, want only the worker", saved)
+	}
+	var started []string
+	for _, status := range statuses {
+		if strings.HasPrefix(status, "Started ") {
+			started = append(started, status)
+		}
+	}
+	if len(started) != 1 || !strings.HasPrefix(started[0], "Started worker on codex/parent-model · subagent ") {
+		t.Fatalf("started %v, want only the worker, role and model first", started)
+	}
+}
+
+func TestSubagentInstructions(t *testing.T) {
+	scout, _ := agents.Find(agents.Builtin(), "scout")
+	worker, _ := agents.Find(agents.Builtin(), "worker")
+	text := subagentInstructions(scout)
+	for _, want := range []string{"\n\n## Delegated subagent\n\nYou are a delegated subagent.", "not additional user authorization", "only the first 8000 bytes", "\n\n## Subagent role: scout\n\n" + scout.Prompt, "Your tools are Read, List, Grep, ViewImage, Bash."} {
+		if !strings.Contains(text, want) {
+			t.Errorf("scout instructions lack %q", want)
+		}
+	}
+	if text := subagentInstructions(worker); strings.Contains(text, "Your tools are") || !strings.Contains(text, worker.Prompt) {
+		t.Errorf("worker instructions: %q", text)
+	}
+}
+
+func TestSubagentSettings(t *testing.T) {
+	cfg := config.Default()
+	cfg.Provider, cfg.Model, cfg.APIKeyEnv = "anthropic", "parent", "MY_ANTHROPIC_KEY"
+	cfg.CompatibleBaseURL = "https://openrouter.ai/api/v1"
+	cfg.EnabledModels = []config.ModelEntry{{ID: "compatible/vendor/m", Reasoning: "high"}}
+	cfg.Subagents = map[string]config.ModelEntry{
+		"scout":    {ID: "compatible/vendor/m"},
+		"reviewer": {ID: "compatible/vendor/m", Reasoning: "low"},
+		"oracle":   {ID: "anthropic/parent"},
+		"worker":   {ID: "openai/other"},
+	}
+	parent := cfg
+	parent.Reasoning = ""
+	for _, tc := range []struct{ role, provider, model, reasoning, keyEnv string }{
+		{"delegate", "anthropic", "parent", "", "MY_ANTHROPIC_KEY"},
+		// Anthropic's key never goes to the compatible endpoint or to OpenAI.
+		{"scout", "compatible", "vendor/m", "high", "OPENAI_API_KEY"},
+		{"reviewer", "compatible", "vendor/m", "low", "OPENAI_API_KEY"},
+		{"oracle", "anthropic", "parent", "", "MY_ANTHROPIC_KEY"},
+		{"worker", "openai", "other", "", ""},
+	} {
+		got := subagentSettings(cfg, parent, tc.role)
+		if got.Provider != tc.provider || got.Model != tc.model || got.Reasoning != tc.reasoning || got.APIKeyEnv != tc.keyEnv {
+			t.Errorf("%s: %s/%s at %q with key %q, want %s/%s at %q with key %q", tc.role, got.Provider, got.Model, got.Reasoning, got.APIKeyEnv, tc.provider, tc.model, tc.reasoning, tc.keyEnv)
+		}
+	}
+	// Codex has no key of its own, so there api_key_env is the compatible endpoint's.
+	cfg.Provider = "codex"
+	if got := subagentSettings(cfg, cfg, "scout"); got.APIKeyEnv != "MY_ANTHROPIC_KEY" {
+		t.Errorf("under codex, the compatible key is %q", got.APIKeyEnv)
+	}
+}
+
+func TestLoadRolesChecksAssignments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := config.Default()
+	cfg.Subagents = map[string]config.ModelEntry{"scout": {ID: "codex/x"}}
+	roles, err := loadRoles(path, cfg)
+	if err != nil || !slices.Equal(agents.Names(roles), agents.Names(agents.Builtin())) {
+		t.Fatalf("built-in roles: %v, %v", agents.Names(roles), err)
+	}
+	cfg.Subagents["auditor"] = config.ModelEntry{ID: "codex/x"}
+	if _, err := loadRoles(path, cfg); err == nil || !strings.Contains(err.Error(), `"auditor", which is not a subagent role`) {
+		t.Fatalf("a model for a role that does not exist: %v", err)
+	}
+	os.Mkdir(rolesDir(path), 0o700)
+	os.WriteFile(filepath.Join(rolesDir(path), "auditor.md"), []byte("---\nname: auditor\ndescription: Audits.\ntools: Read, Grep\n---\nAudit.\n"), 0o600)
+	roles, err = loadRoles(path, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if role, ok := agents.Find(roles, "auditor"); !ok || role.Source != filepath.Join(rolesDir(path), "auditor.md") {
+		t.Fatalf("the user's role was not loaded: %+v", role)
+	}
+	os.WriteFile(filepath.Join(rolesDir(path), "spy.md"), []byte("---\nname: spy\ndescription: Asks.\ntools: AskUserQuestion\n---\nAsk.\n"), 0o600)
+	if _, err := loadRoles(path, cfg); err == nil || !strings.Contains(err.Error(), `role spy lists tool "AskUserQuestion"`) {
+		t.Fatalf("a tool children do not have: %v", err)
+	}
+}
+
+func TestRolesSummary(t *testing.T) {
+	cfg := config.Default()
+	cfg.CompatibleBaseURL = "https://openrouter.ai/api/v1"
+	cfg.EnabledModels = []config.ModelEntry{{ID: "compatible/vendor/b", Reasoning: "xhigh"}}
+	cfg.Subagents = map[string]config.ModelEntry{"scout": {ID: "compatible/vendor/m", Reasoning: "low"}, "reviewer": {ID: "compatible/vendor/b"}, "oracle": {ID: "openai/c"}}
+	roles := append(agents.Builtin(), agents.Role{Name: "auditor", Source: "/home/me/.config/jarvis/agents/auditor.md"})
+	got := strings.Join(rolesSummary(cfg, roles), "\n")
+	for _, want := range []string{
+		"Subagent  scout       compatible/vendor/m · reasoning low",
+		// The effort enabled_models gives the model.
+		"Subagent  reviewer    compatible/vendor/b · reasoning xhigh",
+		"Subagent  oracle      openai/c\n",
+		"Subagent  worker      the delegating agent's model",
+		"Subagent  auditor     the delegating agent's model · /home/me/.config/jarvis/agents/auditor.md",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary lacks %q:\n%s", want, got)
+		}
 	}
 }

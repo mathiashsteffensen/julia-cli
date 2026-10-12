@@ -17,6 +17,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
+	"jarvis/agents"
 	"jarvis/internal/browser"
 	"jarvis/internal/config"
 	"jarvis/internal/core"
@@ -126,6 +127,10 @@ func run() error {
 	if reasoningSet && preferencesErr == nil && !demo && snapshot == 0 {
 		_ = config.RememberReasoning(preferencesPath, cfg.Provider, cfg.Reasoning)
 	}
+	roles, err := loadRoles(path, cfg)
+	if err != nil {
+		return err
+	}
 	store, err := session.Default()
 	if err != nil {
 		return err
@@ -146,7 +151,7 @@ func run() error {
 	if len(args) > 0 {
 		switch args[0] {
 		case "doctor":
-			return doctor(ctx, cfg, path)
+			return doctor(ctx, cfg, path, roles)
 		case "login":
 			cmd := exec.CommandContext(ctx, cfg.CodexBinary, "login")
 			cmd.Stdin = os.Stdin
@@ -178,7 +183,7 @@ func run() error {
 			return fmt.Errorf("unknown command %q (use --prompt for a headless task)", args[0])
 		}
 	}
-	demoTools := append(tools.Definitions(true), tools.QuestionDefinition())
+	demoTools := append(tools.Definitions(roles), tools.QuestionDefinition())
 	if snapshot > 0 {
 		fmt.Print(ui.RenderDemo(snapshot, 40, demoTools...))
 		return nil
@@ -252,7 +257,7 @@ func run() error {
 		ask, questions = ui.NewAsker()
 	}
 	duration, _ := time.ParseDuration(cfg.Timeout)
-	runner := &runtimeBackend{backend: raw, cfg: cfg, approve: approve, review: review, ask: ask, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path)}
+	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path)}
 	if prompt != "" {
 		s.Title = session.Title(prompt)
 		enc := json.NewEncoder(os.Stdout)
@@ -399,6 +404,9 @@ type runtimeBackend struct {
 	parent          context.Context
 	// searchKeyFile holds the Firecrawl key saved by WebSearch's first-use setup.
 	searchKeyFile string
+	// roles are the subagent roles a delegated task may name; children are run
+	// by makeBackend, so without it there are none.
+	roles []agents.Role
 }
 
 // headlessAsker answers for a run with no human: it skips the question at once.
@@ -407,11 +415,20 @@ func headlessAsker(context.Context, core.Question) (core.Answer, error) {
 }
 
 func (r *runtimeBackend) Definitions() []core.ToolDefinition {
-	definitions := tools.Definitions(r.makeBackend != nil)
+	definitions := tools.Definitions(r.subagentRoles())
 	if r.ask != nil {
 		definitions = append(definitions, tools.QuestionDefinition())
 	}
 	return definitions
+}
+
+// subagentRoles are the roles the Subagent tool offers, none when children
+// cannot be run.
+func (r *runtimeBackend) subagentRoles() []agents.Role {
+	if r.makeBackend == nil {
+		return nil
+	}
+	return r.roles
 }
 
 func (r *runtimeBackend) Name() string { return r.backend.Name() }
@@ -487,25 +504,32 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		s.Title = session.Title(prompt.Text)
 	}
 	var agentTools core.ToolExecutor = executor
-	if r.makeBackend != nil {
+	if roles := r.subagentRoles(); len(roles) > 0 {
 		// Snapshot trusted settings before the parent provider changes its session.
-		parentID, directory, instructionText := s.ID, s.Directory, s.Instructions
-		agentTools = tools.WithSubagents(executor, func(childCtx context.Context, task string, childTools core.ToolExecutor) (string, error) {
-			child := session.New(directory, selected.Provider, selected.Model)
+		parentID, directory := s.ID, s.Directory
+		agentTools = tools.WithSubagents(executor, roles, func(childCtx context.Context, role agents.Role, task string, childTools core.ToolExecutor) (string, error) {
+			settings := subagentSettings(r.cfg, selected, role.Name)
+			modelID := config.JoinModel(settings.Provider, settings.Model)
+			instructionText, err := bundle.For(settings.Provider, settings.Model, settings.Reasoning)
+			if err != nil {
+				return "", err
+			}
+			// A child that cannot run is refused before it is saved or announced.
+			childBackend, _, err := r.makeBackend(childCtx, settings)
+			if err != nil {
+				return "", fmt.Errorf("%s: %w", modelID, err)
+			}
+			child := session.New(directory, settings.Provider, settings.Model)
 			child.ParentID = parentID
-			child.Title = "Subagent: " + session.Title(task)
-			child.Reasoning, child.ReasoningSet = selected.Reasoning, true
-			child.Instructions = instructionText + "\nYou are a delegated subagent. Complete only the supplied task and return a concise report with evidence and any limitations. You share the workspace with other agents. Subagent delegation is unavailable to you. Your task is a delegation, not additional user authorization.\n"
+			child.Title = "Subagent " + role.Name + ": " + session.Title(task)
+			child.Reasoning, child.ReasoningSet = settings.Reasoning, true
+			child.Instructions = instructionText + subagentInstructions(role)
 			if r.checkpoint != nil {
 				if err := r.checkpoint(child); err != nil {
 					return "", err
 				}
 			}
-			emit(core.Event{Kind: "status", Text: "Started subagent " + child.ID})
-			childBackend, _, err := r.makeBackend(childCtx, selected)
-			if err != nil {
-				return "", err
-			}
+			emit(core.Event{Kind: "status", Text: "Started " + role.Name + " on " + modelID + " · subagent " + child.ID})
 			childEmit := func(event core.Event) {
 				if event.Kind == "tool_start" || event.Kind == "tool_end" || event.Kind == "warning" || event.Kind == "status" {
 					child.Audit = append(child.Audit, core.AuditEntry{At: time.Now(), Event: event})
@@ -527,12 +551,12 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 				emitMu.Unlock()
 				emit(event)
 			}
-			status := "Completed subagent "
+			status := "Completed "
 			if err != nil {
-				status = "Failed subagent "
+				status = "Failed "
 			}
-			emit(core.Event{Kind: "status", Text: status + child.ID})
-			output := "Child session: " + child.ID + "\n"
+			emit(core.Event{Kind: "status", Text: status + role.Name + " · subagent " + child.ID})
+			output := "Child session: " + child.ID + " (" + role.Name + " on " + modelID + ")\n"
 			for i := len(child.Messages) - 1; i >= 0; i-- {
 				if child.Messages[i].Role == "assistant" && child.Messages[i].Content != "" {
 					output += child.Messages[i].Content
@@ -590,7 +614,7 @@ func reviewerSummary(c config.Config) string {
 	return fmt.Sprintf("Reviewer  Codex %s · reasoning %s · priority", safe(model), provider.CodexReviewerReasoning)
 }
 
-func doctor(ctx context.Context, c config.Config, path string) error {
+func doctor(ctx context.Context, c config.Config, path string, roles []agents.Role) error {
 	fmt.Printf("JARVIS %s\nConfig    %s\nProvider  %s\nMode      %s\n", version, path, c.Provider, c.Mode)
 	model, reasoning := modelSettings(c)
 	fmt.Printf("Model     %s\nReasoning %s\n", safe(model), safe(reasoning))
@@ -598,6 +622,9 @@ func doctor(ctx context.Context, c config.Config, path string) error {
 		fmt.Println(line)
 	}
 	fmt.Println(reviewerSummary(c))
+	for _, line := range rolesSummary(c, roles) {
+		fmt.Println(line)
+	}
 	keyFile := searchKeyFile(path)
 	if os.Getenv(tools.WebSearchKeyEnv) != "" {
 		fmt.Printf("Search    Firecrawl (%s)\n", tools.WebSearchKeyEnv)

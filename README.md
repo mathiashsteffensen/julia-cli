@@ -22,7 +22,7 @@ copy bundled with the ChatGPT macOS app.
 
 ```sh
 make build            # → bin/jarvis
-./bin/jarvis doctor   # check config, provider, reviewer, search key, browser, rg/bash
+./bin/jarvis doctor   # check config, provider, reviewer, subagent roles, search key, browser, rg/bash
 ./bin/jarvis
 ```
 
@@ -111,7 +111,12 @@ keys are only referenced by env var name.
   "api_key_env": "OPENROUTER_API_KEY",
   "enabled_models": ["codex/gpt-6-astra", {"id": "compatible/vendor/model-b", "reasoning": "high"}],
   "skill_paths": ["~/.codex/skills/coding-assistance-style/SKILL.md"],
-  "browser": "/Applications/Chromium.app"
+  "browser": "/Applications/Chromium.app",
+  "subagents": {
+    "scout": "compatible/vendor/fast-model",
+    "reviewer": {"id": "compatible/vendor/model-b", "reasoning": "high"},
+    "oracle": "codex/gpt-6-astra"
+  }
 }
 ```
 
@@ -120,6 +125,7 @@ keys are only referenced by env var name.
 - `context_tokens` is the assumed window for every model. API providers compact the history at 85%.
 - `skill_paths` are extra instruction files added to every turn. If you omit it, JARVIS loads `coding-assistance-style/SKILL.md` from `$CODEX_HOME/skills` or `~/.agents/skills`. `[]` disables skills.
 - The last reasoning effort you picked for each provider is remembered in `~/.local/state/jarvis/preferences.json`. It applies at launch unless the model has its own `reasoning`, and `--reasoning` beats both.
+- `subagents` assigns a model to each [subagent role](#subagent-roles) by name, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`. A role without one runs on the delegating agent's model. An assigned model starts at its entry's effort, else at the parent's when it is the parent's model, else at the one `model` or `enabled_models` gives it. A compatible model needs `compatible_base_url` and that endpoint's key.
 - `browser` is the Chrome the Browser tool launches (an executable or `.app`); `JARVIS_BROWSER` overrides it. Without either, JARVIS looks for Chrome, Chromium, Chrome for Testing, Brave or Edge in `/Applications`, then in Playwright's and Puppeteer's caches. `npx playwright install chromium` provides one.
 
 Sessions are stored in `~/.local/state/jarvis/sessions` with 0600 permissions.
@@ -158,6 +164,42 @@ in its card, its changes lit as a diff.
 
 `WebSearch` uses Firecrawl. Set `FIRECRAWL_API_KEY`, or let the first search open
 a browser authorization flow that saves a key to `~/.config/jarvis/firecrawl.json`.
+
+### Subagent roles
+
+Each task given to `Subagent` names a role, which adds instructions for that kind
+of work, can limit the child to some tools, and can run it on its own model (see
+`subagents` above). The built-in roles are Markdown files in [`agents/`](agents):
+
+| Role | For | Tools |
+| --- | --- | --- |
+| `scout` | Fast reconnaissance: compressed context, with paths and line ranges, for another agent | Read, List, Grep, ViewImage, Bash |
+| `researcher` | Web research: a sourced brief that keeps evidence apart from inference | WebSearch, Browser, Read, List, Grep |
+| `worker` | Implementation of a well-defined task or approved plan, validated | all |
+| `reviewer` | Evidence-backed review of a diff, plan or area of the code, by severity | Read, List, Grep, ViewImage, Bash |
+| `oracle` | A second opinion on a decision: drift, contradictions, hidden assumptions | Read, List, Grep, ViewImage, Bash |
+| `delegate` | Anything that fits no other role | all |
+
+A role's tools are the only ones its children are offered or can run. Bash can
+still write the workspace, so the read-only roles keep to inspection by
+instruction. To change a role or add one, put a file of the same shape in an
+`agents/` directory beside your config file (`~/.config/jarvis/agents/` by
+default): a file named like a built-in role replaces it. Roles are never read
+from a repository.
+
+```markdown
+---
+name: auditor
+description: Checks that a change's claims are backed by tests. One line; the delegating agent picks roles by it.
+tools: Read, Grep, Bash
+---
+
+The instructions a child of this role adds to its own.
+```
+
+`name` must match the file name. `tools` is optional; without it a child has
+every tool a subagent can have (all but `Subagent` and `AskUserQuestion`).
+`jarvis doctor` lists the roles and the model each runs on.
 
 ## Permissions and sandbox
 
@@ -238,6 +280,7 @@ send only synthetic proposals and never execute them.
 | Package | Role |
 | --- | --- |
 | `cmd/jarvis` | CLI entry, flags, subcommands, wiring |
+| `agents` | Built-in subagent roles (Markdown) and their loader |
 | `internal/core` | Shared types, `Backend` interface, system prompt (`system.md`) |
 | `internal/provider` | Codex app-server and Fantasy adapters, compaction, reviewers |
 | `internal/tools` | Tool execution, sandbox, permissions, browser network policy, web search, subagents |

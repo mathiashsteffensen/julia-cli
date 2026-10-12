@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
+	"jarvis/agents"
 	"jarvis/internal/core"
 	"jarvis/internal/tools"
 )
@@ -92,6 +93,7 @@ func TestWebSearchCollapsedRow(t *testing.T) {
 	}
 }
 
+// A session from before roles delegated bare prompts.
 func TestSubagentCallShowsTaskCountAndFullPromptsWhenExpanded(t *testing.T) {
 	tasks := []string{
 		"Inspect the caller and report the exact regression.",
@@ -133,10 +135,56 @@ func TestSubagentCallShowsTaskCountAndFullPromptsWhenExpanded(t *testing.T) {
 	}
 }
 
+func TestSubagentCallNamesEachTasksRole(t *testing.T) {
+	tasks := []map[string]string{
+		{"role": "scout", "task": "Map the config loader."},
+		{"role": "reviewer", "task": "Review the diff."},
+		{"role": "scout", "task": "Map the UI."},
+	}
+	arguments, err := json.Marshal(map[string]any{"tasks": tasks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := core.ToolCall{Name: "Subagent", Arguments: arguments}
+	if got := toolSummary(call); got != "3 tasks · scout ×2, reviewer" {
+		t.Fatalf("summary = %q, want the count and the roles", got)
+	}
+	one, _ := json.Marshal(map[string]any{"tasks": tasks[1:2]})
+	if got := toolSummary(core.ToolCall{Name: "Subagent", Arguments: one}); got != "1 task · reviewer" {
+		t.Fatalf("single-task summary = %q", got)
+	}
+	m := testModel(t, Config{})
+	m.resize(80, 20)
+	m.expandTools = true
+	expanded := ansi.Strip(m.renderEntryContent(entry{role: "tool", call: &call}))
+	for _, want := range []string{"Task 1 · scout", "Map the config loader.", "Task 2 · reviewer", "Task 3 · scout", "Map the UI."} {
+		if !strings.Contains(expanded, want) {
+			t.Errorf("expanded subagent card is missing %q: %q", want, expanded)
+		}
+	}
+}
+
+// A role the model invented, newlines and all, stays on its card's one row.
+func TestSubagentRoleIsOneLine(t *testing.T) {
+	call := core.ToolCall{Name: "Subagent", Arguments: json.RawMessage(`{"tasks":[{"role":"scout\nINJECTED\tx","task":"Map it."}]}`)}
+	if got := toolSummary(call); got != "1 task · scout INJECTED x" {
+		t.Fatalf("summary = %q", got)
+	}
+	m := testModel(t, Config{})
+	m.resize(80, 20)
+	for _, expand := range []bool{false, true} {
+		m.expandTools = expand
+		layout := m.layoutEntry(entry{role: "tool", call: &call})
+		if lines := strings.Split(strings.TrimSuffix(layout.text, "\n"), "\n"); len(lines) != len(layout.rows) {
+			t.Fatalf("expand=%v: %d lines for %d rows: %q", expand, len(lines), len(layout.rows), layout.text)
+		}
+	}
+}
+
 func TestSidebarFitsRegisteredTools(t *testing.T) {
 	for _, provider := range []string{"codex", "anthropic"} {
 		for _, height := range []int{24, 56} {
-			definitions := tools.Definitions(true)
+			definitions := tools.Definitions(agents.Builtin())
 			m := testModel(t, Config{
 				Session:         &core.Session{Provider: provider},
 				ToolDefinitions: definitions,

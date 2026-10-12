@@ -283,9 +283,13 @@ func (m *model) layoutEntry(item entry) entryLayout {
 		if item.call != nil && item.call.Name == "Subagent" && m.expandTools {
 			for i, task := range subagentTasks(*item.call) {
 				target := len(out.targets)
-				out.targets = append(out.targets, copyTarget{fmt.Sprintf("subagent task %d", i+1), task})
-				add(bar+"  "+violetStyle.Bold(true).Render(fmt.Sprintf("Task %d", i+1)), rowMeta{gutter: 4, skip: true})
-				for _, paragraph := range strings.Split(sanitize(task), "\n") {
+				out.targets = append(out.targets, copyTarget{fmt.Sprintf("subagent task %d", i+1), task.prompt})
+				heading := violetStyle.Bold(true).Render(fmt.Sprintf("Task %d", i+1))
+				if task.role != "" {
+					heading += mutedStyle.Render(" · ") + cyanStyle.Render(ansi.Truncate(sanitize(task.role), max(1, w-14), "…"))
+				}
+				add(bar+"  "+heading, rowMeta{gutter: 4, skip: true})
+				for _, paragraph := range strings.Split(sanitize(task.prompt), "\n") {
 					for lineIndex, line := range strings.Split(ansi.Hardwrap(paragraph, max(1, w-6), false), "\n") {
 						add(bar+"    "+creamStyle.Render(line), rowMeta{gutter: 6, cont: lineIndex > 0, target: target})
 					}
@@ -431,7 +435,11 @@ func toolSummary(call core.ToolCall) string {
 			if len(tasks) == 1 {
 				label = "task"
 			}
-			return fmt.Sprintf("%d %s", len(tasks), label)
+			summary := fmt.Sprintf("%d %s", len(tasks), label)
+			if roles := subagentRoles(tasks); roles != "" {
+				summary += " · " + roles
+			}
+			return summary
 		}
 	}
 	if call.Name == "Terminal" {
@@ -469,15 +477,54 @@ func toolSummary(call core.ToolCall) string {
 	return ""
 }
 
-// subagentTasks returns the delegated prompts carried by a Subagent call.
-func subagentTasks(call core.ToolCall) []string {
+// subagentTask is one task of a Subagent call: the role it names and its prompt.
+type subagentTask struct{ role, prompt string }
+
+// subagentTasks returns the delegated tasks carried by a Subagent call. A
+// session from before roles holds bare prompts, which have no role.
+func subagentTasks(call core.ToolCall) []subagentTask {
 	var args struct {
-		Tasks []string `json:"tasks"`
+		Tasks []json.RawMessage `json:"tasks"`
 	}
 	if json.Unmarshal(call.Arguments, &args) != nil {
 		return nil
 	}
-	return args.Tasks
+	tasks := make([]subagentTask, 0, len(args.Tasks))
+	for _, raw := range args.Tasks {
+		var prompt string
+		var task struct{ Role, Task string }
+		if json.Unmarshal(raw, &prompt) == nil {
+			tasks = append(tasks, subagentTask{prompt: prompt})
+		} else if json.Unmarshal(raw, &task) == nil {
+			// The role is the model's text until the tool checks it; it must stay one line.
+			tasks = append(tasks, subagentTask{strings.Join(strings.Fields(task.Role), " "), task.Task})
+		} else {
+			return nil
+		}
+	}
+	return tasks
+}
+
+// subagentRoles names the roles tasks were given, in order, each once, with a
+// count when it was given more than one task: "scout ×2, reviewer".
+func subagentRoles(tasks []subagentTask) string {
+	var roles []string
+	counts := map[string]int{}
+	for _, task := range tasks {
+		if task.role == "" {
+			continue
+		}
+		if counts[task.role] == 0 {
+			roles = append(roles, task.role)
+		}
+		counts[task.role]++
+	}
+	for i, role := range roles {
+		if counts[role] > 1 {
+			roles[i] = fmt.Sprintf("%s ×%d", role, counts[role])
+		}
+	}
+	return strings.Join(roles, ", ")
 }
 
 // scratchPath shows a file in the session's scratch directory, which ViewImage

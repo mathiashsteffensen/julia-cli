@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"jarvis/agents"
 	"jarvis/internal/browser"
 	"jarvis/internal/core"
 )
@@ -548,7 +549,7 @@ func TestBrowserLifecycle(t *testing.T) {
 	mustBrowse(t, e, map[string]any{"action": "navigate", "url": site.local.URL + "/form"})
 	b := e.browsing.b
 	pid, profile := b.PID(), b.ProfileDir()
-	executor := WithSubagents(e, func(ctx context.Context, _ string, tools core.ToolExecutor) (string, error) {
+	executor := WithSubagents(e, agents.Builtin(), func(ctx context.Context, _ agents.Role, _ string, tools core.ToolExecutor) (string, error) {
 		if r := browse(t, tools, map[string]any{"action": "snapshot", "page": "p1"}); !r.IsError {
 			return "", errors.New("the child reached the parent's page")
 		}
@@ -560,7 +561,7 @@ func TestBrowserLifecycle(t *testing.T) {
 		}
 		return "ok", nil
 	})
-	if r := executor.Execute(context.Background(), core.ToolCall{Name: "Subagent", Arguments: json.RawMessage(`{"tasks":["look at the home page"]}`)}); r.IsError || strings.Contains(r.Content, `"error"`) {
+	if r := executor.Execute(context.Background(), core.ToolCall{Name: "Subagent", Arguments: json.RawMessage(`{"tasks":[{"role":"delegate","task":"look at the home page"}]}`)}); r.IsError || strings.Contains(r.Content, `"error"`) {
 		t.Fatal(r.Content)
 	}
 	if len(e.browsing.scopes) != 1 {

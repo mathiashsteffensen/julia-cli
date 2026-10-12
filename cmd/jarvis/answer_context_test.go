@@ -141,7 +141,7 @@ func TestSubagentApprovalsSeeTheParentsAnswers(t *testing.T) {
 			return nil
 		}
 		askQuestion(ctx, executor, `{"question":"Which directories may I clean?"}`)
-		executor.Execute(ctx, core.ToolCall{ID: "sub", Name: "Subagent", Arguments: json.RawMessage(`{"tasks":["clean up"]}`)})
+		executor.Execute(ctx, core.ToolCall{ID: "sub", Name: "Subagent", Arguments: json.RawMessage(`{"tasks":[{"role":"delegate","task":"clean up"}]}`)})
 		return nil
 	}
 	runner, s, approvals := askModeRunner(t, backend, ask, true)

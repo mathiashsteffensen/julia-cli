@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"jarvis/agents"
 	"jarvis/internal/core"
 )
 
@@ -159,7 +160,7 @@ func TestQuestionDefinitionSchema(t *testing.T) {
 
 func TestQuestionDefinitionsAppendedLast(t *testing.T) {
 	// Spare capacity makes an in-place append to the base slice observable.
-	baseDefs := append(make([]core.ToolDefinition, 0, 32), Definitions(true)...)
+	baseDefs := append(make([]core.ToolDefinition, 0, 32), Definitions(agents.Builtin())...)
 	base := &stubExecutor{defs: baseDefs}
 	executor := WithQuestions(base, (&askRecorder{}).ask)
 	defs := executor.Definitions()
@@ -182,7 +183,7 @@ func TestQuestionDefinitionsAppendedLast(t *testing.T) {
 }
 
 func TestQuestionNilAskerLeavesToolUnregistered(t *testing.T) {
-	stub := &stubExecutor{defs: Definitions(false)}
+	stub := &stubExecutor{defs: Definitions(nil)}
 	if got := WithQuestions(stub, nil); got != core.ToolExecutor(stub) {
 		t.Fatal("nil asker did not return the base executor")
 	}
@@ -746,7 +747,7 @@ func TestQuestionDoesNotBlockWorkspaceTools(t *testing.T) {
 			}
 			var inner core.ToolExecutor = base
 			if stacked {
-				inner = WithSubagents(base, func(context.Context, string, core.ToolExecutor) (string, error) { return "", nil })
+				inner = WithSubagents(base, agents.Builtin(), func(context.Context, agents.Role, string, core.ToolExecutor) (string, error) { return "", nil })
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -795,7 +796,7 @@ func TestQuestionDoesNotBlockWorkspaceTools(t *testing.T) {
 func TestQuestionHiddenFromSubagents(t *testing.T) {
 	base, _ := questionWorkspace(t)
 	var asked, ran atomic.Int32
-	runner := func(ctx context.Context, task string, child core.ToolExecutor) (string, error) {
+	runner := func(ctx context.Context, _ agents.Role, task string, child core.ToolExecutor) (string, error) {
 		for _, def := range child.Definitions() {
 			if def.Name == core.QuestionTool {
 				return "", errors.New("child sees the question tool")
@@ -807,7 +808,7 @@ func TestQuestionHiddenFromSubagents(t *testing.T) {
 		ran.Add(1)
 		return task, nil
 	}
-	executor := WithQuestions(WithSubagents(base, runner), func(context.Context, core.Question) (core.Answer, error) {
+	executor := WithQuestions(WithSubagents(base, agents.Builtin(), runner), func(context.Context, core.Question) (core.Answer, error) {
 		asked.Add(1)
 		return core.Answer{Text: "yes"}, nil
 	})
@@ -821,7 +822,7 @@ func TestQuestionHiddenFromSubagents(t *testing.T) {
 		t.Fatalf("parent definitions wrong: %v, last %q", names, defs[len(defs)-1].Name)
 	}
 
-	result := executor.Execute(context.Background(), core.ToolCall{Name: "Subagent", Arguments: json.RawMessage(`{"tasks":["a","b"]}`)})
+	result := executor.Execute(context.Background(), core.ToolCall{Name: "Subagent", Arguments: json.RawMessage(`{"tasks":[{"role":"delegate","task":"a"},{"role":"delegate","task":"b"}]}`)})
 	var children []struct {
 		Task          int
 		Output, Error string

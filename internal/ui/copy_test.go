@@ -155,7 +155,7 @@ func TestClickOnCodeBlockCopiesItsCode(t *testing.T) {
 
 func subagentCopyModel(t *testing.T, task string) (*model, *[]string) {
 	t.Helper()
-	arguments, err := json.Marshal(map[string]any{"tasks": []string{task}})
+	arguments, err := json.Marshal(map[string]any{"tasks": []map[string]string{{"role": "reviewer", "task": task}}})
 	if err != nil {
 		t.Fatal(err)
 	}

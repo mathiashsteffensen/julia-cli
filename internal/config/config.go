@@ -6,13 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
 
+	"jarvis/agents"
 	"jarvis/internal/core"
 )
 
@@ -59,6 +62,10 @@ type Config struct {
 	// model served through compatible_base_url's Decisions API. Empty is the
 	// default Codex reviewer.
 	ReviewerModel string `json:"reviewer_model,omitempty"`
+	// Subagents assigns models to subagent roles by name, each
+	// provider/<model-id> or an object with that id and a reasoning effort. A
+	// role without one runs on the delegating agent's model.
+	Subagents map[string]ModelEntry `json:"subagents,omitempty"`
 }
 
 // Providers are the providers a model ID may name.
@@ -175,9 +182,10 @@ func (c Config) ReasoningFor(provider, model string) string {
 	return ""
 }
 
-// Enables reports whether enabled_models lists a model of provider.
+// Enables reports whether enabled_models lists a model of provider, or
+// subagents assigns one to a role.
 func (c Config) Enables(provider string) bool {
-	for _, entry := range c.EnabledModels {
+	for _, entry := range slices.Concat(c.EnabledModels, slices.Collect(maps.Values(c.Subagents))) {
 		if p, _ := SplitModel(entry.ID); p == provider {
 			return true
 		}
@@ -268,6 +276,22 @@ func (c Config) Validate() error {
 			return fmt.Errorf("enabled_models contains %q twice", entry.ID)
 		}
 		seenModels[entry.ID] = true
+	}
+	if len(c.Subagents) > 100 {
+		return errors.New("subagents may assign at most 100 roles")
+	}
+	for _, role := range slices.Sorted(maps.Keys(c.Subagents)) {
+		entry := c.Subagents[role]
+		if !agents.ValidName(role) {
+			return fmt.Errorf("subagents %q is not a role name, which is %s", role, agents.NameRule)
+		}
+		provider, model := SplitModel(entry.ID)
+		if err := c.validateModel("subagents."+role, provider, model, entry.Reasoning); err != nil {
+			return err
+		}
+		if provider == "compatible" && c.CompatibleBaseURL == "" {
+			return fmt.Errorf("subagents.%s runs on the compatible provider; set compatible_base_url to its API endpoint", role)
+		}
 	}
 	if err := validateReasoning(c.Provider, c.CompatibleBaseURL, c.Reasoning); err != nil {
 		return err

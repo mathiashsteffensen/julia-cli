@@ -330,3 +330,65 @@ func TestModelReasoningBeatsRememberedReasoning(t *testing.T) {
 		t.Fatal("a model without reasoning lost the remembered effort", cfg.Reasoning)
 	}
 }
+
+func TestSubagentModelConfiguration(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `{
+  "model": "codex/gpt-6-astra",
+  "compatible_base_url": "https://openrouter.ai/api/v1",
+  "api_key_env": "OPENROUTER_API_KEY",
+  "subagents": {
+    "reviewer": "compatible/mistralai/mistral-large-4-0",
+    "scout": {"id": "compatible/minimax/minimax-m3", "reasoning": "low"},
+    "oracle": "codex/gpt-6-astra",
+    "my-role": "codex"
+  },
+  "reviewer_model": "compatible/typesafe/jev-1.13"
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]ModelEntry{
+		"reviewer": {ID: "compatible/mistralai/mistral-large-4-0"},
+		"scout":    {ID: "compatible/minimax/minimax-m3", Reasoning: "low"},
+		"oracle":   {ID: "codex/gpt-6-astra"},
+		"my-role":  {ID: "codex"},
+	}
+	if len(cfg.Subagents) != len(want) {
+		t.Fatalf("subagents %v, want %v", cfg.Subagents, want)
+	}
+	for role, entry := range want {
+		if cfg.Subagents[role] != entry {
+			t.Fatalf("subagents.%s = %+v, want %+v", role, cfg.Subagents[role], entry)
+		}
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil || !strings.Contains(string(data), `"subagents":{"my-role":"codex","oracle":"codex/gpt-6-astra","reviewer":"compatible/mistralai/mistral-large-4-0","scout":{"id":"compatible/minimax/minimax-m3","reasoning":"low"}}`) {
+		t.Fatalf("subagents do not round-trip: %s %v", data, err)
+	}
+	for _, tc := range []struct{ subagents, want string }{
+		{`{"scout": "minimax/m3"}`, `subagents.scout "minimax/m3" must be provider/<model-id>`},
+		{`{"scout": "openai"}`, `subagents.scout "openai" needs a model ID`},
+		{`{"scout": "compatible/` + CompatibleDecisionsModel + `"}`, "decisions-only"},
+		{`{"scout": {"id": "openai/m", "reasoning": "high"}}`, "reasoning is configurable for Codex and OpenRouter"},
+		{`{"scout": {"id": "compatible/m", "reasoning": "extreme"}}`, "OpenRouter reasoning must be one of"},
+		{`{"scout": {"id": "codex/m", "effort": "high"}}`, `unknown field "effort"`},
+		{`{"Scout": "codex/m"}`, `subagents "Scout" is not a role name, which is at most 32 lowercase letters, digits or hyphens, starting with a letter`},
+		{`{"2nd": "codex/m"}`, `subagents "2nd" is not a role name`},
+		{`{"": "codex/m"}`, `subagents "" is not a role name`},
+		{`{"scout": ""}`, `subagents.scout "" must be provider/<model-id>`},
+	} {
+		_, err := Load(writeConfig(t, `{"compatible_base_url":"https://openrouter.ai/api/v1","subagents":`+tc.subagents+`}`))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("subagents %s: %v, want %q", tc.subagents, err, tc.want)
+		}
+	}
+	if _, err := Load(writeConfig(t, `{"subagents":{"scout":"compatible/vendor/m"}}`)); err == nil || !strings.Contains(err.Error(), "subagents.scout runs on the compatible provider; set compatible_base_url") {
+		t.Fatalf("compatible role without an endpoint: %v", err)
+	}
+	// A role's compatible model, like an enabled one, means the endpoint needs its key.
+	roles := Default()
+	roles.Subagents = map[string]ModelEntry{"scout": {ID: "compatible/vendor/m"}}
+	if !roles.Enables("compatible") || roles.Enables("openai") {
+		t.Fatal("Enables ignores the subagents' models")
+	}
+}
