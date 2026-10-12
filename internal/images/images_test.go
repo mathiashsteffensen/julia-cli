@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/gif"
 	"image/png"
+	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -174,4 +175,22 @@ func TestEncodePreparesInMemoryPictures(t *testing.T) {
 	if _, err := Encode(image.NewNRGBA(image.Rect(0, 0, 0, 0))); err == nil {
 		t.Fatal("encoded an empty picture")
 	}
+}
+
+// Clipboard data is read no further than the file limit.
+func TestReadClipboardIsBounded(t *testing.T) {
+	if _, err := readClipboard(io.LimitReader(zeros{}, MaxFileBytes+1)); err == nil {
+		t.Fatal("an oversized clipboard image was read")
+	}
+	data, err := readClipboard(strings.NewReader("\x89PNG"))
+	if err != nil || string(data) != "\x89PNG" {
+		t.Fatalf("readClipboard = %q, %v", data, err)
+	}
+}
+
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
 }

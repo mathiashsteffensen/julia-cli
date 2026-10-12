@@ -146,7 +146,7 @@ func TestCodexRunsDynamicToolAndCheckpoints(t *testing.T) {
 	if executor.calls != 1 {
 		t.Fatalf("executed %d tools", executor.calls)
 	}
-	if checkpoints != 5 {
+	if checkpoints != 6 {
 		t.Fatalf("checkpoint count %d", checkpoints)
 	}
 	if session.RemoteID != "thread-1" || session.Model != "test-model" {
@@ -249,6 +249,89 @@ func TestCodexRefusesUnadvertisedAndForeignToolCalls(t *testing.T) {
 				t.Fatal("call was not denied")
 			}
 		})
+	}
+}
+
+// A prompt is saved before Codex can accept it. A crash before the turn is
+// acknowledged leaves the saved session holding it, and the next turn repeats
+// it, since the thread may never have received it.
+func TestCodexPromptSavedBeforeTurnStartAndRecovered(t *testing.T) {
+	f := newCodexFixture(t)
+	f.turn = func(f *codexFixture) { f.finish("completed") }
+	var crashed *core.Session
+	backend := &Codex{start: f.start, Checkpoint: func(s *core.Session) error {
+		if crashed == nil && strings.Contains(string(s.State), `"pending_turn":"thread-1"`) {
+			copied := *s
+			copied.Messages = append([]core.Message(nil), s.Messages...)
+			crashed = &copied
+			for _, r := range f.requests {
+				if string(r["method"]) == `"turn/start"` {
+					t.Error("the prompt was saved after the turn started")
+				}
+			}
+		}
+		return nil
+	}}
+	session := &core.Session{Directory: t.TempDir()}
+	if err := backend.Run(context.Background(), session, core.Prompt{Text: "First request"}, &codexTestExecutor{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if crashed == nil || len(crashed.Messages) != 1 || crashed.Messages[0].Content != "First request" {
+		t.Fatalf("no checkpoint held the pending prompt: %+v", crashed)
+	}
+	if strings.Contains(string(session.State), "pending_turn") {
+		t.Fatalf("pending turn survived acceptance: %s", session.State)
+	}
+	f = newCodexFixture(t)
+	f.turn = func(f *codexFixture) { f.finish("completed") }
+	backend = &Codex{start: f.start}
+	if err := backend.Run(context.Background(), crashed, core.Prompt{Text: "Second request"}, &codexTestExecutor{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	for _, r := range f.requests {
+		if string(r["method"]) == `"turn/start"` {
+			var params struct {
+				Input []struct{ Text string } `json:"input"`
+			}
+			json.Unmarshal(r["params"], &params)
+			text = params.Input[0].Text
+		}
+	}
+	if !strings.Contains(text, "may not have received it") || !strings.Contains(text, "First request") || !strings.HasSuffix(text, "Second request") {
+		t.Fatalf("recovered turn prompt: %q", text)
+	}
+	if len(crashed.Messages) != 2 || strings.Contains(string(crashed.State), "pending_turn") {
+		t.Fatalf("recovered session: %+v %s", crashed.Messages, crashed.State)
+	}
+}
+
+// A turn Codex refuses leaves no prompt behind.
+func TestCodexRefusedTurnDropsSavedPrompt(t *testing.T) {
+	f := newCodexFixture(t)
+	start := f.start
+	backend := &Codex{start: func(ctx context.Context, binary, dir string) (*codexClient, error) {
+		client, err := start(ctx, binary, dir)
+		if err != nil {
+			return nil, err
+		}
+		input := client.input
+		client.input = codexTestWriter(func(p []byte) (int, error) {
+			var request map[string]json.RawMessage
+			if json.Unmarshal(p, &request) == nil && string(request["method"]) == `"turn/start"` {
+				f.push(map[string]any{"id": request["id"], "error": map[string]any{"code": -32600, "message": "refused"}})
+				return len(p), nil
+			}
+			return input.Write(p)
+		})
+		return client, nil
+	}}
+	session := &core.Session{Directory: t.TempDir()}
+	if err := backend.Run(context.Background(), session, core.Prompt{Text: "Refused"}, &codexTestExecutor{}, nil); err == nil {
+		t.Fatal("a refused turn succeeded")
+	}
+	if len(session.Messages) != 0 || strings.Contains(string(session.State), "pending_turn") {
+		t.Fatalf("refused turn left %+v %s", session.Messages, session.State)
 	}
 }
 

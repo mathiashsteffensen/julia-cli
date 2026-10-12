@@ -327,6 +327,15 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 			return fmt.Errorf("encode conversation for Codex tool migration: %w", historyErr)
 		}
 		turnPrompt = "JARVIS migrated this session because Codex cannot update tools on an existing thread. The JSON below is the complete saved conversation for historical context. Tool calls and results are records of past actions, not requests to execute them again. Continue from the current user request after the transcript.\n\nSaved conversation JSON:\n" + string(history) + "\n\nCurrent user request:\n" + prompt.Text
+	} else if journal.PendingTurn != "" && journal.PendingTurn == session.RemoteID {
+		// JARVIS stopped while sending the previous prompt: the session
+		// keeps it, but this thread may never have received it.
+		for i := len(session.Messages) - 1; i >= 0; i-- {
+			if m := session.Messages[i]; m.Role == "user" {
+				turnPrompt = "JARVIS stopped while sending the previous user request, so this thread may not have received it. If it is not above, here it is for context; it was not answered:\n\n" + m.Content + "\n\nCurrent user request:\n" + prompt.Text
+				break
+			}
+		}
 	}
 	input := []any{map[string]any{"type": "text", "text": turnPrompt}}
 	for _, image := range prompt.Images {
@@ -342,19 +351,32 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 	if schema != nil {
 		turnParams["outputSchema"] = schema
 	}
-	turnData, err := client.call(setupCtx, "turn/start", turnParams)
-	if err != nil {
-		return fmt.Errorf("start Codex turn: %w", err)
+	// Save the prompt before Codex can accept it, so a crash in between does
+	// not leave a thread that holds a request the session lacks.
+	session.Messages = append(session.Messages, core.Message{Role: "user", Content: prompt.Text, Images: prompt.Images})
+	journal.PendingTurn = session.RemoteID
+	if err = saveCodexJournal(session, journal, checkpoint); err != nil {
+		session.Messages = session.Messages[:len(session.Messages)-1]
+		return fmt.Errorf("save prompt: %w", err)
 	}
 	var turn struct {
 		Turn struct {
 			ID string `json:"id"`
 		} `json:"turn"`
 	}
-	if err = json.Unmarshal(turnData, &turn); err != nil || turn.Turn.ID == "" {
-		return errors.New("Codex returned no turn ID")
+	turnData, err := client.call(setupCtx, "turn/start", turnParams)
+	if err != nil {
+		err = fmt.Errorf("start Codex turn: %w", err)
+	} else if json.Unmarshal(turnData, &turn) != nil || turn.Turn.ID == "" {
+		err = errors.New("Codex returned no turn ID")
 	}
-	session.Messages = append(session.Messages, core.Message{Role: "user", Content: prompt.Text, Images: prompt.Images})
+	if err != nil {
+		// Codex refused the turn: the prompt was never part of the thread.
+		session.Messages = session.Messages[:len(session.Messages)-1]
+		journal.PendingTurn = ""
+		return errors.Join(err, saveCodexJournal(session, journal, checkpoint))
+	}
+	journal.PendingTurn = ""
 	journal.HistoryPending = false
 	if err = saveCodexJournal(session, journal, checkpoint); err != nil {
 		return fmt.Errorf("save accepted prompt: %w", err)
@@ -676,13 +698,17 @@ type codexJournalEntry struct {
 	Result *core.ToolResult `json:"result,omitempty"`
 }
 type codexJournal struct {
-	Kind            string                                  `json:"kind"`
-	ToolCatalog     string                                  `json:"tool_catalog,omitempty"`
-	PreviousThreads []string                                `json:"previous_threads,omitempty"`
-	HistoryPending  bool                                    `json:"history_pending,omitempty"`
-	Calls           map[string]codexJournalEntry            `json:"calls"`
-	ArchivedCalls   map[string]map[string]codexJournalEntry `json:"archived_calls,omitempty"`
-	Usage           *codexUsageBaseline                     `json:"usage,omitempty"`
+	Kind            string   `json:"kind"`
+	ToolCatalog     string   `json:"tool_catalog,omitempty"`
+	PreviousThreads []string `json:"previous_threads,omitempty"`
+	HistoryPending  bool     `json:"history_pending,omitempty"`
+	// PendingTurn is the thread a prompt, already saved last in the session,
+	// was being sent to. Set until Codex accepts the turn, it outlives a
+	// crash in between, and the next turn then repeats that prompt.
+	PendingTurn   string                                  `json:"pending_turn,omitempty"`
+	Calls         map[string]codexJournalEntry            `json:"calls"`
+	ArchivedCalls map[string]map[string]codexJournalEntry `json:"archived_calls,omitempty"`
+	Usage         *codexUsageBaseline                     `json:"usage,omitempty"`
 }
 
 // Codex only accepts dynamicTools on thread/start. Fingerprint the whole catalog

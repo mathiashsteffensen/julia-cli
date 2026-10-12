@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -97,6 +98,9 @@ type ContextOptions struct {
 	// returns is where the caller keeps the file, which the note reports: a
 	// directory Chrome writes into may be one only the caller can trust.
 	Keep func(path, name string) (string, error)
+	// MaxDownload bounds each download in bytes: Chrome's is canceled once
+	// it says it will grow, or has grown, past it. Zero means no bound.
+	MaxDownload int64
 	// LoopbackOnly sends every connection not addressed to a loopback host
 	// (localhost, *.localhost, 127.0.0.0/8, [::1]) to the browser's proxy,
 	// which opens only what Options.Dial allows: a network-level backstop for
@@ -181,6 +185,11 @@ func (b *Browser) NewContext(ctx context.Context, opts ContextOptions) (*Context
 	}
 	if err := opts.Viewport.check(); err != nil {
 		return nil, err
+	}
+	if opts.LoopbackOnly && !b.checksLocalNetwork() {
+		// Only Local Network Access keeps a page from beyond loopback off
+		// loopback servers by WebSocket, which the policy cannot pause.
+		return nil, fmt.Errorf("%s does not enforce Local Network Access; Chrome %d or later is required", b.product, minLocalNetworkMajor)
 	}
 	params := target.CreateBrowserContextParams{DisposeOnDetach: ptr(true)}
 	if opts.LoopbackOnly {
@@ -523,6 +532,8 @@ func (c *Context) blocked(p *Page, method, raw, kind, reason, from string) {
 // without a request the Fetch domain can pause, so only LoopbackOnly stops
 // one: the proxy refuses it beyond loopback, and Chrome's Local Network
 // Access checks refuse a page that came through the proxy a loopback one.
+// A loopback page's WebSocket to loopback is beyond both, so that one is
+// reported as opened.
 func (c *Context) webSocket(p *Page, params jsontext.Value) {
 	var ev network.EventWebSocketCreated
 	if !decode(params, &ev) {
@@ -532,17 +543,35 @@ func (c *Context) webSocket(p *Page, params jsontext.Value) {
 	if err != nil {
 		return
 	}
-	d := c.decide(Request{URL: u, Method: "GET", Type: "WebSocket", Page: p.id, From: c.documentOf(p)})
+	from := c.documentOf(p)
+	d := c.decide(Request{URL: u, Method: "GET", Type: "WebSocket", Page: p.id, From: from})
 	if d.Allow {
 		return
 	}
-	if c.opts.LoopbackOnly && (!isLoopback(u.Hostname()) || c.b.checksLocalNetwork()) {
+	if c.opts.LoopbackOnly && (!isLoopback(u.Hostname()) || public(from)) {
 		c.blocked(p, "GET", ev.URL, "WebSocket", d.Reason, "page")
 		return
 	}
 	text := fmt.Sprintf("a WebSocket to %s opened although the policy refuses it (%s): WebSockets cannot be intercepted", clip(ev.URL, 300), d.Reason)
 	p.log(LogEntry{Kind: "blocked", Level: "warning", Text: text})
 	c.note(p.id, NoteBlocked, text)
+}
+
+// public reports whether a document came through the proxy, which Chrome
+// counts as the public internet: an http(s) document, or a blob: one made
+// there, not on a loopback host.
+func public(doc string) bool {
+	u, err := url.Parse(doc)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(u.Scheme, "blob") {
+		if u, err = url.Parse(u.Opaque); err != nil {
+			return false
+		}
+	}
+	scheme := strings.ToLower(u.Scheme)
+	return (scheme == "http" || scheme == "https") && u.Hostname() != "" && !isLoopback(u.Hostname())
 }
 
 // isLoopback reports whether Chrome connects to host directly even when a
@@ -607,13 +636,23 @@ func (c *Context) onWorkerEvent(s *session, method string, params jsontext.Value
 
 func (c *Context) downloadBegan(p *Page, ev browser.EventDownloadWillBegin) {
 	c.mu.Lock()
-	if len(c.downloads) < 100 {
+	tracked := len(c.downloads) < 100
+	if tracked {
 		c.downloads[ev.GUID] = download{page: p.id, name: ev.SuggestedFilename, url: ev.URL}
 	}
 	c.mu.Unlock()
-	if c.opts.Downloads == "" {
+	switch {
+	case c.opts.Downloads == "":
 		c.note(p.id, NoteDownload, fmt.Sprintf("refused a download of %s from %s: downloads are disabled", quoteName(ev.SuggestedFilename), clip(ev.URL, 200)))
+	case !tracked:
+		// An untracked download could not be bounded.
+		c.cancelDownload(ev.GUID)
+		c.note(p.id, NoteDownload, fmt.Sprintf("canceled a download of %s from %s: too many downloads are in progress", quoteName(ev.SuggestedFilename), clip(ev.URL, 200)))
 	}
+}
+
+func (c *Context) cancelDownload(guid string) {
+	c.b.root.send(browser.CommandCancelDownload, browser.CancelDownloadParams{GUID: guid, BrowserContextID: c.id})
 }
 
 func (c *Context) downloadProgress(ev browser.EventDownloadProgress) {
@@ -624,6 +663,23 @@ func (c *Context) downloadProgress(ev browser.EventDownloadProgress) {
 	}
 	c.mu.Unlock()
 	if !ok || c.opts.Downloads == "" {
+		return
+	}
+	limit := float64(c.opts.MaxDownload)
+	if limit > 0 && (ev.TotalBytes > limit || ev.ReceivedBytes > limit) {
+		c.mu.Lock()
+		delete(c.downloads, ev.GUID)
+		c.mu.Unlock()
+		if ev.State == browser.DownloadProgressStateInProgress {
+			c.cancelDownload(ev.GUID)
+		} else if ev.State == browser.DownloadProgressStateCompleted {
+			path := ev.FilePath
+			if path == "" {
+				path = filepath.Join(c.opts.Downloads, ev.GUID)
+			}
+			os.Remove(path)
+		}
+		c.note(d.page, NoteDownload, fmt.Sprintf("canceled the download of %s: it is larger than %d MiB", quoteName(d.name), c.opts.MaxDownload>>20))
 		return
 	}
 	switch ev.State {

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,10 +38,13 @@ import (
 //     Access checks keep a document from there off loopback, WebSockets
 //     included.
 //
-// What a page may reach without asking: loopback servers (the dev server a
-// loopback Terminal runs), files in the workspace and $JARVIS_SCRATCH
+// What a page may reach without asking: the loopback servers the agent's
+// own terminals listen on (the dev server a loopback Terminal runs), measured
+// before each Browser action, files in the workspace and $JARVIS_SCRATCH
 // (served by JARVIS itself, so Chrome never opens a path), and data: and
-// blob: URLs a page makes. Every other origin waits for an approval that
+// blob: URLs a page makes. Other loopback servers are the machine's own
+// services, which often trust any local client, and need approval like any
+// origin. Every other origin waits for an approval that
 // names it: navigate with network=true, or the allow action, reviewed once
 // per origin in auto mode and asked of the user in ask mode, after which
 // that origin's requests load for the rest of the turn.
@@ -202,7 +206,10 @@ func (st *browserState) decide(r browser.Request) browser.Decision {
 		if from && (!r.MainFrame || r.Method != "GET") {
 			return browser.Decision{Reason: "a page from " + originOf(r.From) + " may not reach local servers"}
 		}
-		return allow
+		if st.terminalServer(r.URL) || st.approved(origin) {
+			return allow
+		}
+		return browser.Decision{Reason: origin + " is not a server your terminals started and is not approved for this turn; Browser allow asks for it"}
 	}
 	if ip, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil && ip.IsUnspecified() {
 		return browser.Decision{Reason: host + " is not an address to browse; use localhost"}
@@ -211,6 +218,37 @@ func (st *browserState) decide(r browser.Request) browser.Decision {
 		return allow
 	}
 	return browser.Decision{Reason: origin + " is not approved for this turn; Browser allow asks for it"}
+}
+
+// measurePorts records the loopback ports the executor's terminals listen on.
+// When they cannot be measured, none are: every loopback server then needs
+// approval.
+func (st *browserState) measurePorts(ports []int, err error) {
+	if err != nil {
+		ports = nil
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.ports = append(ports, st.testPorts...)
+}
+
+// terminalServer reports whether u is a loopback URL whose port one of the
+// executor's terminals listens on: a server the agent started itself.
+func (st *browserState) terminalServer(u *url.URL) bool {
+	if !loopbackHost(u.Hostname()) {
+		return false
+	}
+	port := u.Port()
+	if port == "" {
+		port = map[string]string{"http": "80", "ws": "80", "https": "443", "wss": "443"}[strings.ToLower(u.Scheme)]
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		return false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return slices.Contains(st.ports, n)
 }
 
 // originOf names the origin of a URL that external accepted.
@@ -277,11 +315,44 @@ func (st *browserState) connect(ctx context.Context, address string) (net.Conn, 
 	return st.testDial(ctx, address)
 }
 
-var sharedAddressSpace = netip.MustParsePrefix("100.64.0.0/10") // carrier-grade NAT, tailnets
+// specialUse are the global-unicast ranges IANA reserves for special use
+// (RFC 6890 and its successors), which a network may route to its own hosts.
+var specialUse = func() []netip.Prefix {
+	var list []netip.Prefix
+	for _, p := range []string{
+		"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "192.31.196.0/24", "192.52.193.0/24", "192.88.99.0/24", "192.175.48.0/24",
+		"198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "240.0.0.0/4",
+		"64:ff9b:1::/48", "100::/64", "2001::/23", "2001:db8::/32", "3fff::/20", "5f00::/16", "fec0::/10",
+	} {
+		list = append(list, netip.MustParsePrefix(p))
+	}
+	return list
+}()
+
+var (
+	nat64     = netip.MustParsePrefix("64:ff9b::/96")
+	sixToFour = netip.MustParsePrefix("2002::/16")
+)
 
 func publicAddress(ip netip.Addr) bool {
 	ip = ip.Unmap()
-	return ip.IsGlobalUnicast() && !ip.IsPrivate() && !sharedAddressSpace.Contains(ip)
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return false
+	}
+	for _, p := range specialUse {
+		if p.Contains(ip) {
+			return false
+		}
+	}
+	// Addresses that carry an IPv4 address are as public as that address.
+	b := ip.As16()
+	switch {
+	case nat64.Contains(ip):
+		return publicAddress(netip.AddrFrom4([4]byte(b[12:])))
+	case sixToFour.Contains(ip):
+		return publicAddress(netip.AddrFrom4([4]byte(b[2:6])))
+	}
+	return true
 }
 
 // local confines a file: URL's path to the workspace or the scratch
@@ -314,6 +385,13 @@ type fileRoot struct{ dir, spelling string }
 const (
 	maxServedFile = 32 << 20
 	maxUpload     = 32 << 20
+)
+
+// maxDownload bounds one download, and maxDownloads what the downloads of a
+// session may keep in all.
+const (
+	maxDownload  = 256 << 20
+	maxDownloads = 1 << 30
 )
 
 // serveFile reads a file: URL's file for the browser, refusing a symlink at
@@ -446,8 +524,9 @@ func (e *Executor) uploadCopies(paths []string) ([]string, error) {
 // suggested. The sandbox can write the scratch directory, so nothing in it
 // is followed: Chrome runs outside the sandbox, and a symlink planted for
 // downloads, or for the scratch directory itself, would otherwise have it
-// write wherever the user can.
-func keepDownload(scratch string) func(path, name string) (string, error) {
+// write wherever the user can. Each copy is bounded by maxDownload, and all
+// of them together by maxDownloads.
+func (st *browserState) keepDownload(scratch string) func(path, name string) (string, error) {
 	return func(path, name string) (string, error) {
 		defer os.Remove(path)
 		src, err := os.Open(path)
@@ -455,6 +534,22 @@ func keepDownload(scratch string) func(path, name string) (string, error) {
 			return "", err
 		}
 		defer src.Close()
+		info, err := src.Stat()
+		if err != nil {
+			return "", err
+		}
+		if !info.Mode().IsRegular() || info.Size() > maxDownload {
+			return "", fmt.Errorf("a download may be at most %d MiB", maxDownload>>20)
+		}
+		st.mu.Lock()
+		over := st.kept+info.Size() > maxDownloads
+		if !over {
+			st.kept += info.Size()
+		}
+		st.mu.Unlock()
+		if over {
+			return "", fmt.Errorf("this session's downloads may keep at most %d MiB in all", maxDownloads>>20)
+		}
 		root, err := unix.Open(scratch, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if err != nil {
 			return "", fmt.Errorf("open %s: %w", scratchVariable, err)
@@ -483,8 +578,12 @@ func keepDownload(scratch string) func(path, name string) (string, error) {
 				return "", err
 			}
 			dst := os.NewFile(uintptr(fd), candidate)
-			_, err = io.Copy(dst, src)
+			n, err := io.Copy(dst, io.LimitReader(src, info.Size()+1))
+			if err == nil && n > info.Size() {
+				err = fmt.Errorf("the download grew while it was copied")
+			}
 			if err = errors.Join(err, dst.Close()); err != nil {
+				unix.Unlinkat(dir, candidate, 0)
 				return "", err
 			}
 			return scratchVariable + "/downloads/" + candidate, nil

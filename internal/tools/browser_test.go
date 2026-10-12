@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -139,6 +140,9 @@ func browserFixture(t *testing.T, mode string, approve core.Approver, site *brow
 	}
 	t.Cleanup(func() { e.Close() })
 	if site != nil {
+		local, _ := url.Parse(site.local.URL)
+		port, _ := strconv.Atoi(local.Port())
+		e.browserState().testPorts = []int{port}
 		external := strings.TrimPrefix(site.external.URL, "http://")
 		e.browserState().testDial = func(ctx context.Context, address string) (net.Conn, error) {
 			if address != "external.test:80" {
@@ -254,7 +258,7 @@ func TestBrowserOrigins(t *testing.T) {
 			t.Errorf("loopbackHost(%s) = %v", host, !want)
 		}
 	}
-	for ip, want := range map[string]bool{"93.184.215.14": true, "2606:4700::1111": true, "10.1.2.3": false, "192.168.8.1": false, "172.16.0.1": false, "127.0.0.1": false, "169.254.169.254": false, "100.100.1.1": false, "::1": false, "fe80::1": false, "fd00::1": false, "::ffff:10.0.0.1": false, "0.0.0.0": false, "224.0.0.1": false} {
+	for ip, want := range map[string]bool{"93.184.215.14": true, "2606:4700::1111": true, "10.1.2.3": false, "192.168.8.1": false, "172.16.0.1": false, "127.0.0.1": false, "169.254.169.254": false, "100.100.1.1": false, "::1": false, "fe80::1": false, "fd00::1": false, "::ffff:10.0.0.1": false, "0.0.0.0": false, "224.0.0.1": false, "198.18.0.1": false, "198.19.255.1": false, "192.0.2.1": false, "203.0.113.9": false, "240.0.0.1": false, "2001:db8::1": false, "64:ff9b::a00:1": false, "64:ff9b::5db8:d70e": true, "2002:a00:1::1": false} {
 		if publicAddress(netip.MustParseAddr(ip)) != want {
 			t.Errorf("publicAddress(%s) = %v", ip, !want)
 		}
@@ -265,8 +269,8 @@ func TestBrowserOrigins(t *testing.T) {
 // and what was approved.
 func TestBrowserPolicy(t *testing.T) {
 	workspace, scratch := t.TempDir(), t.TempDir()
-	st := &browserState{origins: map[string]bool{"https://docs.example.com": true, "http://plain.example.com": true},
-		roots: []fileRoot{{workspace, workspace}, {scratch, scratch}, {scratch, "/var/alias/scratch"}}}
+	st := &browserState{origins: map[string]bool{"https://docs.example.com": true, "http://plain.example.com": true, "http://localhost:6379": true},
+		roots: []fileRoot{{workspace, workspace}, {scratch, scratch}, {scratch, "/var/alias/scratch"}}, ports: []int{80, 5173, 8080}}
 	const page = "http://localhost:5173/app"
 	for _, tc := range []struct {
 		url, from string
@@ -278,6 +282,11 @@ func TestBrowserPolicy(t *testing.T) {
 		{"http://127.0.0.1:8080/", "", true, "GET", ""},
 		{"ws://[::1]:5173/hmr", page, false, "GET", ""},
 		{"http://dev.localhost/", page, false, "POST", ""},
+		// Loopback servers the terminals did not start are the machine's own.
+		{"http://localhost:5432/", page, false, "POST", "not a server your terminals started"},
+		{"http://127.0.0.1:9000/", "", true, "GET", "not a server your terminals started"},
+		{"ws://localhost:9222/devtools", page, false, "GET", "not a server your terminals started"},
+		{"http://localhost:6379/", page, false, "POST", ""},
 		{"https://cdn.example.net/lib.js", page, false, "GET", "https://cdn.example.net is not approved for this turn"},
 		{"https://docs.example.com/guide", page, true, "GET", ""},
 		{"wss://docs.example.com/live", page, false, "GET", ""},
@@ -428,8 +437,10 @@ func TestBrowserApprovals(t *testing.T) {
 			check(map[string]any{"action": "click", "target": button}, human)
 			check(map[string]any{"action": "navigate", "url": "http://external.test/"}, human)
 			check(map[string]any{"action": "allow", "origins": []string{"http://external.test/whatever"}}, "")
-			check(map[string]any{"action": "allow", "origins": []string{"https://fonts.example.org", "http://localhost:3000"}}, review, `"origins":["https://fonts.example.org"]`, `"page_url":"http://external.test/"`)
-			if r := mustBrowse(t, e, map[string]any{"action": "tabs"}); !strings.Contains(r.Content, "Approved this turn: http://external.test, https://fonts.example.org") {
+			check(map[string]any{"action": "allow", "origins": []string{"https://fonts.example.org", site.local.URL}}, review, `"origins":["https://fonts.example.org"]`, `"page_url":"http://external.test/"`)
+			// A loopback server no terminal started is the machine's own.
+			check(map[string]any{"action": "allow", "origins": []string{"http://localhost:3000"}}, review, `"origins":["http://localhost:3000"]`)
+			if r := mustBrowse(t, e, map[string]any{"action": "tabs"}); !strings.Contains(r.Content, "Approved this turn: http://external.test, http://localhost:3000, https://fonts.example.org") {
 				t.Fatalf("tabs: %s", r.Content)
 			}
 		})
@@ -825,5 +836,36 @@ func TestBrowserLongPagesAndModals(t *testing.T) {
 	r = mustBrowse(t, e, map[string]any{"action": "click", "target": "text=Settings"})
 	if !strings.Contains(r.Content, `Modal: dialog "Settings" is open; the rest of the page is inert behind it`) || strings.Contains(r.Content, "Changes since") || strings.Contains(r.Content, "Groceries") {
 		t.Fatalf("opening a modal:\n%s", r.Content)
+	}
+}
+
+// A kept download is bounded alone and with the session's others.
+func TestKeepDownloadIsBounded(t *testing.T) {
+	scratch := t.TempDir()
+	st := &browserState{}
+	keep := st.keepDownload(scratch)
+	write := func(size int64) string {
+		f, err := os.CreateTemp(t.TempDir(), "download-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if err := f.Truncate(size); err != nil {
+			t.Fatal(err)
+		}
+		return f.Name()
+	}
+	if _, err := keep(write(maxDownload+1), "big.bin"); err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("an oversized download was kept: %v", err)
+	}
+	if kept, err := keep(write(1024), "small.bin"); err != nil || filepath.Base(kept) != "small.bin" {
+		t.Fatalf("keep = %q, %v", kept, err)
+	}
+	st.kept = maxDownloads - 512
+	if _, err := keep(write(1024), "more.bin"); err == nil || !strings.Contains(err.Error(), "in all") {
+		t.Fatalf("downloads past the session's budget were kept: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(scratch, "downloads", "more.bin")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused download was written: %v", err)
 	}
 }

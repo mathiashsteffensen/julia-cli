@@ -163,7 +163,7 @@ a browser authorization flow that saves a key to `~/.config/jarvis/firecrawl.jso
 
 | Mode | Behavior |
 | --- | --- |
-| `auto` (default) | Reads, workspace edits, offline or loopback sandboxed Bash and terminals, and the Browser on loopback pages and workspace files run freely. Bash with network, escalated Bash, a networked terminal's start and every input to it, web searches, each new Browser origin, and text, keys, uploads and scripts sent to a page beyond loopback go to the reviewer model. |
+| `auto` (default) | Reads, workspace edits, offline or loopback sandboxed Bash and terminals, and the Browser on the loopback servers its terminals started and workspace files run freely. Bash with network, escalated Bash, a networked terminal's start and every input to it, web searches, each new Browser origin (the machine's other loopback servers included), and text, keys, uploads and scripts sent to a page beyond loopback go to the reviewer model. |
 | `ask` | You approve every mutation, command, terminal start and input, search, and Browser action on a page (navigating, clicking, typing, scripts); looking at a page needs no approval. |
 | `read-only` | Only `Read`, `ViewImage`, `Grep`, and `List`. |
 

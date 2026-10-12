@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -79,7 +80,12 @@ func darwinClipboard(ctx context.Context) (core.Image, error) {
 	result := strings.TrimSpace(string(out))
 	switch {
 	case result == "data":
-		data, err := os.ReadFile(path)
+		file, err := os.Open(path)
+		if err != nil {
+			return core.Image{}, err
+		}
+		data, err := readClipboard(file)
+		file.Close()
 		if err != nil {
 			return core.Image{}, err
 		}
@@ -106,7 +112,10 @@ func linuxClipboard(ctx context.Context) (core.Image, error) {
 			continue
 		}
 		found = true
-		out, err := exec.CommandContext(ctx, command[0], command[1:]...).Output()
+		out, err := clipboardOutput(ctx, command)
+		if errors.Is(err, errClipboardSize) {
+			return core.Image{}, err
+		}
 		if err == nil && len(out) > 0 && bytes.HasPrefix(out, []byte("\x89PNG")) {
 			return Prepare(out)
 		}
@@ -115,4 +124,41 @@ func linuxClipboard(ctx context.Context) (core.Image, error) {
 		return core.Image{}, errors.New("pasting images needs wl-paste (Wayland) or xclip (X11)")
 	}
 	return core.Image{}, ErrNoImage
+}
+
+var errClipboardSize = fmt.Errorf("the clipboard image is larger than %d MB", MaxFileBytes>>20)
+
+// readClipboard reads clipboard image data, at most MaxFileBytes of it, as
+// Load reads a file.
+func readClipboard(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, MaxFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > MaxFileBytes {
+		return nil, errClipboardSize
+	}
+	return data, nil
+}
+
+// clipboardOutput runs a clipboard command and reads its output, stopping it
+// once the output grows past MaxFileBytes.
+func clipboardOutput(ctx context.Context, command []string) ([]byte, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	data, err := readClipboard(stdout)
+	if err != nil {
+		cancel()
+		cmd.Wait()
+		return nil, err
+	}
+	return data, cmd.Wait()
 }

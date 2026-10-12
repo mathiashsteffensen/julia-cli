@@ -309,6 +309,29 @@ func TestDownloadsAreRefused(t *testing.T) {
 	if data, err := os.ReadFile(kept); err != nil || string(data) != "a,b\n1,2\n" || !strings.Contains(notes, `downloaded "report.csv" (8 bytes) to `+kept) {
 		t.Fatalf("kept %q, %v; notes:\n%s", data, err, notes)
 	}
+
+	// A download past MaxDownload is canceled and nothing is kept.
+	keeps := 0
+	k := open(t, func(o *ContextOptions) {
+		o.Downloads = t.TempDir()
+		o.MaxDownload = 4
+		o.Keep = func(path, name string) (string, error) { keeps++; return path, nil }
+	})
+	k.goTo(t, "/downloads")
+	if _, err := k.p.Click(k.ctx, Target{Text: "Get report"}); err != nil {
+		t.Fatal(err)
+	}
+	notes = ""
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(notes, "canceled") {
+		notes += noteText(k.c.Notes())
+		time.Sleep(50 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+	notes += noteText(k.c.Notes())
+	if !strings.Contains(notes, `canceled the download of "report.csv": it is larger than`) || strings.Contains(notes, "downloaded") || keeps != 0 {
+		t.Fatalf("kept %d; notes:\n%s", keeps, notes)
+	}
 }
 
 func TestBasicAuthFailsFast(t *testing.T) {

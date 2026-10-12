@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -125,5 +126,26 @@ func TestGoCachesPersistAndRemainWorkspaceSpecific(t *testing.T) {
 	}
 	if third.GoBuildCache == first.GoBuildCache || third.GoModuleCache == first.GoModuleCache {
 		t.Fatal("workspaces share writable cache")
+	}
+}
+
+// A GOROOT is granted to the sandbox only when it holds the toolchain that
+// reported it: GOROOT=/ in the host environment must not open the disk.
+func TestInstalledGoRootMustHoldTheToolchain(t *testing.T) {
+	binary, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("no Go toolchain")
+	}
+	if binary, err = filepath.EvalSymlinks(binary); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Dir(filepath.Dir(binary))
+	if got, err := installedGoRoot(binary, root); err != nil || got != root {
+		t.Fatalf("installedGoRoot(%s) = %q, %v", root, got, err)
+	}
+	for _, bad := range []string{"/", "", "relative/go", t.TempDir(), filepath.Join(root, "bin")} {
+		if got, err := installedGoRoot(binary, bad); err == nil {
+			t.Errorf("installedGoRoot(%q) accepted %q", bad, got)
+		}
 	}
 }

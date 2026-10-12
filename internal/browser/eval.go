@@ -216,4 +216,7 @@ func (b *Browser) major() int {
 // checksLocalNetwork reports whether Chrome enforces Local Network Access, so
 // that a page from the public internet, which is what Chrome takes the
 // proxy's for, cannot reach loopback.
-func (b *Browser) checksLocalNetwork() bool { return b.major() >= 142 }
+func (b *Browser) checksLocalNetwork() bool { return b.major() >= minLocalNetworkMajor }
+
+// minLocalNetworkMajor is the first Chrome that enforces Local Network Access.
+const minLocalNetworkMajor = 142

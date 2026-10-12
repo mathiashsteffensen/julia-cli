@@ -73,7 +73,9 @@ func (e *Executor) discoverGo(ctx context.Context) (*goEnvironment, error) {
 		cmd := exec.CommandContext(queryCtx, binary, "env", "-json", "GOROOT", "GOMODCACHE")
 		cmd.Dir = os.TempDir()
 		cmd.Env = []string{"HOME=" + home, "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off"}
-		for _, key := range []string{"GOROOT", "GOPATH", "GOMODCACHE"} {
+		// GOROOT is left to the toolchain, which finds its own root from its
+		// executable: a host GOROOT would choose what the sandbox may read.
+		for _, key := range []string{"GOPATH", "GOMODCACHE"} {
 			if value := os.Getenv(key); value != "" {
 				cmd.Env = append(cmd.Env, key+"="+value)
 			}
@@ -86,12 +88,37 @@ func (e *Executor) discoverGo(ctx context.Context) (*goEnvironment, error) {
 		if err = json.Unmarshal(output, &measured); err != nil {
 			return nil, fmt.Errorf("decode Go environment: %w", err)
 		}
+		root, err := installedGoRoot(binary, measured.GOROOT)
+		if err != nil {
+			return nil, err
+		}
 		env.Binary = binary
-		env.Info.GoRoot = measured.GOROOT
+		env.Info.GoRoot = root
 		env.HostModuleCache = measured.GOMODCACHE
 		e.goEnv = env
 	}
 	return e.goEnv, nil
+}
+
+// installedGoRoot checks a reported GOROOT against the toolchain itself: it is
+// granted to sandboxed commands, so it must be the directory whose bin/go is
+// the executable that reported it, and never the filesystem root.
+func installedGoRoot(binary, reported string) (string, error) {
+	if reported == "" || !filepath.IsAbs(reported) {
+		return "", fmt.Errorf("Go reported GOROOT %q, not an absolute path", reported)
+	}
+	root, err := filepath.EvalSymlinks(reported)
+	if err != nil {
+		return "", fmt.Errorf("resolve GOROOT: %w", err)
+	}
+	if root == filepath.Dir(root) {
+		return "", fmt.Errorf("Go reported GOROOT %q, the filesystem root", reported)
+	}
+	tool, err := filepath.EvalSymlinks(filepath.Join(root, "bin", "go"))
+	if err != nil || tool != binary {
+		return "", fmt.Errorf("GOROOT %q does not hold the installed Go executable %s", reported, binary)
+	}
+	return root, nil
 }
 
 func (e *Executor) prepareGoEnvironment(ctx context.Context) (*goEnvironment, error) {
