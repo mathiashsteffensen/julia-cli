@@ -1,12 +1,14 @@
 package ui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"jarvis/internal/core"
 )
 
 func TestSplitFences(t *testing.T) {
@@ -148,6 +150,50 @@ func TestClickOnCodeBlockCopiesItsCode(t *testing.T) {
 	}
 	if !strings.Contains(m.notice, "bash code") {
 		t.Errorf("notice = %q", m.notice)
+	}
+}
+
+func subagentCopyModel(t *testing.T, task string) (*model, *[]string) {
+	t.Helper()
+	arguments, err := json.Marshal(map[string]any{"tasks": []string{task}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, copied := copyModel(t)
+	m.entries = []entry{{
+		role:   "tool",
+		call:   &core.ToolCall{Name: "Subagent", Arguments: arguments},
+		result: &core.ToolResult{Content: "child answer"},
+	}}
+	m.expandTools = true
+	m.refresh(true)
+	return m, copied
+}
+
+func TestDoubleClickCopiesTheSubagentTask(t *testing.T) {
+	task := "Review this exact delegated prompt."
+	m, copied := subagentCopyModel(t, task)
+	row := screenRow(t, m, "Review this exact")
+	runCmd(m, click(m, 10, row))
+	runCmd(m, click(m, 10, row))
+	if len(*copied) != 1 || (*copied)[0] != task {
+		t.Fatalf("copied %q, want the subagent task %q", *copied, task)
+	}
+}
+
+func TestDragCopyJoinsWrappedSubagentPromptRows(t *testing.T) {
+	task := "Inspect the prompt rows and preserve the original text " +
+		strings.Repeat(" including all visible words", 5) +
+		"\nKeep this deliberate line break."
+	m, copied := subagentCopyModel(t, task)
+	start := screenRow(t, m, "Inspect the prompt")
+	end := screenRow(t, m, "Keep this deliberate line break.")
+	m.Update(tea.MouseClickMsg{X: 0, Y: start, Button: tea.MouseLeft})
+	m.Update(tea.MouseMotionMsg{X: 97, Y: end, Button: tea.MouseLeft})
+	_, cmd := m.Update(tea.MouseReleaseMsg{X: 97, Y: end, Button: tea.MouseLeft})
+	runCmd(m, cmd)
+	if len(*copied) != 1 || (*copied)[0] != task {
+		t.Fatalf("copied %q, want the prompt with its original line break %q", *copied, task)
 	}
 }
 

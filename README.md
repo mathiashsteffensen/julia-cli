@@ -50,7 +50,7 @@ Other flags: `--model`, `--reasoning`, `--mode`, `--compatible-base-url`,
 | Ctrl+P or `/model` | Model picker: every model in one list |
 | Ctrl+N | Switch to the next of your `enabled_models` |
 | Shift+Tab or `/reasoning` | Change reasoning effort |
-| Ctrl+O | Expand/collapse tool output |
+| Ctrl+O | Expand/collapse tool output and inspect full subagent tasks |
 | Ctrl+V | Attach the clipboard's image (a screenshot, or an image file copied in Finder) |
 | Drop image files | Attach them instead of pasting their paths |
 | Drag | Copy the selection (without borders or padding) |

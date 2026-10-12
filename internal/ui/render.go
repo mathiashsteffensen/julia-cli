@@ -280,6 +280,18 @@ func (m *model) layoutEntry(item entry) entryLayout {
 			title += "  " + mutedStyle.Render(ansi.Truncate(sanitize(detail), max(6, w-ansi.StringWidth(name)-5), "…"))
 		}
 		add(bar+title, rowMeta{gutter: 2})
+		if item.call != nil && item.call.Name == "Subagent" && m.expandTools {
+			for i, task := range subagentTasks(*item.call) {
+				target := len(out.targets)
+				out.targets = append(out.targets, copyTarget{fmt.Sprintf("subagent task %d", i+1), task})
+				add(bar+"  "+violetStyle.Bold(true).Render(fmt.Sprintf("Task %d", i+1)), rowMeta{gutter: 4, skip: true})
+				for _, paragraph := range strings.Split(sanitize(task), "\n") {
+					for lineIndex, line := range strings.Split(ansi.Hardwrap(paragraph, max(1, w-6), false), "\n") {
+						add(bar+"    "+creamStyle.Render(line), rowMeta{gutter: 6, cont: lineIndex > 0, target: target})
+					}
+				}
+			}
+		}
 		if item.result != nil {
 			result, markers := splitImageMarkers(strings.TrimSpace(sanitize(item.result.Content)))
 			screen, isScreen := terminalScreen{}, false
@@ -413,6 +425,15 @@ func toolTargets(item entry) []copyTarget {
 }
 
 func toolSummary(call core.ToolCall) string {
+	if call.Name == "Subagent" {
+		if tasks := subagentTasks(call); len(tasks) > 0 {
+			label := "tasks"
+			if len(tasks) == 1 {
+				label = "task"
+			}
+			return fmt.Sprintf("%d %s", len(tasks), label)
+		}
+	}
 	if call.Name == "Terminal" {
 		if summary, ok := terminalSummary(call.Arguments); ok {
 			return summary
@@ -448,7 +469,18 @@ func toolSummary(call core.ToolCall) string {
 	return ""
 }
 
-// scratchPath shows a file in a session's scratch directory, which ViewImage
+// subagentTasks returns the delegated prompts carried by a Subagent call.
+func subagentTasks(call core.ToolCall) []string {
+	var args struct {
+		Tasks []string `json:"tasks"`
+	}
+	if json.Unmarshal(call.Arguments, &args) != nil {
+		return nil
+	}
+	return args.Tasks
+}
+
+// scratchPath shows a file in the session's scratch directory, which ViewImage
 // may be given as a long temporary path, the way the agent knows it:
 // $JARVIS_SCRATCH/shot.png.
 func scratchPath(path string) string {

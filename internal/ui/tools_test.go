@@ -92,6 +92,47 @@ func TestWebSearchCollapsedRow(t *testing.T) {
 	}
 }
 
+func TestSubagentCallShowsTaskCountAndFullPromptsWhenExpanded(t *testing.T) {
+	tasks := []string{
+		"Inspect the caller and report the exact regression.",
+		"Review concurrency.\nPreserve ordering and include test names.",
+	}
+	arguments, err := json.Marshal(map[string]any{"tasks": tasks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := core.ToolCall{Name: "Subagent", Arguments: arguments}
+	if got := toolSummary(call); got != "2 tasks" {
+		t.Fatalf("summary = %q, want task count", got)
+	}
+	singleTask, err := json.Marshal(map[string]any{"tasks": []string{tasks[0]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := toolSummary(core.ToolCall{Name: "Subagent", Arguments: singleTask}); got != "1 task" {
+		t.Fatalf("single-task summary = %q, want 1 task", got)
+	}
+
+	m := testModel(t, Config{})
+	m.resize(80, 20)
+	item := entry{role: "tool", call: &call}
+	collapsed := ansi.Strip(m.renderEntryContent(item))
+	if !strings.Contains(collapsed, "2 tasks") || strings.Contains(collapsed, "Inspect the caller") {
+		t.Fatalf("collapsed subagent card should show count, not prompt bodies: %q", collapsed)
+	}
+
+	m.expandTools = true
+	expanded := ansi.Strip(m.renderEntryContent(item))
+	for _, want := range []string{
+		"Task 1", tasks[0], "Task 2", "Review concurrency.",
+		"Preserve ordering and include test names.",
+	} {
+		if !strings.Contains(expanded, want) {
+			t.Errorf("expanded subagent card is missing %q: %q", want, expanded)
+		}
+	}
+}
+
 func TestSidebarFitsRegisteredTools(t *testing.T) {
 	for _, provider := range []string{"codex", "anthropic"} {
 		for _, height := range []int{24, 56} {
