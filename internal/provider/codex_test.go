@@ -265,6 +265,15 @@ func TestCodexResumeUsesExistingThread(t *testing.T) {
 			t.Fatal("started a replacement thread")
 		}
 		if string(r["method"]) == `"thread/resume"` {
+			var params struct {
+				ThreadID     string `json:"threadId"`
+				ExcludeTurns bool   `json:"excludeTurns"`
+			}
+			json.Unmarshal(r["params"], &params)
+			// The turns would bring back every tool image in one line.
+			if params.ThreadID != "thread-1" || !params.ExcludeTurns {
+				t.Fatalf("resume params %s", r["params"])
+			}
 			resume = true
 		}
 	}

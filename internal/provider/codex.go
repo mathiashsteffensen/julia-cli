@@ -39,18 +39,26 @@ func (c *Codex) Run(ctx context.Context, session *core.Session, prompt core.Prom
 	return c.run(ctx, session, prompt, executor, emit, false, nil)
 }
 
+// codexContentItems answers a dynamic tool call with a Sendable result: its
+// text, then its image as a data URL, which the app-server gives the model as
+// input. A result that is only an image sends no empty text beside it.
+func codexContentItems(result core.ToolResult) []any {
+	var items []any
+	if result.Content != "" || len(result.Images) == 0 {
+		items = append(items, map[string]any{"type": "inputText", "text": result.Content})
+	}
+	for _, image := range result.Images {
+		items = append(items, map[string]any{"type": "inputImage", "imageUrl": image.DataURL()})
+	}
+	return items
+}
+
 // withoutImageData copies messages for a text transcript: each image keeps its
 // type and size, so the record shows one was attached, but not its data.
 func withoutImageData(messages []core.Message) []core.Message {
 	copied := slices.Clone(messages)
 	for i, message := range copied {
-		if len(message.Images) == 0 {
-			continue
-		}
-		copied[i].Images = slices.Clone(message.Images)
-		for j := range copied[i].Images {
-			copied[i].Images[j].Data = nil
-		}
+		copied[i].Images = core.WithoutImageData(message.Images)
 	}
 	return copied
 }
@@ -64,13 +72,17 @@ const codexReviewDeveloperInstructions = `Do not use any tools. You are evaluati
 // Fast mode is mandatory for all Codex execution and isolated review requests.
 const codexServiceTier = "priority"
 
+// maxCodexMessage bounds one line from the app-server. A message about a user
+// message or a tool result carries all of its images inline, several MB each.
+const maxCodexMessage = 256 << 20
+
 // Approval latency must not depend on the executing model's settings.
 const (
 	CodexReviewerModel     = "gpt-6-luna"
 	CodexReviewerReasoning = "none"
 )
 
-const codexToolInstructions = `Execution architecture: native Codex execution tools are disabled. The registered dynamic tools, including WebSearch and, when listed, Subagent and AskUserQuestion, are executed by JARVIS, which enforces the current runtime policy. Use those tools and treat their results as the authority on permitted actions. Bash defaults to the workspace OS sandbox. When the current policy permits escalation and the task needs access unavailable there, use the Bash tool's sandbox_permissions=require_escalated with a concrete justification. This dynamic Bash argument requests JARVIS approval, not a native Codex execution request. JARVIS evaluates that exact unsandboxed command through its isolated reviewer or human approval flow; requesting it does not itself grant permission. Native shell, patch, MCP, web, and agent tools remain unavailable. Never bypass a host denial or attempt an alternative execution path to evade it.`
+const codexToolInstructions = `Execution architecture: native Codex execution tools are disabled. The registered dynamic tools, including WebSearch and, when listed, Subagent and AskUserQuestion, are executed by JARVIS, which enforces the current runtime policy. Use those tools and treat their results as the authority on permitted actions. Bash defaults to the workspace OS sandbox. When the current policy permits escalation and the task needs access unavailable there, use the Bash tool's sandbox_permissions=require_escalated with a concrete justification. This dynamic Bash argument requests JARVIS approval, not a native Codex execution request. JARVIS evaluates that exact unsandboxed command through its isolated reviewer or human approval flow; requesting it does not itself grant permission. Native shell, patch, MCP, web, and agent tools remain unavailable. Never bypass a host denial or attempt an alternative execution path to evade it. A tool result with an image (ViewImage, or Terminal with image=true) called from code returns a string whose last line is a data:image URL: pass that line to image() and never text() the string, which only adds base64 to your context.`
 
 func (c *Codex) Review(ctx context.Context, approval core.Approval) (core.Decision, error) {
 	data, err := reviewPayload(approval)
@@ -234,7 +246,9 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 	method := "thread/start"
 	if session.RemoteID != "" && !review && !migrate {
 		method = "thread/resume"
-		params["threadId"] = session.RemoteID
+		// Only the thread's ID and model are read back. Its turns would come
+		// too, every image a tool returned included, in one ever-growing line.
+		params["threadId"], params["excludeTurns"] = session.RemoteID, true
 	} else {
 		params["environments"] = []any{}
 		params["ephemeral"] = review
@@ -400,33 +414,36 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 					} else if previous.Result == nil {
 						result = core.ToolResult{Content: "Denied: this tool call may have run before an interruption. Inspect its effects before requesting a new action.", IsError: true}
 					} else {
-						result = *previous.Result
+						result = previous.Result.Sendable()
 					}
 				} else if tool.Name == core.QuestionTool {
 					// No side effects and possibly a long wait: never journal it as an
 					// uncertain tool, or an interruption would strand the session.
-					result = executor.Execute(ctx, tool)
+					result = executor.Execute(ctx, tool).Sendable()
 				} else {
 					journal.Calls[tool.ID] = codexJournalEntry{Call: tool}
 					if err = saveCodexJournal(session, journal, checkpoint); err != nil {
 						return fmt.Errorf("save tool execution intent: %w", err)
 					}
-					result = executor.Execute(ctx, tool)
-					journal.Calls[tool.ID] = codexJournalEntry{Call: tool, Result: &result}
+					result = executor.Execute(ctx, tool).Sendable()
+					// The journal keeps a record, in memory as on disk: a replay answers
+					// with the text and a marker of the image, whose bytes it never stores.
+					record := result.Record()
+					journal.Calls[tool.ID] = codexJournalEntry{Call: tool, Result: &record}
 					if err = saveCodexJournal(session, journal, nil); err != nil {
 						return err
 					}
 				}
 				emit(core.Event{Kind: "tool_end", Call: &tool, Result: &result})
 			}
-			session.Messages = append(session.Messages, core.Message{Role: "assistant", ToolCalls: []core.ToolCall{tool}}, core.Message{Role: "tool", ToolCallID: tool.ID, Content: result.Content})
+			session.Messages = append(session.Messages, core.Message{Role: "assistant", ToolCalls: []core.ToolCall{tool}}, core.Message{Role: "tool", ToolCallID: tool.ID, Content: result.Transcript()})
 			if err = checkpoint(); err != nil {
 				return fmt.Errorf("save tool result: %w", err)
 			}
 			if err = ctx.Err(); err != nil {
 				return err
 			}
-			if err = client.send(map[string]any{"id": message.ID, "result": map[string]any{"success": !result.IsError, "contentItems": []any{map[string]any{"type": "inputText", "text": result.Content}}}}); err != nil {
+			if err = client.send(map[string]any{"id": message.ID, "result": map[string]any{"success": !result.IsError, "contentItems": codexContentItems(result)}}); err != nil {
 				return err
 			}
 			if review {
@@ -802,7 +819,7 @@ func startCodex(ctx context.Context, binary, directory string) (*codexClient, er
 	go func() {
 		defer close(incoming)
 		scanner := bufio.NewScanner(output)
-		scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+		scanner.Buffer(make([]byte, 64*1024), maxCodexMessage)
 		for scanner.Scan() {
 			var message codexRPCMessage
 			err := json.Unmarshal(scanner.Bytes(), &message)

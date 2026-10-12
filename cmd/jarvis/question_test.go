@@ -255,9 +255,9 @@ func TestRuntimeDefinitionsMatchExecutorChain(t *testing.T) {
 		wantTail  []string
 	}{
 		{"interactive", true, true, []string{"Subagent", core.QuestionTool}},
-		{"interactive without subagents", true, false, []string{"List", core.QuestionTool}},
+		{"interactive without subagents", true, false, []string{"WebSearch", core.QuestionTool}},
 		{"headless", false, true, []string{"Subagent"}},
-		{"headless without subagents", false, false, []string{"List"}},
+		{"headless without subagents", false, false, []string{"WebSearch"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var chain []core.ToolDefinition

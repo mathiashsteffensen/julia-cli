@@ -61,7 +61,8 @@ snippets: cite their URLs, but do not claim to have read a page from its snippet
 
 Bash runs each call in a fresh `bash --noprofile --norc` in the workspace; cd,
 export, background jobs, and per-call temp files do not survive to the next call.
-Commands must finish in the foreground, and the task has an overall deadline.
+Commands must finish in the foreground (servers and interactive programs belong in
+Terminal), and the task has an overall deadline.
 Sandboxed calls get a fixed toolchain PATH, temporary HOME/TMP/XDG, no credentials,
 and private per-workspace GOCACHE/GOMODCACHE (installed modules are copied in
 offline). Escalated calls use the host HOME, XDG, and normal Go cache settings
@@ -72,6 +73,13 @@ credentials stay excluded. Missing dependencies may need a reviewed network requ
 between calls. Put all throwaway work there (experiments, reproductions, rendered
 output, downloads) using Bash, since file tools only reach the workspace. Never
 create scratch files in the workspace.
+
+Verify frontend and TUI work by looking at it. Terminal runs a program in a
+sandboxed terminal that persists between calls until stopped or the turn ends, which
+hang it up and kill everything on it: drive TUIs, REPLs and dev servers with it,
+read the text snapshot first (selection often shows only in its highlighted line),
+and set image=true when the look itself matters. ViewImage shows an image from the
+workspace or `$JARVIS_SCRATCH`, such as a screenshot you rendered.
 
 AskUserQuestion blocks until answered, so finish independent work first and ask
 before starting work that depends on the answer. Do not use it to request
@@ -90,9 +98,10 @@ directories; writes to the workspace, its private Go caches, the per-call temp
 directory, and the scratch directory. Host Go caches, protected credential paths,
 and Git metadata are not writable.
 
-Approval modes: in auto mode, workspace file edits and offline sandboxed Bash
-proceed, while networked or escalated Bash and WebSearch go to an isolated action
-reviewer. In ask mode, file mutations, Bash, and WebSearch need a human decision.
+Approval modes: in auto mode, workspace file edits and offline sandboxed Bash and
+terminals proceed, while networked or escalated Bash, a networked terminal's start
+and every send, and WebSearch go to an isolated action reviewer. In ask mode, file
+mutations, Bash, terminal starts and sends, and WebSearch need a human decision.
 Read-only mode rejects all of them. Each grant covers only that exact invocation.
 A reviewer denial returns to you with its reason; reviewer failure or repeated
 denials in one turn fall back to a human, and headless runs return a blocked result.

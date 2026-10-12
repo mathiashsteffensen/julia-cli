@@ -3,6 +3,7 @@ package images
 import (
 	"bytes"
 	"image"
+	"image/gif"
 	"image/png"
 	"math/rand"
 	"os"
@@ -67,6 +68,22 @@ func TestPrepareConvertsFormatsProvidersReject(t *testing.T) {
 	}
 	if img.MediaType != "image/png" || img.Width != 10 || img.Height != 20 {
 		t.Fatalf("got %s %dx%d", img.MediaType, img.Width, img.Height)
+	}
+}
+
+// A GIF, even a small one, goes as a PNG of its first frame, which every
+// provider takes.
+func TestPrepareConvertsGIFToPNG(t *testing.T) {
+	var out bytes.Buffer
+	if err := gif.Encode(&out, solid(16, 8), nil); err != nil {
+		t.Fatal(err)
+	}
+	img, err := Prepare(out.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := png.Decode(bytes.NewReader(img.Data)); err != nil || img.MediaType != "image/png" || img.Width != 16 || img.Height != 8 {
+		t.Fatalf("got %s %dx%d: %v", img.MediaType, img.Width, img.Height, err)
 	}
 }
 
@@ -138,12 +155,23 @@ func TestLoadNamesTheFileInErrors(t *testing.T) {
 	}
 }
 
-func TestDescribe(t *testing.T) {
-	img, err := Prepare(encodePNG(t, solid(1440, 900)))
-	if err != nil {
-		t.Fatal(err)
+func TestEncodePreparesInMemoryPictures(t *testing.T) {
+	for _, tc := range []struct{ w, h, wantW, wantH int }{
+		{1440, 900, 1440, 900},
+		{4000, 2500, 2000, 1250},
+	} {
+		img, err := Encode(solid(tc.w, tc.h))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if img.MediaType != "image/png" || img.Width != tc.wantW || img.Height != tc.wantH {
+			t.Fatalf("%dx%d: %s %dx%d", tc.w, tc.h, img.MediaType, img.Width, img.Height)
+		}
+		if decoded, err := Prepare(img.Data); err != nil || decoded.Width != tc.wantW {
+			t.Fatalf("%dx%d: encoded data does not decode: %v", tc.w, tc.h, err)
+		}
 	}
-	if got := Describe(img); !strings.HasPrefix(got, "PNG · 1440×900 · ") || !strings.HasSuffix(got, "KB") {
-		t.Fatalf("got %q", got)
+	if _, err := Encode(image.NewNRGBA(image.Rect(0, 0, 0, 0))); err == nil {
+		t.Fatal("encoded an empty picture")
 	}
 }

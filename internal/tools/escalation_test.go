@@ -108,15 +108,15 @@ func TestSandboxFailureDoesNotRetryOutsideSandbox(t *testing.T) {
 	if os.Getenv("JARVIS_SANDBOX_TEST") != "1" || runtime.GOOS != "darwin" {
 		t.Skip("requires host macOS sandbox integration")
 	}
-	e, _ := fixture(t, "auto", nil)
+	// Ask mode, because auto mode runs offline sandboxed Bash unreviewed.
 	reviews := 0
-	e.config.Review = func(_ context.Context, a core.Approval) (core.Decision, error) {
+	e, _ := fixture(t, "ask", func(_ context.Context, a core.Approval) (core.Decision, error) {
 		reviews++
 		if a.ExecutionMode != "sandboxed" || a.Network {
 			t.Error("changed default capabilities", a)
 		}
 		return core.Decision{Allow: true}, nil
-	}
+	})
 	outside := filepath.Join(t.TempDir(), "must-not-exist")
 	result := invoke(e, "Bash", map[string]any{"command": "printf forbidden > " + shellQuote(outside)})
 	if !result.IsError || reviews != 1 {

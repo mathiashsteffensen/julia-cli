@@ -667,7 +667,7 @@ func TestQuestionDelegatesOtherTools(t *testing.T) {
 				rec := &askRecorder{}
 				call := core.ToolCall{ID: "id-7", Name: name, Arguments: json.RawMessage(`{"question":"q","path":"x"}`)}
 				got := WithQuestions(stub, rec.ask).Execute(ctx, call)
-				if got != reply {
+				if !reflect.DeepEqual(got, reply) {
 					t.Fatalf("%q: result %+v, want %+v", name, got, reply)
 				}
 				if len(stub.calls) != 1 || !reflect.DeepEqual(stub.calls[0], call) {

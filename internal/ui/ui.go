@@ -71,7 +71,7 @@ type Config struct {
 type entry struct {
 	role           string
 	text           string
-	images         []core.Image // a user message's attached images
+	images         []core.Image // a user message's attached images, or the image a tool returned
 	imageIDs       []int        // the Kitty image ID that draws each of images
 	call           *core.ToolCall
 	result         *core.ToolResult
@@ -401,7 +401,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.waitApproval(), m.waitQuestion(), m.refreshWeeklyUsage(true))
 		}
 		if msg.event != nil {
-			m.applyEvent(*msg.event)
+			return m, tea.Batch(m.applyEvent(*msg.event), waitStream(m.stream, m.lifetime))
 		}
 		return m, waitStream(m.stream, m.lifetime)
 	case tea.KeyPressMsg:
@@ -669,7 +669,10 @@ func cloneEvent(event core.Event) core.Event {
 	return event
 }
 
-func (m *model) applyEvent(event core.Event) {
+// applyEvent shows a provider event. It returns the upload of a thumbnail when
+// a tool's result brought an image.
+func (m *model) applyEvent(event core.Event) tea.Cmd {
+	var cmd tea.Cmd
 	switch event.Kind {
 	case "text":
 		if len(m.entries) == 0 || m.entries[len(m.entries)-1].role != "assistant" {
@@ -694,6 +697,11 @@ func (m *model) applyEvent(event core.Event) {
 				m.entries[i].done = true
 				m.entries[i].result = event.Result
 				m.entries[i].revision++
+				if event.Result != nil && len(event.Result.Images) > 0 && len(event.Result.Images[0].Data) > 0 {
+					m.entries[i].images = event.Result.Images[:1] // a result carries one; see core.MaxToolImages
+					m.registerImages(&m.entries[i])
+					cmd = m.uploadThumbnails(m.entries[i].imageIDs...)
+				}
 				break
 			}
 		}
@@ -702,6 +710,7 @@ func (m *model) applyEvent(event core.Event) {
 		m.recordUsage(event)
 	}
 	m.refresh(false)
+	return cmd
 }
 
 func (m *model) loadHistory() {

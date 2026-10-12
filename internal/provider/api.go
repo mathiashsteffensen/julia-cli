@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -139,7 +141,8 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 				return journalErr
 			},
 			after: func(call core.ToolCall, result core.ToolResult) error {
-				journal = append(journal, fantasy.Message{Role: fantasy.MessageRoleAssistant, Content: []fantasy.MessagePart{fantasy.ToolCallPart{ToolCallID: call.ID, ToolName: call.Name, Input: string(call.Arguments)}}}, fantasy.Message{Role: fantasy.MessageRoleTool, Content: []fantasy.MessagePart{fantasy.ToolResultPart{ToolCallID: call.ID, Output: fantasy.ToolResultOutputContentText{Text: result.Content}}}})
+				// The journal only survives an interruption; its result notes an image rather than storing it.
+				journal = append(journal, fantasy.Message{Role: fantasy.MessageRoleAssistant, Content: []fantasy.MessagePart{fantasy.ToolCallPart{ToolCallID: call.ID, ToolName: call.Name, Input: string(call.Arguments)}}}, fantasy.Message{Role: fantasy.MessageRoleTool, Content: []fantasy.MessagePart{fantasy.ToolResultPart{ToolCallID: call.ID, Output: fantasy.ToolResultOutputContentText{Text: result.Transcript()}}}})
 				s.PendingTool = nil
 				journalErr = a.save(s, journal)
 				return journalErr
@@ -178,6 +181,9 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 		s.RecordUsage(event)
 		emit(event)
 	}
+	// keepImages is how many tool images the history keeps; none once the
+	// model has rejected one.
+	keepImages := keptToolImages
 	for step := 0; step < limit; step++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -214,7 +220,7 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 		var completed *fantasy.StepResult
 		var partial strings.Builder
 		_, err := agent.Stream(ctx, fantasy.AgentStreamCall{
-			Messages: history,
+			Messages: a.request(history),
 			OnTextDelta: func(_ string, text string) error {
 				partial.WriteString(text)
 				emit(core.Event{Kind: "text", Text: text})
@@ -233,6 +239,20 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 				// request instead of failing the same way again.
 				s.Usage.Context = max(s.Usage.Context, threshold)
 			}
+			// A model that takes no images, or not this kind, rejects every request
+			// that holds one, and the saved history would send it again on every
+			// follow-up. Its tool images become notes of what was there, and the
+			// step is tried again without them.
+			if partial.Len() == 0 && rejectsImages(err) && hasToolImages(history) {
+				keepImages = 0
+				history = elideToolImages(history, 0, "not sent, the model rejected it")
+				if err := a.save(s, history); err != nil {
+					return err
+				}
+				emit(core.Event{Kind: "warning", Text: "The model rejected an image, so tool images go to it as text notes from now on."})
+				step--
+				continue
+			}
 			return fmt.Errorf("provider stream: %w", explainUpstream(err))
 		}
 		if journalErr != nil {
@@ -241,7 +261,8 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 		if completed == nil {
 			return errors.New("provider ended without a completed response")
 		}
-		history = append(history, completed.Messages...)
+		// Every saved history is elided, so only this step can add an image too many.
+		history = elideToolImages(append(history, completed.Messages...), keepImages, "elided")
 		appendTranscript(s, completed.Messages)
 		usage := normalizeUsage(a.Provider, completed.Usage)
 		if usage.Prompt() > 0 {
@@ -313,15 +334,15 @@ func normalizeUsage(provider string, u fantasy.Usage) core.TokenUsage {
 // token per four bytes of its JSON encoding, rounded up. That suits prose and
 // code but undercounts dense text such as hex, base64 or minified JSON. Every
 // reported prompt size replaces the guess, so it only stands alone for a provider
-// that reports no usage. Attached images count as imageTokens each, not by the
-// size of their encoded data.
+// that reports no usage. Images, attached or returned by a tool, count as
+// imageTokens each, not by the size of their encoded data.
 func estimateTokens(v any) int {
 	images := 0
 	switch messages := v.(type) {
 	case fantasy.Message:
-		v, images = withoutFileData([]fantasy.Message{messages})
+		v, images = withoutImageBytes([]fantasy.Message{messages})
 	case []fantasy.Message:
-		v, images = withoutFileData(messages)
+		v, images = withoutImageBytes(messages)
 	}
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -334,33 +355,180 @@ func estimateTokens(v any) int {
 // area; an image at images.MaxEdge lands near this on all of them.
 const imageTokens = 1600
 
-// withoutFileData returns a copy of messages whose file parts carry no data,
-// and how many file parts there were.
-func withoutFileData(messages []fantasy.Message) ([]fantasy.Message, int) {
-	var stripped []fantasy.Message
-	files := 0
+// withoutImageBytes returns a copy of messages whose file parts and media tool
+// outputs carry no data, and how many images there were.
+func withoutImageBytes(messages []fantasy.Message) ([]fantasy.Message, int) {
+	images := 0
+	stripped := rewriteParts(messages, func(part fantasy.MessagePart) (fantasy.MessagePart, bool) {
+		switch p := part.(type) {
+		case fantasy.FilePart:
+			p.Data = nil
+			images++
+			return p, true
+		case fantasy.ToolResultPart:
+			if media, ok := p.Output.(fantasy.ToolResultOutputContentMedia); ok {
+				media.Data = ""
+				p.Output = media
+				images++
+				return p, true
+			}
+		}
+		return part, false
+	})
+	return stripped, images
+}
+
+// rewriteParts returns messages with each part passed through rewrite, which
+// reports whether it changed the part. Messages and part slices are copied only
+// where something changed, so callers may share the original.
+func rewriteParts(messages []fantasy.Message, rewrite func(fantasy.MessagePart) (fantasy.MessagePart, bool)) []fantasy.Message {
+	out, copied := messages, false
 	for i, message := range messages {
 		cloned := false
 		for j, part := range message.Content {
-			file, ok := part.(fantasy.FilePart)
-			if !ok {
+			next, changed := rewrite(part)
+			if !changed {
 				continue
 			}
-			if stripped == nil {
-				stripped = slices.Clone(messages)
+			if !copied {
+				out, copied = slices.Clone(messages), true
 			}
 			if !cloned {
-				stripped[i].Content, cloned = slices.Clone(message.Content), true
+				out[i].Content, cloned = slices.Clone(message.Content), true
 			}
-			file.Data = nil
-			stripped[i].Content[j] = file
-			files++
+			out[i].Content[j] = next
 		}
 	}
-	if stripped == nil {
-		return messages, 0
+	return out
+}
+
+// keptToolImages is how many of the latest tool-result images the history keeps
+// with their data. Older ones are elided: a screenshot loop would otherwise fill
+// the context, and every checkpoint rewrites the whole history to disk.
+const keptToolImages = 3
+
+// elideToolImages replaces all but the last keep media tool outputs with
+// their text and a note saying why the image is not there, and what it was.
+func elideToolImages(history []fantasy.Message, keep int, why string) []fantasy.Message {
+	seen := 0
+	for _, message := range history {
+		for _, part := range message.Content {
+			if result, ok := part.(fantasy.ToolResultPart); ok && isMedia(result.Output) {
+				seen++
+			}
+		}
 	}
-	return stripped, files
+	elide := seen - keep
+	if elide <= 0 {
+		return history
+	}
+	return rewriteParts(history, func(part fantasy.MessagePart) (fantasy.MessagePart, bool) {
+		result, ok := part.(fantasy.ToolResultPart)
+		if !ok || elide == 0 || !isMedia(result.Output) {
+			return part, false
+		}
+		elide--
+		media := result.Output.(fantasy.ToolResultOutputContentMedia)
+		result.Output = fantasy.ToolResultOutputContentText{Text: withLine(media.Text, "[image "+why+": "+mediaInfo(result).String()+"]")}
+		return result, true
+	})
+}
+
+func hasToolImages(history []fantasy.Message) bool {
+	for _, message := range history {
+		for _, part := range message.Content {
+			if result, ok := part.(fantasy.ToolResultPart); ok && isMedia(result.Output) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rejectsImages reports a client error that names images: what a model that
+// takes none says ("No endpoints found that support image input", "unknown
+// variant image_url"), or one given a format it does not take.
+func rejectsImages(err error) bool {
+	var rejected *fantasy.ProviderError
+	if !errors.As(err, &rejected) || rejected.IsContextTooLarge() {
+		return false
+	}
+	switch code := rejected.StatusCode; {
+	case code < 400 || code >= 500, code == 401, code == 403, code == 408, code == 429:
+		return false
+	}
+	return strings.Contains(strings.ToLower(explainUpstream(err).Error()+" "+string(rejected.ResponseBody)), "image")
+}
+
+func isMedia(output fantasy.ToolResultOutputContent) bool {
+	_, ok := output.(fantasy.ToolResultOutputContentMedia)
+	return ok
+}
+
+// mediaInfo describes a media tool output's image from the client metadata
+// toolResponse attached, or failing that from the media itself.
+func mediaInfo(result fantasy.ToolResultPart) core.ImageInfo {
+	var info core.ImageInfo
+	if json.Unmarshal([]byte(result.ClientMetadata), &info) == nil && info.MediaType != "" {
+		return info
+	}
+	media, _ := result.Output.(fantasy.ToolResultOutputContentMedia)
+	return core.ImageInfo{MediaType: media.MediaType, Bytes: base64.StdEncoding.DecodedLen(len(media.Data))}
+}
+
+func withLine(text, line string) string {
+	if text == "" {
+		return line
+	}
+	return text + "\n" + line
+}
+
+// request is the history as this provider is sent it.
+func (a *API) request(history []fantasy.Message) []fantasy.Message {
+	if a.Provider == "google" {
+		return geminiToolImages(history)
+	}
+	return history
+}
+
+// geminiToolImages rewrites a request for Gemini, whose fantasy provider drops
+// a media tool output, and with it the function response Gemini requires for
+// every call. Each such output becomes its text, and the images follow in one
+// user message right after the tool message, so every call stays answered by
+// the message after it. Only the request changes; the history keeps the media.
+func geminiToolImages(history []fantasy.Message) []fantasy.Message {
+	out := make([]fantasy.Message, 0, len(history))
+	tools := map[string]string{} // call ID → tool name, to label each image
+	for _, message := range history {
+		for _, part := range message.Content {
+			if call, ok := part.(fantasy.ToolCallPart); ok {
+				tools[call.ToolCallID] = call.ToolName
+			}
+		}
+		var images []fantasy.MessagePart
+		rewritten := rewriteParts([]fantasy.Message{message}, func(part fantasy.MessagePart) (fantasy.MessagePart, bool) {
+			result, ok := part.(fantasy.ToolResultPart)
+			if !ok || !isMedia(result.Output) {
+				return part, false
+			}
+			media := result.Output.(fantasy.ToolResultOutputContentMedia)
+			data, err := base64.StdEncoding.DecodeString(media.Data)
+			note := "[image: see the next message]"
+			if err != nil {
+				note = "[image could not be decoded]"
+			} else {
+				label := fmt.Sprintf("Image returned by the %s call %s:", cmp.Or(tools[result.ToolCallID], "tool"), result.ToolCallID)
+				images = append(images, fantasy.TextPart{Text: label}, fantasy.FilePart{MediaType: media.MediaType, Data: data})
+			}
+			result.Output = fantasy.ToolResultOutputContentText{Text: withLine(media.Text, note)}
+			return result, true
+		})
+		out = append(out, rewritten[0])
+		if len(images) > 0 {
+			out = append(out, fantasy.Message{Role: fantasy.MessageRoleUser, Content: images})
+		}
+	}
+	return out
 }
 
 // fileParts converts attached images to the parts fantasy sends to a model.
@@ -528,14 +696,29 @@ func (t *agentTool) Run(ctx context.Context, c fantasy.ToolCall) (fantasy.ToolRe
 		}
 	}
 	t.emit(core.Event{Kind: "tool_start", Call: &call})
-	result := t.executor.Execute(ctx, call)
+	result := t.executor.Execute(ctx, call).Sendable()
 	t.emit(core.Event{Kind: "tool_end", Call: &call, Result: &result})
 	if t.after != nil {
 		if err := t.after(call, result); err != nil {
 			return fantasy.ToolResponse{Type: "text", Content: "Tool completed but checkpoint failed; execution stopped", IsError: true, StopTurn: true}, err
 		}
 	}
-	return fantasy.ToolResponse{Type: "text", Content: result.Content, IsError: result.IsError}, nil
+	return toolResponse(result), nil
+}
+
+// toolResponse hands a Sendable result to fantasy. An image goes as media with
+// the text beside it, and its description rides along as client metadata, which
+// no provider sends, so the transcript and elision can name it.
+func toolResponse(result core.ToolResult) fantasy.ToolResponse {
+	response := fantasy.ToolResponse{Type: "text", Content: result.Content, IsError: result.IsError}
+	if len(result.Images) > 0 {
+		image := result.Images[0]
+		response.Type, response.Data, response.MediaType = "image", image.Data, image.MediaType
+		if info, err := json.Marshal(image.Info()); err == nil {
+			response.Metadata = string(info)
+		}
+	}
+	return response
 }
 
 func appendTranscript(s *core.Session, messages []fantasy.Message) {
@@ -557,6 +740,9 @@ func appendTranscript(s *core.Session, messages []fantasy.Message) {
 					result.Content = out.Text
 				case fantasy.ToolResultOutputContentError:
 					result.Content = out.Error.Error()
+				case fantasy.ToolResultOutputContentMedia:
+					// The live UI had the image from the tool_end event; the transcript names it.
+					result.Content = withLine(out.Text, core.ImageMarker(mediaInfo(p)))
 				}
 				results = append(results, result)
 			}

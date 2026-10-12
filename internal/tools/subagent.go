@@ -17,6 +17,8 @@ type SubagentRunner func(context.Context, string, core.ToolExecutor) (string, er
 // WithSubagents adds bounded, synchronous delegation outside Executor's lock.
 // Children receive the base executor, so they cannot recursively delegate and
 // workspace operations and approvals remain serialized by the original executor.
+// An Executor gives each child its own terminals, stopped when the child returns,
+// so none outlive the task that started them or are driven by two agents.
 func WithSubagents(base core.ToolExecutor, run SubagentRunner) core.ToolExecutor {
 	return &subagentExecutor{base: base, run: run}
 }
@@ -79,7 +81,15 @@ func (e *subagentExecutor) Execute(ctx context.Context, call core.ToolCall) core
 	var wg sync.WaitGroup
 	for i, task := range args.Tasks {
 		wg.Go(func() {
-			output, err := e.run(ctx, task, e.base)
+			tools := e.base
+			if scoped, ok := e.base.(interface {
+				subagentScope() (core.ToolExecutor, func())
+			}); ok {
+				var release func()
+				tools, release = scoped.subagentScope()
+				defer release()
+			}
+			output, err := e.run(ctx, task, tools)
 			results[i] = result{Task: i + 1, Output: subagentText(output, 8000)}
 			if err != nil {
 				results[i].Error = subagentText(err.Error(), 512)

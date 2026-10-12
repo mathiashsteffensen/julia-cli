@@ -121,10 +121,19 @@ They contain transcripts and command output.
 
 ## Tools
 
-`Read`, `Write`, `Edit`, `MultiEdit`, `Grep`, `List`, `Bash`, `WebSearch`,
-`Subagent` (up to 3 parallel child tasks), and `AskUserQuestion` (interactive only).
-File tools are confined to the workspace, refuse symlinks and credential paths,
-and cap output at 32 KiB.
+`Read`, `ViewImage`, `List`, `Grep`, `Edit`, `MultiEdit`, `Write`, `Bash`,
+`Terminal`, `WebSearch`, `Subagent` (up to 3 parallel child tasks), and
+`AskUserQuestion` (interactive only). File tools are confined to the workspace,
+refuse symlinks and credential paths, and cap output at 32 KiB.
+
+`ViewImage` shows the model an image from the workspace or `$JARVIS_SCRATCH`,
+such as a screenshot it rendered, scaled to at most 2000 px. `Terminal` runs a
+program on a virtual terminal under the Bash sandbox, so the agent can drive a TUI,
+REPL or dev server with keys, text and mouse, and read the screen as text or, when
+the look matters, as a rendered screenshot. Up to 4 run at once. At the end of the
+turn each is hung up, as closing a terminal window does, and everything still on it
+is killed. Ctrl+O shows a terminal's screen in its card, and screenshots appear as
+thumbnails in Ghostty.
 
 `WebSearch` uses Firecrawl. Set `FIRECRAWL_API_KEY`, or let the first search open
 a browser authorization flow that saves a key to `~/.config/jarvis/firecrawl.json`.
@@ -133,18 +142,21 @@ a browser authorization flow that saves a key to `~/.config/jarvis/firecrawl.jso
 
 | Mode | Behavior |
 | --- | --- |
-| `auto` (default) | Reads, workspace edits, and offline sandboxed Bash run freely. Bash with network, escalated Bash, and web searches go to the reviewer model. |
-| `ask` | You approve every mutation, command, and search. |
-| `read-only` | Only `Read`, `Grep`, and `List`. |
+| `auto` (default) | Reads, workspace edits, and offline sandboxed Bash and terminals run freely. Bash with network, escalated Bash, a networked terminal's start and every input to it, and web searches go to the reviewer model. |
+| `ask` | You approve every mutation, command, terminal start and input, and search. |
+| `read-only` | Only `Read`, `ViewImage`, `Grep`, and `List`. |
 
 **Sandbox.** Bash runs under a deny-by-default Seatbelt profile. It can write
 only to the workspace (never `.git`), a temp dir, isolated Go caches, and
 `$JARVIS_SCRATCH`. It has no network and no access to home credentials, and
-credentials are stripped from its environment. The agent can request
-`network: true` for a single call. It can also request
-`sandbox_permissions: "require_escalated"` with a justification, which runs that
-exact command on the host after approval. If the sandbox can't be set up, the
-command fails rather than running unsandboxed.
+credentials are stripped from its environment. A `Terminal` program gets the same
+profile plus its own terminal, through `/dev/tty` and the descriptors it inherits;
+no terminal can be opened by its device name, which macOS reuses. The agent can
+request `network: true` for a single call, or for one terminal's lifetime. A Bash call can
+also request `sandbox_permissions: "require_escalated"` with a justification, which
+runs that exact command on the host after approval; terminals never leave the
+sandbox. If the sandbox can't be set up, the command fails rather than running
+unsandboxed.
 
 **Reviewer.** By default this is Codex `gpt-6-luna` with no reasoning, running in
 a read-only, no-network process. If `compatible_models` lists `typesafe/jev-1.13`,

@@ -64,9 +64,17 @@ var tokenAPITotal = core.TokenUsage{Input: 6_000 + 31_000 + 900, CacheRead: 24_0
 func runHeadless(t *testing.T, extra ...string) (stdout, stderr string, saved *core.Session, api *tokenAPI) {
 	t.Helper()
 	api = &tokenAPI{}
+	stdout, stderr, saved = runHeadlessAgainst(t, api, t.TempDir(), extra...)
+	return stdout, stderr, saved, api
+}
+
+// runHeadlessAgainst runs the same task against any scripted endpoint, in the
+// workspace dir.
+func runHeadlessAgainst(t *testing.T, api http.Handler, dir string, extra ...string) (stdout, stderr string, saved *core.Session) {
+	t.Helper()
 	server := httptest.NewServer(api)
 	t.Cleanup(server.Close)
-	dir, state := t.TempDir(), t.TempDir()
+	state := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", state)
 	t.Setenv("JARVIS_TEST_KEY", "fixture-key")
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -111,7 +119,7 @@ func runHeadless(t *testing.T, extra ...string) (stdout, stderr string, saved *c
 	if err != nil {
 		t.Fatal(err)
 	}
-	return stdout, stderr, saved, api
+	return stdout, stderr, saved
 }
 
 func requireCompactedConversation(t *testing.T, api *tokenAPI) {

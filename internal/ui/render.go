@@ -275,8 +275,22 @@ func (m *model) layoutEntry(item entry) entryLayout {
 		}
 		add(bar+title, rowMeta{gutter: 2})
 		if item.result != nil {
-			result := strings.TrimSpace(sanitize(item.result.Content))
-			if m.expandTools {
+			result, markers := splitImageMarkers(strings.TrimSpace(sanitize(item.result.Content)))
+			screen, isScreen := terminalScreen{}, false
+			if item.call != nil && item.call.Name == "Terminal" && !item.result.IsError {
+				screen, isScreen = parseTerminalScreen(result)
+			}
+			if isScreen && m.expandTools {
+				for _, note := range screen.notes {
+					add(bar+"  "+mutedStyle.Italic(true).Render(ansi.Truncate(note, w-2, "…")), rowMeta{gutter: 4, skip: true})
+				}
+				rows, edge := screen.card(w - 2)
+				for i, row := range rows {
+					add(bar+"  "+row, rowMeta{gutter: 4 + codeGutter, end: 4 + ansi.StringWidth(row), skip: edge[i], target: 1})
+				}
+			} else if isScreen {
+				add(bar+"  "+ansi.Truncate(screen.summary(), w-2, "…"), rowMeta{gutter: 4, target: 1})
+			} else if m.expandTools {
 				parts := strings.Split(ansi.Hardwrap(result, w-2, false), "\n")
 				if len(parts) > 100 {
 					parts = append(parts[:100], "… output truncated in the display")
@@ -287,6 +301,21 @@ func (m *model) layoutEntry(item entry) entryLayout {
 			} else if result != "" {
 				first, _, _ := strings.Cut(result, "\n")
 				add(bar+faintStyle.Render("  "+ansi.Truncate(first, w-2, "…")), rowMeta{gutter: 4, target: 1})
+			}
+			// Images sit under the output as in a user's message: drawn when the
+			// terminal can, captioned otherwise or when only a marker was saved.
+			if len(item.images) > 0 && len(item.imageIDs) == len(item.images) && m.thumbnailsShown() {
+				add(bar, rowMeta{gutter: 2, skip: true})
+				for _, row := range m.thumbnailRowsFor(item, m.thumbnailColumns()) {
+					add(bar+"  "+ansi.Truncate(row, m.thumbnailColumns(), "…"), rowMeta{gutter: 4, skip: true})
+				}
+			} else {
+				for _, img := range item.images {
+					markers = append(markers, img.Info().String())
+				}
+			}
+			for _, description := range markers {
+				add(bar+"  "+ansi.Truncate(imageCaption(description), w-2, "…"), rowMeta{gutter: 4, skip: true})
 			}
 		}
 	case "warning":
@@ -317,14 +346,24 @@ func toolTargets(item entry) []copyTarget {
 			}
 		}
 	}
-	output := ""
+	kind, output := "output", ""
 	if item.result != nil {
 		output = item.result.Content
+		if item.call != nil && item.call.Name == "Terminal" {
+			if screen, ok := parseTerminalScreen(output); ok {
+				kind, output = "screen", screen.text()
+			}
+		}
 	}
-	return []copyTarget{{label, text}, {"output", output}}
+	return []copyTarget{{label, text}, {kind, output}}
 }
 
 func toolSummary(call core.ToolCall) string {
+	if call.Name == "Terminal" {
+		if summary, ok := terminalSummary(call.Arguments); ok {
+			return summary
+		}
+	}
 	var args map[string]json.RawMessage
 	if json.Unmarshal(call.Arguments, &args) != nil {
 		return string(call.Arguments)
@@ -333,6 +372,9 @@ func toolSummary(call core.ToolCall) string {
 		if raw, ok := args[key]; ok {
 			var value string
 			if json.Unmarshal(raw, &value) == nil {
+				if key == "path" {
+					value = scratchPath(value)
+				}
 				value = strings.ReplaceAll(value, "\n", " ↵ ")
 				return value
 			}
@@ -345,6 +387,20 @@ func toolSummary(call core.ToolCall) string {
 		}
 	}
 	return ""
+}
+
+// scratchPath shows a file in a session's scratch directory, which ViewImage
+// may be given as a long temporary path, the way the agent knows it:
+// $JARVIS_SCRATCH/shot.png.
+func scratchPath(path string) string {
+	if !filepath.IsAbs(path) {
+		return path
+	}
+	_, session, ok := strings.Cut(filepath.ToSlash(path), "/jarvis-scratch/")
+	if _, inside, ok2 := strings.Cut(session, "/"); ok && ok2 && inside != "" {
+		return "$JARVIS_SCRATCH/" + inside
+	}
+	return path
 }
 
 func (m *model) View() tea.View {
@@ -728,19 +784,21 @@ func (m *model) footer() string {
 
 func (m *model) approvalView() string {
 	request := m.pending.Approval
-	w := max(12, m.mainWidth-6)
+	// The panel is mainWidth-4 wide with its border and padding; text wrapped
+	// any wider would be wrapped again, mid-word.
+	w := max(12, m.mainWidth-8)
 	var pretty bytes.Buffer
 	arguments := string(request.Call.Arguments)
 	if json.Indent(&pretty, request.Call.Arguments, "", "  ") == nil {
 		arguments = pretty.String()
 	}
 	text := coralStyle.Bold(true).Render("PERMISSION REQUEST")
-	text += "\n" + creamStyle.Bold(true).Render(sanitize(request.Call.Name)) + "\n\n" + creamStyle.Render(ansi.Hardwrap(sanitize(request.Reason), w, false))
+	text += "\n" + creamStyle.Bold(true).Render(sanitize(request.Call.Name)) + "\n\n" + creamStyle.Render(ansi.Wrap(sanitize(request.Reason), w, ""))
 	if request.ExecutionMode == "unsandboxed" {
 		text += "\n\n" + coralStyle.Bold(true).Render("OUTSIDE SANDBOX") + "\n" + coralStyle.Render(ansi.Hardwrap("Host-user filesystem access\nUnrestricted network access\nRuns as your current user; no sudo granted.", w, false))
 		text += "\n\n" + creamStyle.Bold(true).Render("Working directory") + "\n" + creamStyle.Render(ansi.Hardwrap(sanitize(request.Directory), w, false))
 		if request.Justification != "" {
-			text += "\n\n" + creamStyle.Bold(true).Render("Justification") + "\n" + creamStyle.Render(ansi.Hardwrap(sanitize(request.Justification), w, false))
+			text += "\n\n" + creamStyle.Bold(true).Render("Justification") + "\n" + creamStyle.Render(ansi.Wrap(sanitize(request.Justification), w, ""))
 		}
 	}
 	if request.Network && request.ExecutionMode != "unsandboxed" {

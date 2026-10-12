@@ -174,9 +174,35 @@ func plural(n int) string {
 func imageRows(attached []core.Image) []string {
 	rows := make([]string, len(attached))
 	for i, image := range attached {
-		rows[i] = violetStyle.Render(fmt.Sprintf("▣ Image #%d", i+1)) + "  " + mutedStyle.Render(images.Describe(image))
+		rows[i] = violetStyle.Render(fmt.Sprintf("▣ Image #%d", i+1)) + "  " + mutedStyle.Render(image.Info().String())
 	}
 	return rows
+}
+
+// imageCaption describes an image a tool returned, as in "▣ PNG · 1440×900 ·
+// 312 KB". The same row stands under its thumbnail, in its place in terminals
+// without graphics, and for a saved session, whose transcript keeps only this.
+func imageCaption(description string) string {
+	return violetStyle.Render("▣") + " " + mutedStyle.Render(description)
+}
+
+// splitImageMarkers separates a tool result's text from the image markers a
+// transcript ends it with, returning each marker's description.
+func splitImageMarkers(content string) (string, []string) {
+	lines := strings.Split(content, "\n")
+	end := len(lines)
+	for end > 0 {
+		if _, ok := core.ParseImageMarker(lines[end-1]); !ok {
+			break
+		}
+		end--
+	}
+	var descriptions []string
+	for _, line := range lines[end:] {
+		description, _ := core.ParseImageMarker(line)
+		descriptions = append(descriptions, description)
+	}
+	return strings.TrimSpace(strings.Join(lines[:end], "\n")), descriptions
 }
 
 // highlightImageTokens draws [Image #N] tokens in a line of the user's message

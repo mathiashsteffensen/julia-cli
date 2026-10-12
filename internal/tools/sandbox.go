@@ -155,103 +155,19 @@ func (e *Executor) runSandbox(ctx context.Context, command string, network bool,
 	return e.runBash(ctx, command, network, timeout, false)
 }
 func (e *Executor) runBash(ctx context.Context, command string, network bool, timeout time.Duration, escalated bool) (string, error) {
-	if !escalated && runtime.GOOS != "darwin" {
-		return "", errors.New("Bash requires macOS Seatbelt in this version; other platforms fail closed")
-	}
-	if escalated && runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		return "", errors.New("explicit host Bash execution requires macOS or Linux")
-	}
-	tmp, err := os.MkdirTemp("", "jarvis-sandbox-")
-	if err != nil {
-		return "", fmt.Errorf("sandbox temporary directory: %w", err)
-	}
-	defer os.RemoveAll(tmp)
-	tmp, err = filepath.EvalSymlinks(tmp)
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	sh, err := e.shell(runCtx, command, network, escalated, "")
 	if err != nil {
 		return "", err
 	}
-	scratch, err := e.scratchDir()
-	if err != nil {
-		return "", fmt.Errorf("session scratch directory: %w", err)
-	}
-	home := filepath.Join(tmp, "home")
-	if escalated {
-		home, err = os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve host home for escalated command: %w", err)
-		}
-	} else {
-		if err := os.Mkdir(home, 0700); err != nil {
-			return "", err
-		}
-	}
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	var goInfo EnvironmentInfo
-	if escalated {
-		// Host caches are used, so only the toolchain location matters here.
-		if development, err := e.discoverGo(runCtx); err != nil {
-			e.emit("warning", "Go toolchain discovery unavailable; escalated command will use host Go defaults: "+err.Error())
-		} else {
-			goInfo.GoRoot = development.Info.GoRoot
-		}
-	} else if development, prepareErr := e.prepareGoEnvironment(runCtx); prepareErr != nil {
-		e.emit("warning", "Go cache preparation unavailable; using temporary caches: "+prepareErr.Error())
-		if e.goEnv != nil {
-			goInfo.GoRoot = e.goEnv.Info.GoRoot
-		}
-	} else {
-		goInfo = development.Info
-	}
-	executable := "/bin/bash"
-	args := []string{"--noprofile", "--norc", "-c", command}
+	defer os.RemoveAll(sh.tmp)
 	mode := "approved host command"
 	if !escalated {
 		mode = "sandboxed command"
-		executable = "/usr/bin/sandbox-exec"
-		if info, statErr := os.Stat(executable); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
-			return "", errors.New("Bash disabled: macOS sandbox-exec is unavailable")
-		}
-		args = append([]string{"-p", seatbeltProfile(e.directory, tmp, scratch, network, goInfo), "/bin/bash"}, args...)
 	}
-	cmd := exec.CommandContext(runCtx, executable, args...)
-	cmd.Dir = e.directory
-	cmd.Env = []string{"PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + home, "TMPDIR=" + tmp, "TMP=" + tmp, "TEMP=" + tmp, "JARVIS_SCRATCH=" + scratch, "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8", "TERM=dumb", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.fsmonitor", "GIT_CONFIG_VALUE_0=false"}
-	if escalated {
-		// Keep the environment curated, but let host tools use their normal
-		// persistent configuration and cache locations when explicitly approved.
-		for _, key := range []string{"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "GOPATH", "GOBIN", "GOCACHE", "GOMODCACHE", "GOENV"} {
-			if value := os.Getenv(key); value != "" {
-				cmd.Env = append(cmd.Env, key+"="+value)
-			}
-		}
-	} else {
-		cmd.Env = append(cmd.Env,
-			"XDG_CONFIG_HOME="+filepath.Join(tmp, "config"),
-			"XDG_CACHE_HOME="+filepath.Join(tmp, "cache"),
-			"XDG_DATA_HOME="+filepath.Join(tmp, "data"),
-			"GOCACHE="+filepath.Join(tmp, "go-cache"),
-			"GOMODCACHE="+filepath.Join(tmp, "go-mod"),
-			"GOPATH="+filepath.Join(tmp, "go"),
-		)
-	}
-	if goInfo.GoRoot != "" {
-		cmd.Env = append(cmd.Env, "GOROOT="+goInfo.GoRoot)
-		if !escalated {
-			cmd.Env = append(cmd.Env, "GOENV=off")
-		}
-		cmd.Env[0] = "PATH=" + filepath.Join(goInfo.GoRoot, "bin") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-	}
-	if !escalated {
-		for i, value := range cmd.Env {
-			if strings.HasPrefix(value, "GOCACHE=") && goInfo.GoBuildCache != "" {
-				cmd.Env[i] = "GOCACHE=" + goInfo.GoBuildCache
-			}
-			if strings.HasPrefix(value, "GOMODCACHE=") && goInfo.GoModuleCache != "" {
-				cmd.Env[i] = "GOMODCACHE=" + goInfo.GoModuleCache
-			}
-		}
-	}
+	cmd := exec.CommandContext(runCtx, sh.path, sh.args...)
+	cmd.Dir, cmd.Env = e.directory, sh.env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
@@ -287,6 +203,130 @@ func (e *Executor) runBash(ctx context.Context, command string, network bool, ti
 	}
 	return content, nil
 }
+
+// shellCommand is a prepared `bash -c` invocation. Bash and Terminal both
+// build theirs with shell, so they share one sandbox profile and one curated
+// environment.
+type shellCommand struct {
+	path string // sandbox-exec, or bash itself for an approved host command
+	args []string
+	env  []string
+	// tmp is the invocation's private HOME, TMPDIR and caches. The caller
+	// removes it once the command has finished.
+	tmp string
+}
+
+// shell prepares command to run in the workspace. tty is the terminal device
+// a Terminal program runs on, or empty for Bash; the profile then grants that
+// one device besides everything Bash may use.
+func (e *Executor) shell(ctx context.Context, command string, network, escalated bool, tty string) (shellCommand, error) {
+	if !escalated && runtime.GOOS != "darwin" {
+		return shellCommand{}, errors.New("Bash requires macOS Seatbelt in this version; other platforms fail closed")
+	}
+	if escalated && runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		return shellCommand{}, errors.New("explicit host Bash execution requires macOS or Linux")
+	}
+	tmp, err := os.MkdirTemp("", "jarvis-sandbox-")
+	if err != nil {
+		return shellCommand{}, fmt.Errorf("sandbox temporary directory: %w", err)
+	}
+	prepared := false
+	defer func() {
+		if !prepared {
+			os.RemoveAll(tmp)
+		}
+	}()
+	tmp, err = filepath.EvalSymlinks(tmp)
+	if err != nil {
+		return shellCommand{}, err
+	}
+	scratch, err := e.scratchDir()
+	if err != nil {
+		return shellCommand{}, fmt.Errorf("session scratch directory: %w", err)
+	}
+	home := filepath.Join(tmp, "home")
+	if escalated {
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return shellCommand{}, fmt.Errorf("resolve host home for escalated command: %w", err)
+		}
+	} else {
+		if err := os.Mkdir(home, 0700); err != nil {
+			return shellCommand{}, err
+		}
+	}
+	var goInfo EnvironmentInfo
+	if escalated {
+		// Host caches are used, so only the toolchain location matters here.
+		if development, err := e.discoverGo(ctx); err != nil {
+			e.emit("warning", "Go toolchain discovery unavailable; escalated command will use host Go defaults: "+err.Error())
+		} else {
+			goInfo.GoRoot = development.Info.GoRoot
+		}
+	} else if development, prepareErr := e.prepareGoEnvironment(ctx); prepareErr != nil {
+		e.emit("warning", "Go cache preparation unavailable; using temporary caches: "+prepareErr.Error())
+		if e.goEnv != nil {
+			goInfo.GoRoot = e.goEnv.Info.GoRoot
+		}
+	} else {
+		goInfo = development.Info
+	}
+	sh := shellCommand{path: "/bin/bash", args: []string{"--noprofile", "--norc", "-c", command}, tmp: tmp}
+	if !escalated {
+		sh.path = "/usr/bin/sandbox-exec"
+		if info, statErr := os.Stat(sh.path); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+			return shellCommand{}, errors.New("Bash disabled: macOS sandbox-exec is unavailable")
+		}
+		profile := seatbeltProfile(e.directory, tmp, scratch, network, goInfo)
+		if tty != "" {
+			rules, err := terminalProfile(tty)
+			if err != nil {
+				return shellCommand{}, err
+			}
+			profile += rules
+		}
+		sh.args = append([]string{"-p", profile, "/bin/bash"}, sh.args...)
+	}
+	sh.env = []string{"PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + home, "TMPDIR=" + tmp, "TMP=" + tmp, "TEMP=" + tmp, "JARVIS_SCRATCH=" + scratch, "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8", "TERM=dumb", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.fsmonitor", "GIT_CONFIG_VALUE_0=false"}
+	if escalated {
+		// Keep the environment curated, but let host tools use their normal
+		// persistent configuration and cache locations when explicitly approved.
+		for _, key := range []string{"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "GOPATH", "GOBIN", "GOCACHE", "GOMODCACHE", "GOENV"} {
+			if value := os.Getenv(key); value != "" {
+				sh.env = append(sh.env, key+"="+value)
+			}
+		}
+	} else {
+		sh.env = append(sh.env,
+			"XDG_CONFIG_HOME="+filepath.Join(tmp, "config"),
+			"XDG_CACHE_HOME="+filepath.Join(tmp, "cache"),
+			"XDG_DATA_HOME="+filepath.Join(tmp, "data"),
+			"GOCACHE="+filepath.Join(tmp, "go-cache"),
+			"GOMODCACHE="+filepath.Join(tmp, "go-mod"),
+			"GOPATH="+filepath.Join(tmp, "go"),
+		)
+	}
+	if goInfo.GoRoot != "" {
+		sh.env = append(sh.env, "GOROOT="+goInfo.GoRoot)
+		if !escalated {
+			sh.env = append(sh.env, "GOENV=off")
+		}
+		sh.env[0] = "PATH=" + filepath.Join(goInfo.GoRoot, "bin") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+	}
+	if !escalated {
+		for i, value := range sh.env {
+			if strings.HasPrefix(value, "GOCACHE=") && goInfo.GoBuildCache != "" {
+				sh.env[i] = "GOCACHE=" + goInfo.GoBuildCache
+			}
+			if strings.HasPrefix(value, "GOMODCACHE=") && goInfo.GoModuleCache != "" {
+				sh.env[i] = "GOMODCACHE=" + goInfo.GoModuleCache
+			}
+		}
+	}
+	prepared = true
+	return sh, nil
+}
+
 func seatbeltProfile(directory, tmp, scratch string, network bool, goEnvironments ...EnvironmentInfo) string {
 	var p strings.Builder
 	p.WriteString("(version 1)\n(deny default)\n(allow file-read* file-test-existence (literal \"/\"))\n(allow system-mac-syscall (mac-policy-name \"vnguard\"))\n(allow system-mac-syscall (require-all (mac-policy-name \"Sandbox\") (mac-syscall-number 67)))\n")
@@ -343,4 +383,18 @@ func seatbeltProfile(directory, tmp, scratch string, network bool, goEnvironment
 		p.WriteString("(allow network*)\n")
 	}
 	return p.String()
+}
+
+// terminalProfile lets a Terminal program use its own terminal through the
+// descriptors it inherits and through /dev/tty, which always means the
+// caller's controlling terminal: the ioctls that switch to raw mode and read
+// the window size, and the metadata and /dev listing ttyname() needs. The
+// device's own path is never opened: macOS reuses ttys numbers, and a process
+// that escaped the terminal's end could otherwise read whatever is typed into
+// an unrelated terminal that later gets the same name.
+func terminalProfile(tty string) (string, error) {
+	if filepath.Dir(tty) != "/dev" || !strings.HasPrefix(filepath.Base(tty), "tty") {
+		return "", fmt.Errorf("unexpected terminal device %q", tty)
+	}
+	return fmt.Sprintf("(allow file-ioctl file-read-metadata (literal %s))\n(allow file-read* file-write* file-ioctl (literal \"/dev/tty\"))\n(allow file-read-data (literal \"/dev\"))\n", strconv.Quote(tty)), nil
 }

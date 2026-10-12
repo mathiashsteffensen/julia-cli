@@ -20,9 +20,19 @@ type ToolCall struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
+// ToolResult is what a tool returns. A tool that produces a picture, such as a
+// screenshot, returns it in Images, prepared by images.Prepare or images.Load,
+// and the model sees it with Content. Providers send at most MaxToolImages, and
+// none with an error; Sendable enforces that.
+//
+// Image bytes travel in memory only. The JSON form of a ToolResult is a record,
+// as audit logs, tool journals and headless events keep it: each image appears
+// as its ImageInfo, so a decoded result's images describe but carry no data.
+// Transcripts keep Transcript's text, which names each image in a marker line.
 type ToolResult struct {
-	Content string `json:"content"`
-	IsError bool   `json:"is_error,omitempty"`
+	Content string  `json:"content"`
+	IsError bool    `json:"is_error,omitempty"`
+	Images  []Image `json:"images,omitempty"`
 }
 
 type Message struct {
@@ -33,8 +43,8 @@ type Message struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
-// Image is a picture the user attached to a message, already encoded in a
-// format every provider accepts. Width and Height are its pixel size.
+// Image is a picture the user attached to a message, or a tool returned, already
+// encoded in a format every provider accepts. Width and Height are its pixel size.
 type Image struct {
 	MediaType string `json:"media_type"`
 	Data      []byte `json:"data"`

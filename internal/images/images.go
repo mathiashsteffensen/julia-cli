@@ -36,8 +36,8 @@ const (
 	maxBytes = 3_700_000
 	// maxPixels refuses decompression bombs before they are decoded.
 	maxPixels = 100_000_000
-	// maxFileBytes is the largest file Load reads.
-	maxFileBytes = 64 << 20
+	// MaxFileBytes is the largest image file Load, or any tool, reads.
+	MaxFileBytes = 64 << 20
 )
 
 // ErrNoImage reports a clipboard without an image on it.
@@ -45,8 +45,9 @@ var ErrNoImage = errors.New("no image on the clipboard")
 
 // Prepare decodes PNG, JPEG, GIF, WebP, TIFF or BMP data and returns it ready to
 // send: scaled down to MaxEdge on its long side, and re-encoded as PNG, or as
-// JPEG when a PNG would be too large. Small PNG, JPEG, GIF and WebP images that
-// already fit are sent unchanged.
+// JPEG when a PNG would be too large. Small PNG, JPEG and WebP images that
+// already fit are sent unchanged. A GIF always becomes a PNG of its first
+// frame: Gemini takes no GIF, and OpenAI no animated one.
 func Prepare(data []byte) (core.Image, error) {
 	config, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
@@ -66,7 +67,19 @@ func Prepare(data []byte) (core.Image, error) {
 	return encode(scale(decoded, MaxEdge))
 }
 
-var mediaTypes = map[string]string{"png": "image/png", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}
+// Encode prepares a picture already in memory, such as a rendered screenshot,
+// as Prepare does a file: scaled down to MaxEdge on its long side and encoded
+// as PNG, or as JPEG when a PNG would be too large. A tool returns the result
+// in core.ToolResult.Images.
+func Encode(img image.Image) (core.Image, error) {
+	if bounds := img.Bounds(); bounds.Empty() {
+		return core.Image{}, errors.New("image is empty")
+	}
+	return encode(scale(img, MaxEdge))
+}
+
+// mediaTypes are the formats every provider takes as they are.
+var mediaTypes = map[string]string{"png": "image/png", "jpeg": "image/jpeg", "webp": "image/webp"}
 
 // scale fits img within edge pixels on its long side, keeping its aspect.
 func scale(img image.Image, edge int) image.Image {
@@ -121,12 +134,12 @@ func Load(path string) (core.Image, error) {
 		return core.Image{}, err
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, maxFileBytes+1))
+	data, err := io.ReadAll(io.LimitReader(file, MaxFileBytes+1))
 	if err != nil {
 		return core.Image{}, err
 	}
-	if len(data) > maxFileBytes {
-		return core.Image{}, fmt.Errorf("%s is larger than %d MB", filepath.Base(path), maxFileBytes>>20)
+	if len(data) > MaxFileBytes {
+		return core.Image{}, fmt.Errorf("%s is larger than %d MB", filepath.Base(path), MaxFileBytes>>20)
 	}
 	img, err := Prepare(data)
 	if err != nil {
@@ -216,25 +229,6 @@ func shellWords(text string) ([]string, bool) {
 		words = append(words, word.String())
 	}
 	return words, true
-}
-
-// Describe is a short caption for an image: its format, size and weight.
-func Describe(img core.Image) string {
-	format := strings.ToUpper(strings.TrimPrefix(img.MediaType, "image/"))
-	if format == "JPEG" {
-		format = "JPG"
-	}
-	return fmt.Sprintf("%s · %d×%d · %s", format, img.Width, img.Height, byteSize(len(img.Data)))
-}
-
-func byteSize(n int) string {
-	switch {
-	case n >= 1<<20:
-		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
-	case n >= 1<<10:
-		return fmt.Sprintf("%d KB", (n+512)>>10)
-	}
-	return fmt.Sprintf("%d B", n)
 }
 
 // Thumbnail decodes img and scales it to fit within width×height pixels, for

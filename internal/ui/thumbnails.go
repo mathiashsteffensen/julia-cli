@@ -182,8 +182,8 @@ func placeholderRow(id, row, cols int) string {
 }
 
 // thumbnailRowsFor lays out an entry's images as thumbnails side by side, each
-// captioned with its number and size, wrapping onto further bands when they do
-// not fit in width. Thumbnails in a band share a baseline so captions align.
+// captioned, wrapping onto further bands when they do not fit in width.
+// Thumbnails in a band share a baseline so captions align.
 func (m *model) thumbnailRowsFor(item entry, width int) []string {
 	type block struct {
 		id, cols, rows, width int
@@ -193,12 +193,8 @@ func (m *model) thumbnailRowsFor(item entry, width int) []string {
 	used := 0
 	for i, img := range item.images {
 		cols, rows := m.thumbnailSize(img, width)
-		label := violetStyle.Render(fmt.Sprintf("▣ Image #%d", i+1))
-		b := block{id: item.imageIDs[i], cols: cols, rows: rows, width: max(cols, ansi.StringWidth(label))}
-		b.caption = label
-		if size := fmt.Sprintf("%d×%d", img.Width, img.Height); ansi.StringWidth(label)+2+len(size) <= b.width {
-			b.caption += "  " + faintStyle.Render(size)
-		}
+		caption := thumbnailCaption(item, i, cols)
+		b := block{id: item.imageIDs[i], cols: cols, rows: rows, width: max(cols, ansi.StringWidth(caption)), caption: caption}
 		if len(bands) == 0 || used+thumbnailGap+b.width > width {
 			bands = append(bands, nil)
 			used = -thumbnailGap
@@ -234,4 +230,19 @@ func (m *model) thumbnailRowsFor(item entry, width int) []string {
 		}
 	}
 	return lines
+}
+
+// thumbnailCaption is the line under a thumbnail cols wide. A user's image is
+// named by its [Image #N] token, with its size when that fits under it; a
+// tool's is described as the model received it, as its caption is without one.
+func thumbnailCaption(item entry, i, cols int) string {
+	img := item.images[i]
+	if item.role == "tool" {
+		return imageCaption(img.Info().String())
+	}
+	label := violetStyle.Render(fmt.Sprintf("▣ Image #%d", i+1))
+	if size := fmt.Sprintf("%d×%d", img.Width, img.Height); ansi.StringWidth(label)+2+ansi.StringWidth(size) <= max(cols, ansi.StringWidth(label)) {
+		label += "  " + faintStyle.Render(size)
+	}
+	return label
 }
