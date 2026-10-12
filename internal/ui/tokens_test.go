@@ -345,7 +345,14 @@ func TestContextTurnsCoralAtCompactionThreshold(t *testing.T) {
 			session := &core.Session{ID: "c", Provider: "fake", Usage: core.SessionUsage{Context: tc.context}}
 			m := testModel(t, Config{Session: session, ContextWindow: window})
 			m.resize(128, 60)
-			if got := strings.Contains(m.sidebar(), coralOpen); got != tc.coral {
+			// The logo's crest shares the coral, so only the context rows count.
+			var context []string
+			for _, row := range strings.Split(m.sidebar(), "\n") {
+				if strings.ContainsAny(ansi.Strip(row), "━─%") {
+					context = append(context, row)
+				}
+			}
+			if got := strings.Contains(strings.Join(context, "\n"), coralOpen); got != tc.coral {
 				t.Errorf("window %d context %d: coral = %v, want %v", window, tc.context, got, tc.coral)
 			}
 		}
@@ -521,5 +528,20 @@ func TestContextGaugeIsLabelledAtEveryHeightAndKeepsItsBar(t *testing.T) {
 				t.Errorf("%s at %d rows (body %d): the figure is not under the CONTEXT label:\n%s", provider, height, m.bodyHeight, strings.Join(rows, "\n"))
 			}
 		}
+	}
+}
+
+func TestSidebarMastheadOnlyTakesSpareRows(t *testing.T) {
+	m := testModel(t, Config{Version: "0.1.0", Session: &core.Session{ID: "logo", Directory: "/tmp/jarvis", Provider: "codex", Model: "selected"}})
+	m.resize(128, 80)
+	rows := sidebarText(m)
+	for _, row := range sidebarLogo(m.cfg.Version, 23) {
+		if want := strings.TrimSpace(ansi.Strip(row)); want != "" && !hasRow(rows, want) {
+			t.Fatalf("tall sidebar is missing masthead row %q:\n%s", want, strings.Join(rows, "\n"))
+		}
+	}
+	m.resize(128, 24)
+	if text := ansi.Strip(m.sidebar()); strings.Contains(text, strings.TrimSpace(ansi.Strip(logoLettering()[0]))) {
+		t.Fatalf("short sidebar spent rows on the masthead:\n%s", text)
 	}
 }

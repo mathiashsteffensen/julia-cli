@@ -550,7 +550,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 // comes from configuration so the sidebar gauge and API compaction measure the
 // same budget.
 func baseUIConfig(s *core.Session, cfg config.Config, definitions []core.ToolDefinition) ui.Config {
-	return ui.Config{Session: s, Mode: cfg.Mode, ToolDefinitions: definitions, ContextWindow: cfg.ContextTokens}
+	return ui.Config{Session: s, Version: version, Mode: cfg.Mode, ToolDefinitions: definitions, ContextWindow: cfg.ContextTokens}
 }
 
 func findCodex(binary string) (string, error) {

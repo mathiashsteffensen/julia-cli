@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -532,7 +533,7 @@ func (m *model) sidebar() string {
 	}
 	// Rank is survival order on a short terminal (1 is dropped last). The context
 	// gauge outlives everything: it is the figure that decides when to start over.
-	lines := fitSidebar([]sidebarBlock{
+	blocks := []sidebarBlock{
 		{4, [][]string{{label("WORKSPACE"), value(filepath.Base(directory)), mutedStyle.Render(ansi.Truncate(directory, width, "…"))}}},
 		{2, connection},
 		{1, m.contextVariants(label, width)},
@@ -541,7 +542,21 @@ func (m *model) sidebar() string {
 		{5, [][]string{{label("PERMISSIONS"), lipgloss.NewStyle().Foreground(green).Render(ansi.Truncate("◈ "+sanitize(m.cfg.Mode), width, "…")), mutedStyle.Render(ansi.Truncate(permissionCaption(m.cfg.Mode), width, "…"))}}},
 		{7, [][]string{{label("SESSION"), value(id)}}},
 		{8, essentials},
-	}, m.bodyHeight)
+	}
+	lines := fitSidebar(blocks, m.bodyHeight)
+	// Keep the masthead's existing visibility threshold, but reclaim up to two
+	// detail rows from the sidebar instead of collapsing the logo's inner spacing.
+	// Both the top margin and the gap before WORKSPACE remain fixed blank rows.
+	if all := fitSidebar(blocks, math.MaxInt32); len(all) < m.bodyHeight {
+		logo := sidebarLogo(m.cfg.Version, width)
+		if 1+len(logo)+len(all)-2 <= m.bodyHeight {
+			details := fitSidebar(blocks, m.bodyHeight-len(logo)-2)
+			if len(details) > 0 && details[0] == "" {
+				details = details[1:]
+			}
+			lines = slices.Concat([]string{""}, logo, []string{""}, details)
+		}
+	}
 	if len(lines) > m.bodyHeight {
 		lines = lines[:m.bodyHeight]
 	}

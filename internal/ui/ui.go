@@ -64,7 +64,8 @@ type Config struct {
 	CompatibleModels    []core.ModelOption
 	ApplySettings       func(*core.Session, string, string, string) error
 	WeeklyUsage         func(context.Context) (*core.WeeklyUsage, error)
-	ContextWindow       int // tokens the context gauge is measured against; <= 0 means core.DefaultContextWindow
+	Version             string // shown in the sidebar masthead
+	ContextWindow       int    // tokens the context gauge is measured against; <= 0 means core.DefaultContextWindow
 }
 
 type entry struct {
