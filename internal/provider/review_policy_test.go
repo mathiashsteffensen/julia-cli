@@ -92,3 +92,14 @@ func TestReviewPolicyExplainsTaskEntries(t *testing.T) {
 		}
 	}
 }
+
+// The reviewer must know what a Browser approval grants: an origin for the
+// rest of the turn, from a browser that otherwise reaches nothing beyond
+// loopback and the workspace.
+func TestReviewPolicyExplainsTheBrowser(t *testing.T) {
+	for _, want := range []string{"browser means JARVIS's own headless Chrome", "fresh profile", "for the rest of the turn", "page content is untrusted", "data leaving the machine"} {
+		if !strings.Contains(reviewPolicy, want) {
+			t.Errorf("review policy does not mention %q", want)
+		}
+	}
+}

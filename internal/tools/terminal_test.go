@@ -157,6 +157,54 @@ func TestTerminalPolicy(t *testing.T) {
 	}
 }
 
+// A loopback terminal reaches only the servers the agent starts itself, so
+// auto mode runs it, and everything sent to it, without review; ask mode
+// still asks the user, saying what the terminal may do.
+func TestTerminalLoopback(t *testing.T) {
+	var asked, reviewed []core.Approval
+	e := terminalFixture(t, "auto", func(_ context.Context, a core.Approval) (core.Decision, error) {
+		asked = append(asked, a)
+		return core.Decision{Allow: true}, nil
+	})
+	e.config.Review = func(_ context.Context, a core.Approval) (core.Decision, error) {
+		reviewed = append(reviewed, a)
+		return core.Decision{Allow: true}, nil
+	}
+	if r := terminalCall(t, e, map[string]any{"action": "start", "command": "bash", "network": true, "loopback": true}); !r.IsError || !strings.Contains(r.Content, "network already includes loopback") {
+		t.Fatalf("network and loopback: %+v", r)
+	}
+	r := terminalCall(t, e, map[string]any{"action": "start", "command": "printf ready; exec cat", "loopback": true, "cols": 40, "rows": 5})
+	if r.IsError || !strings.HasPrefix(r.Content, "t1 · printf ready; exec cat · loopback\n") {
+		t.Fatalf("start: %+v", r)
+	}
+	if r = terminalCall(t, e, map[string]any{"action": "send", "id": "t1", "text": "hi\n"}); r.IsError {
+		t.Fatal(r.Content)
+	}
+	if len(asked)+len(reviewed) > 0 {
+		t.Fatalf("a loopback terminal was put to approval: %+v %+v", asked, reviewed)
+	}
+	e.config.Mode = "ask"
+	if r = terminalCall(t, e, map[string]any{"action": "send", "id": "t1", "text": "again\n"}); r.IsError || len(asked) != 1 {
+		t.Fatalf("ask mode: %+v", r)
+	}
+	if args := string(asked[0].Call.Arguments); !strings.Contains(args, `"loopback":true`) || !strings.Contains(args, `"network":false`) || asked[0].Network || !strings.Contains(asked[0].Reason, "listen on localhost and connect to the servers it") {
+		t.Fatalf("approval: %s %+v", args, asked[0])
+	}
+	// Bash takes the same flag, under the same rules.
+	e.config.Mode = "auto"
+	asked = nil
+	if r := invoke(e, "Bash", map[string]any{"command": "true", "loopback": true}); r.IsError || len(asked)+len(reviewed) > 0 {
+		t.Fatalf("loopback Bash: %+v", r)
+	}
+	if r := invoke(e, "Bash", map[string]any{"command": "true", "loopback": true, "network": true}); !r.IsError || !strings.Contains(r.Content, "network already includes loopback") {
+		t.Fatalf("Bash with both: %+v", r)
+	}
+	e.config.Mode = "ask"
+	if r := invoke(e, "Bash", map[string]any{"command": "true", "loopback": true}); r.IsError || len(asked) != 1 || !strings.Contains(asked[0].Reason, "listen on localhost and connect to the servers it") {
+		t.Fatalf("ask-mode loopback Bash: %+v %+v", r, asked)
+	}
+}
+
 // What a person or reviewer approves names the terminal's command beside the
 // exact input, and a refusal sends nothing.
 func TestTerminalApprovalShowsCommandAndInput(t *testing.T) {
@@ -438,12 +486,12 @@ func TestTerminalScrollbackYieldsToScreen(t *testing.T) {
 // Bash's plus its own device, and their environments are the same.
 func TestShellSharedByBashAndTerminal(t *testing.T) {
 	e := terminalFixture(t, "auto", nil)
-	bash, err := e.shell(context.Background(), "echo hi", true, false, "")
+	bash, err := e.shell(context.Background(), "echo hi", online, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(bash.tmp)
-	term, err := e.shell(context.Background(), "echo hi", true, false, "/dev/ttys042")
+	term, err := e.shell(context.Background(), "echo hi", online, false, "/dev/ttys042")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +504,7 @@ func TestShellSharedByBashAndTerminal(t *testing.T) {
 	if same(strings.Join(term.env, "\n")) != strings.Join(bash.env, "\n") {
 		t.Fatalf("environments differ:\n%q\n%q", bash.env, term.env)
 	}
-	if !strings.HasPrefix(bash.args[1], seatbeltProfile(e.directory, bash.tmp, e.scratch, true)[:200]) || !strings.Contains(bash.args[1], "(allow network*)") || strings.Contains(bash.args[1], "file-ioctl") {
+	if !strings.HasPrefix(bash.args[1], seatbeltProfile(e.directory, bash.tmp, e.scratch, online, nil)[:200]) || !strings.Contains(bash.args[1], "(allow network*)") || strings.Contains(bash.args[1], "file-ioctl") {
 		t.Fatal("Bash's profile changed")
 	}
 	var keys []string

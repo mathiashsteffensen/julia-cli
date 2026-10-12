@@ -4,10 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -34,13 +41,21 @@ func TestReviewFallsBackToHuman(t *testing.T) {
 	}
 }
 func TestSeatbeltProfile(t *testing.T) {
-	p := seatbeltProfile("/tmp/project", "/tmp/run", "/tmp/scratch", false)
-	if !strings.Contains(p, "(deny default)") || strings.Contains(p, "(allow network*)") || !strings.Contains(p, "(deny file-read* file-write*") {
+	p := seatbeltProfile("/tmp/project", "/tmp/run", "/tmp/scratch", offline, []int{5432})
+	if !strings.Contains(p, "(deny default)") || strings.Contains(p, "network") || !strings.Contains(p, "(deny file-read* file-write*") {
 		t.Fatal(p)
 	}
-	p = seatbeltProfile("/tmp/project", "/tmp/run", "/tmp/scratch", true)
+	p = seatbeltProfile("/tmp/project", "/tmp/run", "/tmp/scratch", online, nil)
 	if !strings.Contains(p, "(allow network*)") {
 		t.Fatal("missing explicit network grant")
+	}
+	p = seatbeltProfile("/tmp/project", "/tmp/run", "/tmp/scratch", loopbackOnly, []int{5432, 6379})
+	if strings.Contains(p, "(allow network*)") || !strings.Contains(p, `(allow network-outbound (remote tcp "localhost:*") (remote udp "localhost:*"))`) || !strings.Contains(p, `(allow network-bind network-inbound (local ip "localhost:*"))`) {
+		t.Fatal("loopback grants more or less than localhost:\n" + p)
+	}
+	// The machine's own services are closed, after the grant they narrow.
+	if i := strings.Index(p, `(deny network-outbound (remote tcp "localhost:5432") (remote udp "localhost:5432"))`); i < strings.Index(p, `(allow network-outbound`) || !strings.Contains(p, `(deny network-outbound (remote tcp "localhost:6379") (remote udp "localhost:6379"))`) {
+		t.Fatal("loopback reaches the machine's own services:\n" + p)
 	}
 }
 
@@ -98,6 +113,91 @@ func TestSandboxIntegration(t *testing.T) {
 		if err != nil || !strings.Contains(out, "Example Domain") {
 			t.Fatal("authorized HTTPS request failed", out, err)
 		}
+	}
+}
+
+// Run with JARVIS_SANDBOX_TEST=1. A loopback command serves and connects on
+// localhost, IPv4 and IPv6, and reaches nothing else; an offline one cannot
+// even listen.
+func TestSandboxIntegrationLoopback(t *testing.T) {
+	if os.Getenv("JARVIS_SANDBOX_TEST") != "1" || runtime.GOOS != "darwin" {
+		t.Skip("set JARVIS_SANDBOX_TEST=1 for host macOS sandbox integration")
+	}
+	e, _ := fixture(t, "auto", nil)
+	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "host-server") }))
+	defer host.Close()
+	port := func() string {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		_, p, _ := net.SplitHostPort(l.Addr().String())
+		return p
+	}
+	serve := func(addr string) string {
+		p := port()
+		return fmt.Sprintf("/usr/bin/nc -l %s %s > got & sleep 0.5; printf served | /usr/bin/nc -w 2 %s %s; wait; cat got; grep -q served got", addr, p, addr, p)
+	}
+	for _, tc := range []struct {
+		name, command string
+		reach         netAccess
+		want          string // output that must appear; empty means the command must fail
+	}{
+		{"listen and connect on 127.0.0.1", serve("127.0.0.1"), loopbackOnly, "served"},
+		{"listen and connect on ::1", serve("::1"), loopbackOnly, "served"},
+		// A service already running here, such as a database that trusts
+		// local clients, is out of reach: the browser's proxy is one.
+		{"no host server on loopback", "/usr/bin/curl --silent --show-error --max-time 5 " + host.URL, loopbackOnly, ""},
+		{"no host server by name", "/usr/bin/curl --silent --show-error --max-time 5 " + strings.Replace(host.URL, "127.0.0.1", "localhost", 1), loopbackOnly, ""},
+		{"no connection beyond loopback", "/usr/bin/nc -z -w 3 1.1.1.1 80", loopbackOnly, ""},
+		{"no UDP beyond loopback", "printf x | /usr/bin/nc -u -w 1 8.8.8.8 53 && /usr/bin/nc -z -u -w 1 8.8.8.8 53", loopbackOnly, ""},
+		{"no curl beyond loopback", "/usr/bin/curl --silent --show-error --max-time 5 http://1.1.1.1/", loopbackOnly, ""},
+		{"offline cannot listen", serve("127.0.0.1"), offline, ""},
+		{"offline cannot connect to loopback", "/usr/bin/curl --silent --show-error --max-time 5 " + host.URL, offline, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := e.runBash(context.Background(), tc.command, tc.reach, 15*time.Second, false)
+			if tc.want == "" && err == nil {
+				t.Fatalf("succeeded: %q", out)
+			}
+			if tc.want != "" && (err != nil || !strings.Contains(out, tc.want)) {
+				t.Fatalf("output=%q err=%v", out, err)
+			}
+		})
+	}
+	// A server a loopback terminal of the executor runs is the agent's own:
+	// a loopback command reaches it, and a later terminal too.
+	start := terminalCall(t, e, map[string]any{"action": "start", "command": "exec python3 -m http.server 0 --bind 127.0.0.1", "loopback": true, "wait_for": `port \d+`, "timeout": 20})
+	m := regexp.MustCompile(`port (\d+)`).FindStringSubmatch(start.Content)
+	if start.IsError || m == nil {
+		t.Fatalf("server: %s", start.Content)
+	}
+	defer terminalCall(t, e, map[string]any{"action": "stop", "id": "t1"})
+	out, err := e.runBash(context.Background(), "/usr/bin/curl --silent --show-error --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:"+m[1]+"/", loopbackOnly, 15*time.Second, false)
+	if err != nil || out != "200" {
+		t.Fatalf("the terminal's own server: %q, %v", out, err)
+	}
+}
+
+// The machine's own listeners are closed to loopback commands; a terminal's
+// are not.
+func TestHostPorts(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sockets are listed on macOS only")
+	}
+	e, _ := fixture(t, "auto", nil)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	ports, err := e.hostPorts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(ports, l.Addr().(*net.TCPAddr).Port) {
+		t.Fatalf("this process's listener %s is not closed: %v", l.Addr(), ports)
 	}
 }
 

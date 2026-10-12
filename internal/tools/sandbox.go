@@ -55,6 +55,30 @@ func (e *Executor) CheckSandbox(ctx context.Context) error {
 	_, err := e.runSandbox(ctx, "printf jarvis-sandbox-ok", false, 5*time.Second)
 	return err
 }
+
+// netAccess is how far a sandboxed command's sockets reach.
+type netAccess int
+
+const (
+	offline netAccess = iota
+	// loopbackOnly lets a command listen and connect on localhost and
+	// nowhere else: a dev server and the browser or tests that use it.
+	loopbackOnly
+	online
+)
+
+// access is the reach a call asked for with its network and loopback flags.
+func access(network, loopback bool) (netAccess, error) {
+	switch {
+	case network && loopback:
+		return offline, errors.New("network already includes loopback; set only one of them")
+	case network:
+		return online, nil
+	case loopback:
+		return loopbackOnly, nil
+	}
+	return offline, nil
+}
 func (e *Executor) bash(ctx context.Context, call core.ToolCall) (string, error) {
 	if e.config.Mode == "read-only" {
 		return "", errors.New("read-only mode prohibits Bash")
@@ -63,6 +87,7 @@ func (e *Executor) bash(ctx context.Context, call core.ToolCall) (string, error)
 		Command       string `json:"command"`
 		Timeout       int    `json:"timeout"`
 		Network       bool   `json:"network"`
+		Loopback      bool   `json:"loopback"`
 		Permissions   string `json:"sandbox_permissions"`
 		Justification string `json:"justification"`
 	}
@@ -96,9 +121,16 @@ func (e *Executor) bash(ctx context.Context, call core.ToolCall) (string, error)
 	if escalated && strings.TrimSpace(a.Justification) == "" {
 		return "", errors.New("require_escalated needs a nonempty justification explaining why this exact command needs host access")
 	}
+	reach, err := access(a.Network, a.Loopback)
+	if err != nil {
+		return "", err
+	}
 	approval := core.Approval{Call: call, Task: e.config.Task, Directory: e.directory, Justification: a.Justification, Network: a.Network, ExecutionMode: "sandboxed", Reason: "Run this command in the workspace OS sandbox?"}
-	if a.Network {
+	switch reach {
+	case online:
 		approval.Reason = "Run this sandboxed command with network access for this invocation?"
+	case loopbackOnly:
+		approval.Reason = "Run this command in the workspace OS sandbox, able to listen on localhost and connect to the servers it or its terminals start there?"
 	}
 	if escalated {
 		approval.ExecutionMode = "unsandboxed"
@@ -107,7 +139,9 @@ func (e *Executor) bash(ctx context.Context, call core.ToolCall) (string, error)
 	}
 	// Offline sandboxed Bash reaches no further than the workspace file tools,
 	// which auto mode already permits: writes stay in the workspace (never .git),
-	// credentials are unreadable and there is no network. Review only what leaves
+	// credentials are unreadable and there is no network. Loopback adds only
+	// the servers the agent starts itself, in the command or its terminals:
+	// the machine's own services are closed to it. Review only what leaves
 	// that boundary.
 	if e.config.Mode != "auto" || escalated || a.Network {
 		if err := e.authorizeRequest(ctx, approval, true); err != nil {
@@ -120,7 +154,7 @@ func (e *Executor) bash(ctx context.Context, call core.ToolCall) (string, error)
 	if escalated {
 		e.emit("warning", "Executing the approved command outside the OS sandbox with host-user filesystem and network access.")
 	}
-	return e.runBash(ctx, a.Command, a.Network, time.Duration(a.Timeout)*time.Second, escalated)
+	return e.runBash(ctx, a.Command, reach, time.Duration(a.Timeout)*time.Second, escalated)
 }
 
 // scratchDir creates the session scratch directory on first use. Without a
@@ -152,12 +186,13 @@ func (e *Executor) scratchDir() (string, error) {
 	return dir, nil
 }
 func (e *Executor) runSandbox(ctx context.Context, command string, network bool, timeout time.Duration) (string, error) {
-	return e.runBash(ctx, command, network, timeout, false)
+	reach, _ := access(network, false)
+	return e.runBash(ctx, command, reach, timeout, false)
 }
-func (e *Executor) runBash(ctx context.Context, command string, network bool, timeout time.Duration, escalated bool) (string, error) {
+func (e *Executor) runBash(ctx context.Context, command string, reach netAccess, timeout time.Duration, escalated bool) (string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	sh, err := e.shell(runCtx, command, network, escalated, "")
+	sh, err := e.shell(runCtx, command, reach, escalated, "")
 	if err != nil {
 		return "", err
 	}
@@ -219,7 +254,7 @@ type shellCommand struct {
 // shell prepares command to run in the workspace. tty is the terminal device
 // a Terminal program runs on, or empty for Bash; the profile then grants that
 // one device besides everything Bash may use.
-func (e *Executor) shell(ctx context.Context, command string, network, escalated bool, tty string) (shellCommand, error) {
+func (e *Executor) shell(ctx context.Context, command string, reach netAccess, escalated bool, tty string) (shellCommand, error) {
 	if !escalated && runtime.GOOS != "darwin" {
 		return shellCommand{}, errors.New("Bash requires macOS Seatbelt in this version; other platforms fail closed")
 	}
@@ -277,7 +312,13 @@ func (e *Executor) shell(ctx context.Context, command string, network, escalated
 		if info, statErr := os.Stat(sh.path); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
 			return shellCommand{}, errors.New("Bash disabled: macOS sandbox-exec is unavailable")
 		}
-		profile := seatbeltProfile(e.directory, tmp, scratch, network, goInfo)
+		var closed []int
+		if reach == loopbackOnly {
+			if closed, err = e.hostPorts(ctx); err != nil {
+				return shellCommand{}, fmt.Errorf("loopback needs to know which local ports belong to services already running here, and could not (%v); use network=true instead", err)
+			}
+		}
+		profile := seatbeltProfile(e.directory, tmp, scratch, reach, closed, goInfo)
 		if tty != "" {
 			rules, err := terminalProfile(tty)
 			if err != nil {
@@ -327,7 +368,9 @@ func (e *Executor) shell(ctx context.Context, command string, network, escalated
 	return sh, nil
 }
 
-func seatbeltProfile(directory, tmp, scratch string, network bool, goEnvironments ...EnvironmentInfo) string {
+// seatbeltProfile is the sandbox for a command. closed are the local ports a
+// loopback command may not connect to: the machine's own services.
+func seatbeltProfile(directory, tmp, scratch string, reach netAccess, closed []int, goEnvironments ...EnvironmentInfo) string {
 	var p strings.Builder
 	p.WriteString("(version 1)\n(deny default)\n(allow file-read* file-test-existence (literal \"/\"))\n(allow system-mac-syscall (mac-policy-name \"vnguard\"))\n(allow system-mac-syscall (require-all (mac-policy-name \"Sandbox\") (mac-syscall-number 67)))\n")
 	// Restrict all process operations to the sandbox. Descendants inherit Seatbelt.
@@ -379,8 +422,24 @@ func seatbeltProfile(directory, tmp, scratch string, network bool, goEnvironment
 	fmt.Fprintf(&p, "(deny file-write* (require-all (subpath %s) (regex #\"^.*/[.][gG][iI][tT](/.*)?$\")))\n", strconv.Quote(directory))
 	// The task cannot signal, inspect, or attach to processes outside its sandbox;
 	// network grants apply to this process tree only and do not add filesystem access.
-	if network {
+	switch reach {
+	case online:
 		p.WriteString("(allow network*)\n")
+	case loopbackOnly:
+		// Seatbelt's "localhost" is the loopback addresses, 127.0.0.1 and ::1.
+		// Listening is network-inbound, checked against the socket's own
+		// address, which cannot tell a wildcard from loopback: a server bound
+		// to every interface still accepts the local network, as it would if
+		// the user ran it. Connections out reach loopback only, so nothing
+		// can be sent beyond the machine, and not the ports of services that
+		// were listening before: the command's own servers, and its
+		// terminals', are what it may use. Unix sockets stay denied. The
+		// grant names tcp and udp rather than ip: after an ip grant, Seatbelt
+		// ignores a later denial of one port.
+		p.WriteString("(allow network-bind network-inbound (local ip \"localhost:*\"))\n(allow network-outbound (remote tcp \"localhost:*\") (remote udp \"localhost:*\"))\n")
+		for _, port := range closed {
+			fmt.Fprintf(&p, "(deny network-outbound (remote tcp \"localhost:%d\") (remote udp \"localhost:%d\"))\n", port, port)
+		}
 	}
 	return p.String()
 }

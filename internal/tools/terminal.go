@@ -56,14 +56,15 @@ func terminalDefinition() core.ToolDefinition {
 	mouse["description"] = "send: one mouse event, instead of text and keys, aimed at row and col or at text. Only when the program turned mouse reporting on (the screen header says mouse on)."
 	return core.ToolDefinition{
 		Name: "Terminal",
-		Description: fmt.Sprintf("Run a program in a virtual terminal and use it as a person would: drive a TUI, editor, REPL or interactive prompt with keys, or keep a dev server running while you work. start runs `bash -c command` in the workspace under the same OS sandbox and environment as Bash (no network unless network=true) and returns an id such as t1. Terminals persist across calls until stopped. stop, and the end of your turn, hang up the terminal and kill every process still on it, so never leave one running for the user; quit an editor with its own command first. A daemon that detaches from its terminal escapes, so run servers in the foreground. At most %d are open at once; one whose program exited stays readable until stopped. "+
+		Description: fmt.Sprintf("Run a program in a virtual terminal and use it as a person would: drive a TUI, editor, REPL or interactive prompt with keys, or keep a dev server running while you work. start runs `bash -c command` in the workspace under the same OS sandbox and environment as Bash (no network unless loopback=true or network=true) and returns an id such as t1. Terminals persist across calls until stopped. stop, and the end of your turn, hang up the terminal and kill every process still on it, so never leave one running for the user; quit an editor with its own command first. A daemon that detaches from its terminal escapes, so run servers in the foreground, with loopback=true so they can listen on localhost (bind 127.0.0.1 rather than every interface, which would also reach the local network). At most %d are open at once; one whose program exited stays readable until stopped. "+
 			"start, send and resize wait until the screen settles, or until wait_for matches, for up to timeout seconds; every response then shows the screen as numbered rows under a header with its size, cursor and state, which names the command a shell is still running (foreground job \"make\"). Rows and columns are 1-based; a wide character (CJK, most emoji) fills two columns but appears once in the text. Judge the text first, but TUIs often show the selected item and focused pane only by colour: a [highlighted: …] line under the rows lists cells set off by background colour or reverse video. image=true adds a rendered screenshot, which costs as much as ~1600 tokens of text: use it when the look itself matters (colours, alignment, layout). "+
-			"Keys are single characters or names: enter, tab, backspace, esc, space, up, down, left, right, home, end, pgup, pgdown, insert, delete, f1–f12, with modifiers such as ctrl+c, alt+x, shift+tab. In ask mode every start and send needs approval; in auto mode a terminal with network is reviewed at start and on every send.", maxTerminals),
+			"Keys are single characters or names: enter, tab, backspace, esc, space, up, down, left, right, home, end, pgup, pgdown, insert, delete, f1–f12, with modifiers such as ctrl+c, alt+x, shift+tab. In ask mode every start and send needs approval; in auto mode an offline or loopback terminal needs none, and a terminal with network is reviewed at start and on every send.", maxTerminals),
 		Parameters: schema(map[string]any{
 			"action":     map[string]any{"type": "string", "enum": terminalActions, "description": "start a program; send it input; snapshot its screen; resize it; stop (hang up and forget) it; list open terminals"},
 			"id":         str("The terminal, as start named it (t1, t2, …); required by send, snapshot, resize and stop"),
 			"command":    str("start: the Bash command to run, such as `npm run dev`, `vim notes.md`, or `bash` for a shell"),
-			"network":    map[string]any{"type": "boolean", "description": "start: allow network, loopback included, for this terminal's whole life; default false"},
+			"loopback":   map[string]any{"type": "boolean", "description": "start: let the program listen on localhost (127.0.0.1, ::1) and connect to the servers it or your other loopback terminals start there, for its whole life: a dev server, tests against it. Services already running on this machine (a database, the user's own dev server) and Unix sockets stay closed: they need network=true. No review in auto mode. Default false"},
+			"network":    map[string]any{"type": "boolean", "description": "start: allow all network, loopback included, for this terminal's whole life; reviewed. Default false"},
 			"cols":       sized("width", defaultTerminalCols, maxTerminalCols),
 			"rows":       sized("height", defaultTerminalRows, maxTerminalRows),
 			"text":       str("send: typed as keystrokes; a newline presses Enter"),
@@ -83,6 +84,7 @@ type terminalArgs struct {
 	ID         string         `json:"id"`
 	Command    string         `json:"command"`
 	Network    bool           `json:"network"`
+	Loopback   bool           `json:"loopback"`
 	Cols       int            `json:"cols"`
 	Rows       int            `json:"rows"`
 	Text       string         `json:"text"`
@@ -95,6 +97,7 @@ type terminalArgs struct {
 	Image      bool           `json:"image"`
 
 	pattern *regexp.Regexp
+	reach   netAccess
 }
 
 type terminalMouse struct {
@@ -125,6 +128,7 @@ func (a *terminalArgs) check() error {
 		{"id", a.ID != "", []string{"send", "snapshot", "resize", "stop"}},
 		{"command", a.Command != "", []string{"start"}},
 		{"network", a.Network, []string{"start"}},
+		{"loopback", a.Loopback, []string{"start"}},
 		{"cols", a.Cols != 0, []string{"start", "resize"}},
 		{"rows", a.Rows != 0, []string{"start", "resize"}},
 		{"text", a.Text != "", []string{"send"}},
@@ -147,6 +151,10 @@ func (a *terminalArgs) check() error {
 	case "start":
 		if strings.TrimSpace(a.Command) == "" || len(a.Command) > 128*1024 {
 			return errors.New("command is required and must be at most 128 KiB")
+		}
+		var err error
+		if a.reach, err = access(a.Network, a.Loopback); err != nil {
+			return err
 		}
 		a.Cols, a.Rows = cmp.Or(a.Cols, defaultTerminalCols), cmp.Or(a.Rows, defaultTerminalRows)
 	case "resize":
@@ -209,7 +217,7 @@ func (a *terminalArgs) check() error {
 // agent that started it: 0 for the main agent, or a subagent's.
 type openTerminal struct {
 	id, command string
-	network     bool
+	reach       netAccess
 	scope       int
 	session     *terminal.Session
 	tmp         string // the program's private HOME and TMPDIR
@@ -222,8 +230,11 @@ func (t *openTerminal) label() string {
 		command = string([]rune(command)[:59]) + "…"
 	}
 	label := t.id + " · " + command
-	if t.network {
+	switch t.reach {
+	case online:
 		label += " · network"
+	case loopbackOnly:
+		label += " · loopback"
 	}
 	return label
 }
@@ -286,7 +297,7 @@ func (e *Executor) terminal(ctx context.Context, call core.ToolCall, scope int) 
 				return core.ToolResult{}, fmt.Errorf("%s: %w", t.id, err)
 			}
 		}
-		if e.config.Mode != "auto" || t.network {
+		if e.config.Mode != "auto" || t.reach == online {
 			if err := e.authorizeTerminal(ctx, call, a, t); err != nil {
 				return core.ToolResult{}, err
 			}
@@ -328,10 +339,11 @@ func (e *Executor) startTerminal(ctx context.Context, call core.ToolCall, a term
 	if len(e.terminals) >= maxTerminals {
 		return core.ToolResult{}, fmt.Errorf("%d terminals are open, the most at once; stop one before starting another. Open now:\n%s", maxTerminals, e.listTerminals(scope))
 	}
-	// An offline terminal reaches no further than offline Bash, which auto mode
-	// runs freely. Network is granted for the terminal's whole life, so it is
-	// reviewed here and again for everything typed into it.
-	if e.config.Mode != "auto" || a.Network {
+	// An offline or loopback terminal reaches no further than offline or
+	// loopback Bash, which auto mode runs freely. Network is granted for the
+	// terminal's whole life, so it is reviewed here and again for everything
+	// typed into it.
+	if e.config.Mode != "auto" || a.reach == online {
 		if err := e.authorizeTerminal(ctx, call, a, nil); err != nil {
 			return core.ToolResult{}, err
 		}
@@ -342,7 +354,7 @@ func (e *Executor) startTerminal(ctx context.Context, call core.ToolCall, a term
 	var sh shellCommand
 	session, err := terminal.StartFunc(a.Cols, a.Rows, func(device string) (*exec.Cmd, error) {
 		var err error
-		if sh, err = e.shell(ctx, a.Command, a.Network, false, device); err != nil {
+		if sh, err = e.shell(ctx, a.Command, a.reach, false, device); err != nil {
 			return nil, err
 		}
 		cmd := exec.Command(sh.path, sh.args...)
@@ -357,7 +369,7 @@ func (e *Executor) startTerminal(ctx context.Context, call core.ToolCall, a term
 		return core.ToolResult{}, fmt.Errorf("start sandboxed terminal (no fallback): %w", err)
 	}
 	e.terminalCount++
-	t := &openTerminal{id: fmt.Sprintf("t%d", e.terminalCount), command: a.Command, network: a.Network, scope: scope, session: session, tmp: sh.tmp}
+	t := &openTerminal{id: fmt.Sprintf("t%d", e.terminalCount), command: a.Command, reach: a.reach, scope: scope, session: session, tmp: sh.tmp}
 	e.terminals = append(e.terminals, t)
 	note, err := waitTerminal(ctx, session, a, nil)
 	if err != nil {
@@ -375,25 +387,24 @@ func (e *Executor) authorizeTerminal(ctx context.Context, call core.ToolCall, a 
 		Terminal string         `json:"terminal,omitempty"`
 		Command  string         `json:"command"`
 		Network  bool           `json:"network"`
+		Loopback bool           `json:"loopback,omitempty"`
 		Cols     int            `json:"cols,omitempty"`
 		Rows     int            `json:"rows,omitempty"`
 		Text     string         `json:"text,omitempty"`
 		Paste    bool           `json:"paste,omitempty"`
 		Keys     []string       `json:"keys,omitempty"`
 		Mouse    *terminalMouse `json:"mouse,omitempty"`
-	}{Action: a.Action, Command: a.Command, Network: a.Network, Cols: a.Cols, Rows: a.Rows}
-	reason := "Start this command in a terminal in the workspace OS sandbox? It keeps running until stopped or the turn ends."
-	if a.Network {
-		reason = "Start this command in a sandboxed terminal with network access? It keeps running until stopped or the turn ends, and everything sent to it is reviewed too."
+	}{Action: a.Action, Command: a.Command, Network: a.reach == online, Loopback: a.reach == loopbackOnly, Cols: a.Cols, Rows: a.Rows}
+	reach := map[netAccess]string{offline: "the workspace OS sandbox", loopbackOnly: "the workspace OS sandbox, able to listen on localhost and connect to the servers it or other terminals start there", online: "the OS sandbox with network access"}
+	reason := "Start this command in a terminal in " + reach[a.reach] + "? It keeps running until stopped or the turn ends."
+	if a.reach == online {
+		reason += " Everything sent to it is reviewed too."
 	}
 	if t != nil {
-		request.Terminal, request.Command, request.Network = t.id, t.command, t.network
+		request.Terminal, request.Command, request.Network, request.Loopback = t.id, t.command, t.reach == online, t.reach == loopbackOnly
 		request.Text, request.Paste, request.Keys, request.Mouse = a.Text, a.Paste, a.Keys, a.Mouse
 		request.Cols, request.Rows = 0, 0
-		reason = "Send this input to terminal " + t.id + ", which runs the command shown in the workspace OS sandbox? The program receives it as typed input: a shell runs it as a command."
-		if t.network {
-			reason = "Send this input to terminal " + t.id + ", which runs the command shown in the OS sandbox with network access? The program receives it as typed input: a shell runs it as a command."
-		}
+		reason = "Send this input to terminal " + t.id + ", which runs the command shown in " + reach[t.reach] + "? The program receives it as typed input: a shell runs it as a command."
 	}
 	arguments, err := json.Marshal(request)
 	if err != nil {
@@ -539,7 +550,8 @@ func (e *Executor) closeTerminals(scope int) {
 }
 
 // scopedExecutor is how a subagent uses the executor: the same workspace,
-// lock and approvals, but terminals of its own, stopped when it returns.
+// lock and approvals, but terminals and browser pages of its own, closed
+// when it returns.
 type scopedExecutor struct {
 	executor *Executor
 	scope    int
@@ -551,7 +563,8 @@ func (s scopedExecutor) Execute(ctx context.Context, call core.ToolCall) core.To
 }
 
 // subagentScope gives one subagent its own view of the executor, and the
-// function that stops its terminals once it has finished.
+// function that stops its terminals and closes its browser context once it
+// has finished.
 func (e *Executor) subagentScope() (core.ToolExecutor, func()) {
 	e.mu.Lock()
 	e.scopes++
@@ -561,5 +574,6 @@ func (e *Executor) subagentScope() (core.ToolExecutor, func()) {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		e.closeTerminals(scope)
+		e.closeBrowser(scope)
 	}
 }

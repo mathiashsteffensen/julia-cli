@@ -42,6 +42,22 @@ type Config struct {
 	// into every user's config, which must keep loading.
 	ContextBytes int    `json:"context_bytes,omitempty"`
 	Timeout      string `json:"timeout"`
+	// Browser is the Chrome or Chromium the Browser tool launches: an
+	// executable or a macOS .app bundle. Empty finds one; JARVIS_BROWSER
+	// overrides it.
+	Browser string `json:"browser,omitempty"`
+}
+
+// BrowserEnv names the environment variable that overrides Config.Browser.
+const BrowserEnv = "JARVIS_BROWSER"
+
+// BrowserPath is the browser to launch: $JARVIS_BROWSER, else the
+// configured one, else empty, which finds one.
+func (c Config) BrowserPath() string {
+	if path := os.Getenv(BrowserEnv); path != "" {
+		return path
+	}
+	return c.Browser
 }
 
 func Default() Config {
@@ -143,6 +159,9 @@ func (c Config) Validate() error {
 	d, err := time.ParseDuration(c.Timeout)
 	if err != nil || d <= 0 {
 		return errors.New("timeout must be a positive Go duration, such as 4h")
+	}
+	if len(c.Browser) > 4096 || c.Browser != strings.TrimSpace(c.Browser) || strings.IndexFunc(c.Browser, unicode.IsControl) >= 0 {
+		return errors.New("browser must be a path to a Chrome or Chromium executable or .app, without surrounding whitespace or control characters")
 	}
 	return nil
 }

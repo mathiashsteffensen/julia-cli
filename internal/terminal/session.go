@@ -553,6 +553,10 @@ func (s *Session) wait() {
 // Pid is the program's process ID, which is also its process group ID.
 func (s *Session) Pid() int { return s.pid }
 
+// Members lists the live processes on the terminal: the program, the jobs a
+// shell runs, and what they started, such as a dev server's workers.
+func (s *Session) Members() ([]int, error) { return s.members() }
+
 // State reports whether the program is still running.
 func (s *Session) State() State {
 	s.mu.Lock()

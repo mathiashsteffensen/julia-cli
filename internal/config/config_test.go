@@ -178,3 +178,27 @@ func TestUnknownKeysStillRejectedAlongsideContextKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestBrowserConfiguration(t *testing.T) {
+	t.Setenv(BrowserEnv, "")
+	cfg, err := Load(writeConfig(t, `{"browser":"/Applications/Chromium.app"}`))
+	if err != nil || cfg.Browser != "/Applications/Chromium.app" || cfg.BrowserPath() != "/Applications/Chromium.app" {
+		t.Fatalf("browser not loaded: %+v %v", cfg, err)
+	}
+	t.Setenv(BrowserEnv, "~/chrome/chrome")
+	if got := cfg.BrowserPath(); got != "~/chrome/chrome" {
+		t.Fatalf("JARVIS_BROWSER does not override the configuration: %q", got)
+	}
+	if Default().Browser != "" {
+		t.Fatal("the default must find a browser, not name one")
+	}
+	for _, data := range []string{`{"browser":" /usr/bin/chromium"}`, `{"browser":"/usr/bin/chro\nmium"}`, `{"browser_path":"/usr/bin/chromium"}`} {
+		if _, err := Load(writeConfig(t, data)); err == nil {
+			t.Fatalf("accepted %s", data)
+		}
+	}
+	// A config written before the key existed still loads.
+	if cfg, err := Load(writeConfig(t, `{"provider":"codex","mode":"auto","max_steps":256,"timeout":"4h"}`)); err != nil || cfg.Browser != "" {
+		t.Fatalf("config without browser: %+v %v", cfg, err)
+	}
+}

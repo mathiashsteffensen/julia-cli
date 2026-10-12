@@ -97,7 +97,7 @@ func TestSidebarFitsRegisteredTools(t *testing.T) {
 		// The essentials rank below every other sidebar section, so they need a
 		// terminal tall enough for the context, token and activity sections too.
 		// Include the five extra rows reserved for spacing in the tall layout.
-		for _, height := range []int{53, 54, 55} {
+		for _, height := range []int{54, 55, 56} {
 			definitions := tools.Definitions(true)
 			m := testModel(t, Config{
 				Session:         &core.Session{Provider: provider},

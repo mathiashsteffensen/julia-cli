@@ -66,6 +66,10 @@ type Config struct {
 	WeeklyUsage         func(context.Context) (*core.WeeklyUsage, error)
 	Version             string // shown in the sidebar masthead
 	ContextWindow       int    // tokens the context gauge is measured against; <= 0 means core.DefaultContextWindow
+	// Hangup ends the interface when the terminal is gone, as a closed
+	// window's SIGHUP says, after the running task has stopped and cleaned
+	// up: its terminals and browser killed, not orphaned.
+	Hangup context.Context
 }
 
 type entry struct {
@@ -182,8 +186,12 @@ func Run(cfg Config) error {
 		}
 		m.wg.Wait()
 	}()
-	_, err := tea.NewProgram(m).Run()
-	if err != nil {
+	var options []tea.ProgramOption
+	if cfg.Hangup != nil {
+		options = append(options, tea.WithContext(cfg.Hangup))
+	}
+	_, err := tea.NewProgram(m, options...).Run()
+	if err != nil && !(cfg.Hangup != nil && cfg.Hangup.Err() != nil && errors.Is(err, tea.ErrProgramKilled)) {
 		return fmt.Errorf("run terminal interface: %w", err)
 	}
 	return nil

@@ -17,6 +17,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
+	"jarvis/internal/browser"
 	"jarvis/internal/config"
 	"jarvis/internal/core"
 	"jarvis/internal/instructions"
@@ -36,8 +37,13 @@ func main() {
 }
 
 func run() error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// A closed terminal window sends SIGHUP; its default would exit at once,
+	// before the running task's terminals and browser are closed, leaving
+	// them running with nobody to stop them.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
+	hangup, stopHangup := signal.NotifyContext(context.Background(), syscall.SIGHUP)
+	defer stopHangup()
 	configPath, err := config.Path()
 	if err != nil {
 		return err
@@ -280,6 +286,7 @@ func run() error {
 	}
 	uiConfig := baseUIConfig(s, cfg, runner.Definitions())
 	uiConfig.Backend, uiConfig.Save, uiConfig.Approvals, uiConfig.Questions = runner, store.Save, approvals, questions
+	uiConfig.Hangup = hangup
 	uiConfig.ApplySettings = func(current *core.Session, selectedProvider, selectedModel, reasoning string) error {
 		if selectedProvider == "compatible" && len(cfg.CompatibleModels) > 0 {
 			if cfg.BaseURL == "" {
@@ -443,7 +450,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		consumer(event)
 	}
 	task := newTaskContext(s.Messages, prompt.Text)
-	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "jarvis-scratch", s.ID)})
+	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "jarvis-scratch", s.ID), Browser: r.cfg.BrowserPath()})
 	if err != nil {
 		return err
 	}
@@ -620,6 +627,7 @@ func doctor(ctx context.Context, c config.Config, path string) error {
 	for _, path := range bundle.Skills {
 		fmt.Println("Skill     ", safe(path))
 	}
+	fmt.Println(browserSummary(ctx, c.BrowserPath()))
 	fmt.Println("Sandbox  ", tools.SandboxInfo())
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -638,6 +646,26 @@ func doctor(ctx context.Context, c config.Config, path string) error {
 	}
 	fmt.Println("Sandbox probe passed.")
 	return nil
+}
+
+// browserSummary is the doctor's line for the Browser tool: the Chrome it
+// would launch and its version, once started and closed again, or why there
+// is none and how to get one. A browser that fails is no failure of the
+// doctor: only the Browser tool needs it.
+func browserSummary(ctx context.Context, explicit string) string {
+	binary, err := browser.Find(explicit)
+	if err != nil {
+		return "Browser   " + safe(err.Error())
+	}
+	launchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	b, err := browser.Launch(launchCtx, browser.Options{Binary: binary})
+	if err != nil {
+		first, _, _ := strings.Cut(err.Error(), "\n")
+		return "Browser   " + safe(binary) + " · failed to start: " + safe(first)
+	}
+	defer b.Close()
+	return "Browser   " + safe(binary) + " · " + safe(b.Version())
 }
 
 // contextSummary is the doctor's view of the context budget. Only API providers

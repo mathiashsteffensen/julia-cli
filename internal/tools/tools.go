@@ -44,6 +44,9 @@ type Config struct {
 	// from Bash (sandboxed or not) and exposed as JARVIS_SCRATCH, so throwaway
 	// files that must outlive one call do not land in the repository.
 	ScratchDir string
+	// Browser is the Chrome the Browser tool launches, from configuration or
+	// JARVIS_BROWSER; empty finds one (see browser.Find).
+	Browser string
 }
 type Executor struct {
 	config    Config
@@ -65,6 +68,9 @@ type Executor struct {
 	// subagents that may own some.
 	terminals             []*openTerminal
 	terminalCount, scopes int
+	// browsing is the Browser tool's Chrome, contexts and approved origins,
+	// made on first use; see browser.go.
+	browsing *browserState
 }
 
 // A reviewer denial goes back to the model rather than to the user, so the model
@@ -100,6 +106,7 @@ func New(c Config) (*Executor, error) {
 func (e *Executor) Close() error {
 	e.mu.Lock()
 	e.closeTerminals(-1)
+	e.closeBrowser(-1)
 	e.mu.Unlock()
 	if e.webClient != nil {
 		e.webClient.CloseIdleConnections()
@@ -141,8 +148,9 @@ func Definitions(subagents bool) []core.ToolDefinition {
 		{Name: "Edit", Description: "Atomically replace one unique exact string in one file. Fails if old_string is absent or ambiguous. Maximum file size 4 MiB.", Parameters: schema(map[string]any{"path": path, "old_string": str("Nonempty exact text occurring once"), "new_string": str("Replacement text")}, "path", "old_string", "new_string")},
 		{Name: "MultiEdit", Description: "Apply ordered exact replacements to ONE file atomically. Every old_string must occur exactly once at its step; any failure leaves the file untouched.", Parameters: schema(map[string]any{"path": path, "edits": edits}, "path", "edits")},
 		{Name: "Write", Description: "Atomically create or replace a UTF-8 file up to 4 MiB; creates parent directories.", Parameters: schema(map[string]any{"path": path, "content": str("Complete file contents")}, "path", "content")},
-		{Name: "Bash", Description: "Run Bash in the workspace. In auto mode, sandboxed calls without network run directly; network and escalated calls are reviewed, and ask mode approves every call. $JARVIS_SCRATCH is a session scratch directory outside the workspace for throwaway files that must survive between calls. Default execution uses the OS sandbox; explicit require_escalated execution requires a justification and separate approval for that exact command, then runs outside the sandbox with host-user filesystem and unrestricted network access. No automatic retry or added sudo. Both modes strip inherited credentials, cap output at 32 KiB, and stop the ordinary process group on completion or timeout.", Parameters: schema(map[string]any{"command": str("Bash command"), "timeout": integer("Seconds, default 120, maximum 600"), "network": map[string]any{"type": "boolean", "description": "Enable network for this sandboxed invocation only; default false. Without it every socket is denied, loopback included, so reaching a local database or service on localhost needs network=true. Outside the sandbox network is always unrestricted regardless of this flag."}, "sandbox_permissions": map[string]any{"type": "string", "enum": []string{"use_default", "require_escalated"}, "description": "Default use_default keeps the OS sandbox. require_escalated requests approval to run this exact command outside the OS sandbox, with normal host-user privileges."}, "justification": str("Required for require_escalated: why this exact command needs host access and how it follows the user's task. This explanation is not itself authorization.")}, "command")},
+		{Name: "Bash", Description: "Run Bash in the workspace. In auto mode, sandboxed calls without network (offline or loopback) run directly; network and escalated calls are reviewed, and ask mode approves every call. $JARVIS_SCRATCH is a session scratch directory outside the workspace for throwaway files that must survive between calls. Default execution uses the OS sandbox; explicit require_escalated execution requires a justification and separate approval for that exact command, then runs outside the sandbox with host-user filesystem and unrestricted network access. No automatic retry or added sudo. Both modes strip inherited credentials, cap output at 32 KiB, and stop the ordinary process group on completion or timeout.", Parameters: schema(map[string]any{"command": str("Bash command"), "timeout": integer("Seconds, default 120, maximum 600"), "network": map[string]any{"type": "boolean", "description": "Enable all network for this sandboxed invocation only; reviewed in auto mode; default false. Outside the sandbox network is always unrestricted regardless of this flag."}, "loopback": map[string]any{"type": "boolean", "description": "Let this sandboxed invocation listen on localhost (127.0.0.1, ::1) and connect, over TCP or UDP, to the servers it or your loopback Terminals start there: tests that start local servers, curl to the dev server you run. Services already running on this machine (a database, the user's own dev server) and Unix sockets, which psql and mysql use for localhost by default, stay closed: they need network=true. Not reviewed in auto mode. Without it or network every socket is denied, loopback included. Default false"}, "sandbox_permissions": map[string]any{"type": "string", "enum": []string{"use_default", "require_escalated"}, "description": "Default use_default keeps the OS sandbox. require_escalated requests approval to run this exact command outside the OS sandbox, with normal host-user privileges."}, "justification": str("Required for require_escalated: why this exact command needs host access and how it follows the user's task. This explanation is not itself authorization.")}, "command")},
 		terminalDefinition(),
+		browserDefinition(),
 		webSearchDefinition(),
 	}
 	if subagents {
@@ -227,6 +235,11 @@ func (e *Executor) execute(ctx context.Context, call core.ToolCall, scope int) c
 	case "Terminal":
 		var result core.ToolResult
 		if result, err = e.terminal(ctx, call, scope); err == nil {
+			return result
+		}
+	case "Browser":
+		var result core.ToolResult
+		if result, err = e.browse(ctx, call, scope); err == nil {
 			return result
 		}
 	default:

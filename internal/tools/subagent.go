@@ -17,8 +17,9 @@ type SubagentRunner func(context.Context, string, core.ToolExecutor) (string, er
 // WithSubagents adds bounded, synchronous delegation outside Executor's lock.
 // Children receive the base executor, so they cannot recursively delegate and
 // workspace operations and approvals remain serialized by the original executor.
-// An Executor gives each child its own terminals, stopped when the child returns,
-// so none outlive the task that started them or are driven by two agents.
+// An Executor gives each child its own terminals and browser context, closed
+// when the child returns, so none outlive the task that started them or are
+// driven by two agents.
 func WithSubagents(base core.ToolExecutor, run SubagentRunner) core.ToolExecutor {
 	return &subagentExecutor{base: base, run: run}
 }

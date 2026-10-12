@@ -261,6 +261,13 @@ func (m *model) layoutEntry(item entry) entryLayout {
 		if item.call != nil {
 			name, detail = item.call.Name, toolSummary(*item.call)
 		}
+		if item.call != nil && item.call.Name == "Browser" && item.result != nil {
+			// The result names the elements the call gave only refs for.
+			headline, _, _ := strings.Cut(item.result.Content, "\n")
+			if summary, ok := browserSummary(item.call.Arguments, headline); ok {
+				detail = summary
+			}
+		}
 		icon := violetStyle.Render("◌")
 		if item.done {
 			icon = lipgloss.NewStyle().Foreground(green).Render("✓")
@@ -280,7 +287,50 @@ func (m *model) layoutEntry(item entry) entryLayout {
 			if item.call != nil && item.call.Name == "Terminal" && !item.result.IsError {
 				screen, isScreen = parseTerminalScreen(result)
 			}
-			if isScreen && m.expandTools {
+			page, isPage := browserPage{}, false
+			var other []string
+			isOther := false
+			if item.call != nil && item.call.Name == "Browser" && !item.result.IsError {
+				if page, isPage = parseBrowserPage(result); !isPage {
+					var call browserCall
+					json.Unmarshal(item.call.Arguments, &call)
+					other, isOther = browserRows(call.Action, result, w-2, m.expandTools)
+				}
+			}
+			if isOther {
+				for _, row := range other {
+					add(bar+"  "+row, rowMeta{gutter: 4, target: 1})
+				}
+			} else if isPage && m.expandTools {
+				if page.headline != "" {
+					add(bar+"  "+mutedStyle.Render(ansi.Truncate(page.headline, w-2, "…")), rowMeta{gutter: 4, skip: true})
+				}
+				for _, line := range page.details {
+					add(bar+"  "+creamStyle.Render(ansi.Truncate(line, w-2, "…")), rowMeta{gutter: 4, target: 1})
+				}
+				// Notes are read whole: why a request was blocked is in its tail.
+				for _, note := range page.notes {
+					for i, line := range strings.Split(ansi.Wrap(note, max(8, w-4), ""), "\n") {
+						lead := map[bool]string{true: "· ", false: "  "}[i == 0]
+						add(bar+"  "+noteStyle(note).Render(lead+line), rowMeta{gutter: 6, skip: true})
+					}
+				}
+				for _, err := range page.errs {
+					for i, line := range strings.Split(ansi.Wrap(err, max(8, w-4), ""), "\n") {
+						lead := map[bool]string{true: "! ", false: "  "}[i == 0]
+						add(bar+"  "+coralStyle.Render(lead+line), rowMeta{gutter: 6, skip: true})
+					}
+				}
+				rows, edge := page.card(w - 2)
+				for i, row := range rows {
+					add(bar+"  "+row, rowMeta{gutter: 4 + codeGutter, end: 4 + ansi.StringWidth(row), skip: edge[i], target: 1})
+				}
+				if page.shot != "" {
+					add(bar+"  "+mutedStyle.Italic(true).Render(ansi.Truncate(page.shot, w-2, "…")), rowMeta{gutter: 4, skip: true})
+				}
+			} else if isPage {
+				add(bar+"  "+page.summary(w-2), rowMeta{gutter: 4, target: 1})
+			} else if isScreen && m.expandTools {
 				for _, note := range screen.notes {
 					add(bar+"  "+mutedStyle.Italic(true).Render(ansi.Truncate(note, w-2, "…")), rowMeta{gutter: 4, skip: true})
 				}
@@ -337,7 +387,7 @@ func toolTargets(item entry) []copyTarget {
 		label, text = "arguments", string(item.call.Arguments)
 		var args map[string]json.RawMessage
 		if json.Unmarshal(item.call.Arguments, &args) == nil {
-			for _, key := range []string{"command", "path", "file_path", "pattern", "query", "directory"} {
+			for _, key := range []string{"command", "path", "file_path", "pattern", "query", "directory", "url", "script"} {
 				var value string
 				if json.Unmarshal(args[key], &value) == nil {
 					label, text = key, value
@@ -354,6 +404,11 @@ func toolTargets(item entry) []copyTarget {
 				kind, output = "screen", screen.text()
 			}
 		}
+		if item.call != nil && item.call.Name == "Browser" && !item.result.IsError {
+			if page, ok := parseBrowserPage(output); ok && len(page.lines) > 0 {
+				kind, output = "snapshot", page.text()
+			}
+		}
 	}
 	return []copyTarget{{label, text}, {kind, output}}
 }
@@ -361,6 +416,11 @@ func toolTargets(item entry) []copyTarget {
 func toolSummary(call core.ToolCall) string {
 	if call.Name == "Terminal" {
 		if summary, ok := terminalSummary(call.Arguments); ok {
+			return summary
+		}
+	}
+	if call.Name == "Browser" {
+		if summary, ok := browserSummary(call.Arguments, ""); ok {
 			return summary
 		}
 	}
@@ -746,7 +806,7 @@ func (m *model) footer() string {
 		if m.width < 62 {
 			return mutedStyle.Render("y/enter allow · any other key denies")
 		}
-		return coralStyle.Render("y / enter allow once") + mutedStyle.Render("  any other key denies  mouse wheel scrolls")
+		return coralStyle.Render("y / enter "+strings.ToLower(allowLabel(m.pending.Approval))) + mutedStyle.Render("  any other key denies  mouse wheel scrolls")
 	}
 	if m.picker != nil {
 		if m.width < 40 {
@@ -788,12 +848,30 @@ func (m *model) approvalView() string {
 	// any wider would be wrapped again, mid-word.
 	w := max(12, m.mainWidth-8)
 	var pretty bytes.Buffer
-	arguments := string(request.Call.Arguments)
-	if json.Indent(&pretty, request.Call.Arguments, "", "  ") == nil {
+	raw := request.Call.Arguments
+	if request.Call.Name == "Browser" {
+		raw = withoutPage(raw) // the Page section shows where
+	}
+	arguments := string(raw)
+	if json.Indent(&pretty, raw, "", "  ") == nil {
 		arguments = pretty.String()
 	}
 	text := coralStyle.Bold(true).Render("PERMISSION REQUEST")
-	text += "\n" + creamStyle.Bold(true).Render(sanitize(request.Call.Name)) + "\n\n" + creamStyle.Render(ansi.Wrap(sanitize(request.Reason), w, ""))
+	text += "\n" + creamStyle.Bold(true).Render(sanitize(request.Call.Name))
+	if request.Call.Name == "Browser" {
+		// What the browser would do, where, and what it would open up.
+		text += "  " + violetStyle.Render(ansi.Truncate(sanitize(toolSummary(request.Call)), max(6, w-9), "…"))
+	}
+	text += "\n\n" + creamStyle.Render(ansi.Wrap(sanitize(request.Reason), w, ""))
+	if request.Call.Name == "Browser" {
+		page, origins := browserApproval(request.Call.Arguments)
+		if page != "" {
+			text += "\n\n" + creamStyle.Bold(true).Render("Page") + "\n" + creamStyle.Render(ansi.Hardwrap(sanitize(page), w, false))
+		}
+		if len(origins) > 0 {
+			text += "\n\n" + coralStyle.Bold(true).Render("Approves for the rest of this turn") + "\n" + coralStyle.Render(ansi.Hardwrap(sanitize(strings.Join(origins, "\n")), w, false))
+		}
+	}
 	if request.ExecutionMode == "unsandboxed" {
 		text += "\n\n" + coralStyle.Bold(true).Render("OUTSIDE SANDBOX") + "\n" + coralStyle.Render(ansi.Hardwrap("Host-user filesystem access\nUnrestricted network access\nRuns as your current user; no sudo granted.", w, false))
 		text += "\n\n" + creamStyle.Bold(true).Render("Working directory") + "\n" + creamStyle.Render(ansi.Hardwrap(sanitize(request.Directory), w, false))
@@ -801,10 +879,13 @@ func (m *model) approvalView() string {
 			text += "\n\n" + creamStyle.Bold(true).Render("Justification") + "\n" + creamStyle.Render(ansi.Wrap(sanitize(request.Justification), w, ""))
 		}
 	}
-	if request.Network && request.ExecutionMode != "unsandboxed" {
+	if request.Network && request.ExecutionMode != "unsandboxed" && request.Call.Name != "Browser" {
 		text += "\n\n" + coralStyle.Render("Network access requested")
 	}
-	text += "\n\n" + mutedStyle.Render(ansi.Hardwrap(sanitize(arguments), w, false)) + "\n\n" + violetStyle.Bold(true).Render("y / Enter  Allow once") + "\n" + creamStyle.Render("n / Esc / any other key  Deny") + "\n\n" + faintStyle.Render("Mouse wheel scrolls the complete request")
+	if request.Network && request.Call.Name == "Browser" {
+		text += "\n\n" + coralStyle.Render("Reaches beyond this machine")
+	}
+	text += "\n\n" + mutedStyle.Render(ansi.Hardwrap(sanitize(arguments), w, false)) + "\n\n" + violetStyle.Bold(true).Render("y / Enter  "+allowLabel(request)) + "\n" + creamStyle.Render("n / Esc / any other key  Deny") + "\n\n" + faintStyle.Render("Mouse wheel scrolls the complete request")
 	return lipgloss.NewStyle().Width(m.mainWidth - 4).Border(lipgloss.RoundedBorder()).BorderForeground(coral).Padding(1).Render(text)
 }
 
