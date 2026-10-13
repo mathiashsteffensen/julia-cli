@@ -109,7 +109,7 @@ func (m *model) receiveCopied(msg copiedMsg) tea.Cmd {
 
 // conversationShown reports whether the body is the scrollable conversation.
 func (m *model) conversationShown() bool {
-	return m.pending == nil && m.picker == nil && m.question == nil && len(m.entries) > 0
+	return m.pending == nil && m.picker == nil && m.question == nil && m.fleetView == nil && len(m.entries) > 0
 }
 
 // cellAt maps a terminal position to a conversation cell. The header takes

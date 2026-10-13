@@ -117,33 +117,7 @@ func (m *model) refresh(forceBottom bool) {
 		return
 	}
 	if m.renderWidth != m.mainWidth {
-		style := styles.DarkStyleConfig
-		margin := uint(0)
-		style.Document.Margin = &margin
-		style.Document.BlockPrefix = ""
-		style.Document.BlockSuffix = ""
-		style.Document.Color = str("#ECE5DC")
-		style.Heading.Color = str("#C6B6F2")
-		style.Heading.Bold = ptr(true)
-		style.H1.Color = str("#F49D89")
-		style.H1.BackgroundColor = nil
-		// Headings are set by weight and color, not by their Markdown markers.
-		style.H1.Prefix, style.H1.Suffix = "", ""
-		style.H2.Prefix, style.H3.Prefix, style.H4.Prefix, style.H5.Prefix, style.H6.Prefix = "", "", "", "", ""
-		style.HorizontalRule.Color = str("#56515F")
-		style.HorizontalRule.Format = "\n────────\n"
-		style.BlockQuote.Color = str("#96929F")
-		style.Item.BlockPrefix = "• "
-		style.Enumeration.Color = str("#C6B6F2")
-		style.Emph.Color = str("#ECE5DC")
-		style.Strong.Color = str("#ECE5DC")
-		style.Code.Color = str("#C6B6F2")
-		style.Code.BackgroundColor = str("#27242E")
-		style.CodeBlock.Theme = "dracula"
-		style.CodeBlock.Margin = &margin
-		style.Link.Color = str("#C6B6F2")
-		style.LinkText.Color = str("#C6B6F2")
-		m.markdown, _ = glamour.NewTermRenderer(glamour.WithStyles(style), glamour.WithWordWrap(max(10, m.mainWidth-4)))
+		m.markdown = markdownRenderer(m.mainWidth)
 		m.renderWidth = m.mainWidth
 	}
 	m.lines, m.rows = m.lines[:0], m.rows[:0]
@@ -177,6 +151,39 @@ func (m *model) refresh(forceBottom bool) {
 	}
 }
 
+// markdownRenderer renders a reply's Markdown in the interface's colors,
+// wrapped to fit a column of width.
+func markdownRenderer(width int) *glamour.TermRenderer {
+	style := styles.DarkStyleConfig
+	margin := uint(0)
+	style.Document.Margin = &margin
+	style.Document.BlockPrefix = ""
+	style.Document.BlockSuffix = ""
+	style.Document.Color = str("#ECE5DC")
+	style.Heading.Color = str("#C6B6F2")
+	style.Heading.Bold = ptr(true)
+	style.H1.Color = str("#F49D89")
+	style.H1.BackgroundColor = nil
+	// Headings are set by weight and color, not by their Markdown markers.
+	style.H1.Prefix, style.H1.Suffix = "", ""
+	style.H2.Prefix, style.H3.Prefix, style.H4.Prefix, style.H5.Prefix, style.H6.Prefix = "", "", "", "", ""
+	style.HorizontalRule.Color = str("#56515F")
+	style.HorizontalRule.Format = "\n────────\n"
+	style.BlockQuote.Color = str("#96929F")
+	style.Item.BlockPrefix = "• "
+	style.Enumeration.Color = str("#C6B6F2")
+	style.Emph.Color = str("#ECE5DC")
+	style.Strong.Color = str("#ECE5DC")
+	style.Code.Color = str("#C6B6F2")
+	style.Code.BackgroundColor = str("#27242E")
+	style.CodeBlock.Theme = "dracula"
+	style.CodeBlock.Margin = &margin
+	style.Link.Color = str("#C6B6F2")
+	style.LinkText.Color = str("#C6B6F2")
+	renderer, _ := glamour.NewTermRenderer(glamour.WithStyles(style), glamour.WithWordWrap(max(10, width-4)))
+	return renderer
+}
+
 func str(value string) *string { return &value }
 func ptr[T any](value T) *T    { return &value }
 
@@ -185,20 +192,38 @@ func ptr[T any](value T) *T    { return &value }
 var toolRail = faintStyle.Render("│")
 
 func (m *model) renderEntry(item *entry) entryLayout {
-	if item.layout.text != "" && item.cachedRevision == item.revision && item.cachedWidth == m.mainWidth && item.cachedExpanded == m.expandTools && item.cachedGraphics == m.graphicsEpoch {
+	return m.renderEntryIn(item, column{width: m.mainWidth, markdown: m.markdown})
+}
+
+// column is where an entry is laid out: the conversation, or a fleet agent's
+// pane, whose Markdown wraps to its own narrower width.
+type column struct {
+	width    int
+	markdown *glamour.TermRenderer
+	// wordWrap breaks a message between words. The conversation breaks
+	// between cells instead, so a copy can join a wrapped row back exactly.
+	wordWrap bool
+}
+
+func (m *model) renderEntryIn(item *entry, in column) entryLayout {
+	if item.layout.text != "" && item.cachedRevision == item.revision && item.cachedWidth == in.width && item.cachedExpanded == m.expandTools && item.cachedGraphics == m.graphicsEpoch {
 		return item.layout
 	}
-	item.layout = m.layoutEntry(*item)
-	item.cachedRevision, item.cachedWidth, item.cachedExpanded, item.cachedGraphics = item.revision, m.mainWidth, m.expandTools, m.graphicsEpoch
+	item.layout = m.layoutEntryIn(*item, in)
+	item.cachedRevision, item.cachedWidth, item.cachedExpanded, item.cachedGraphics = item.revision, in.width, m.expandTools, m.graphicsEpoch
 	return item.layout
 }
 
 func (m *model) renderEntryContent(item entry) string { return m.layoutEntry(item).text }
 
-// layoutEntry renders an entry together with the map from its rows back to the
-// text they show, which is what selection and copying work from.
 func (m *model) layoutEntry(item entry) entryLayout {
-	w := max(10, m.mainWidth-4)
+	return m.layoutEntryIn(item, column{width: m.mainWidth, markdown: m.markdown})
+}
+
+// layoutEntryIn renders an entry together with the map from its rows back to
+// the text they show, which is what selection and copying work from.
+func (m *model) layoutEntryIn(item entry, in column) entryLayout {
+	w := max(10, in.width-4)
 	var out entryLayout
 	add := func(line string, row rowMeta) {
 		out.text += line + "\n"
@@ -207,7 +232,11 @@ func (m *model) layoutEntry(item entry) entryLayout {
 	// wrapped adds text hard-wrapped to width, marking the rows a wrap created.
 	wrapped := func(text string, width int, row rowMeta, render func(string) string) {
 		for _, line := range strings.Split(text, "\n") {
-			for i, part := range strings.Split(ansi.Hardwrap(line, width, false), "\n") {
+			parts := ansi.Hardwrap(line, width, false)
+			if in.wordWrap {
+				parts = ansi.Wrap(line, width, "")
+			}
+			for i, part := range strings.Split(parts, "\n") {
 				row.cont = i > 0
 				add(render(part), row)
 			}
@@ -217,7 +246,7 @@ func (m *model) layoutEntry(item entry) entryLayout {
 	case "user":
 		out.targets = []copyTarget{{"your message", item.text}}
 		bar := lipgloss.NewStyle().Foreground(coral).Render("┃") + " "
-		add(bar+coralStyle.Bold(true).Render("YOU"), rowMeta{gutter: 2, skip: true})
+		add(bar+coralStyle.Bold(true).Render(item.heading("YOU")), rowMeta{gutter: 2, skip: true})
 		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string { return bar + highlightImageTokens(s) })
 		rows := imageRows(item.images)
 		if len(item.images) > 0 && len(item.imageIDs) == len(item.images) && m.thumbnailsShown() {
@@ -229,7 +258,7 @@ func (m *model) layoutEntry(item entry) entryLayout {
 		}
 	case "assistant":
 		out.targets = []copyTarget{{"reply", item.text}}
-		add(" "+violetStyle.Bold(true).Render("✦ JULIA"), rowMeta{gutter: 1, skip: true})
+		add(" "+violetStyle.Bold(true).Render(item.heading("✦ JULIA")), rowMeta{gutter: 1, skip: true})
 		for i, segment := range splitFences(sanitize(item.text)) {
 			if i > 0 || strings.HasPrefix(strings.TrimLeft(segment.text, " \n"), "#") {
 				// A heading straight under the label would read as part of it.
@@ -242,7 +271,7 @@ func (m *model) layoutEntry(item entry) entryLayout {
 					label = segment.language + " code"
 				}
 				out.targets = append(out.targets, copyTarget{label, segment.text})
-				width := max(codeGutter+8, m.mainWidth-2)
+				width := max(codeGutter+8, in.width-2)
 				rows, continued := renderCodeBlock(segment.text, segment.language, width)
 				for j, row := range rows {
 					edge := j <= 1 || j == len(rows)-1 // header and padding rows
@@ -251,8 +280,8 @@ func (m *model) layoutEntry(item entry) entryLayout {
 				continue
 			}
 			text := segment.text
-			if m.markdown != nil {
-				if rendered, err := m.markdown.Render(text); err == nil {
+			if in.markdown != nil {
+				if rendered, err := in.markdown.Render(text); err == nil {
 					text = trimTrailing(strings.Trim(rendered, "\n"))
 				}
 			}
@@ -588,6 +617,8 @@ func (m *model) View() tea.View {
 		body = m.pickerView()
 	} else if m.question != nil && m.pending == nil {
 		body = m.questionBody()
+	} else if m.fleetView != nil && m.pending == nil {
+		body = m.fleetBody()
 	} else if len(m.entries) == 0 && m.pending == nil {
 		body = m.welcome()
 	}
@@ -648,6 +679,12 @@ func (m *model) bottomView() string {
 	}
 	if m.busy {
 		composerTitle = label.Render("DRAFT") + note.Render(" · retained while JULIA works")
+	}
+	if m.fleetView != nil {
+		composerTitle = label.Render("DRAFT") + note.Render(" · kept while you inspect the fleet")
+		if m.mainWidth < 48 {
+			composerTitle = label.Render("DRAFT") + note.Render(" · fleet open")
+		}
 	}
 	if m.question != nil {
 		composerTitle = label.Render("DRAFT") + note.Render(" · kept while you answer")
@@ -774,9 +811,27 @@ func (m *model) sidebar() string {
 		m.contextSection(label, width),
 		m.tokenSection(label, width),
 		activity,
+	}
+	if n := len(m.fleet); n > 0 {
+		count := fmt.Sprintf("%d subagents", n)
+		if n == 1 {
+			count = "1 subagent"
+		}
+		section := []string{label("FLEET"), value(count)}
+		// The states on one row when they fit, else one per row.
+		if summary := m.fleetSummary(); ansi.StringWidth(summary) <= width {
+			section = append(section, mutedStyle.Render(summary))
+		} else {
+			for _, part := range strings.Split(summary, " · ") {
+				section = append(section, mutedStyle.Render(ansi.Truncate(part, width, "…")))
+			}
+		}
+		sections = append(sections, append(section, faintStyle.Render("ctrl+f inspects")))
+	}
+	sections = append(sections, [][]string{
 		{label("PERMISSIONS"), lipgloss.NewStyle().Foreground(green).Render(ansi.Truncate("◈ "+sanitize(m.cfg.Mode), width, "…")), mutedStyle.Render(ansi.Truncate(permissionCaption(m.cfg.Mode), width, "…"))},
 		{label("SESSION"), value(id)},
-	}
+	}...)
 	if rows := toolRows(m.cfg.ToolDefinitions, width); len(rows) > 0 {
 		essentials := []string{faintStyle.Render(strings.Repeat("─", width)), "", label("THE ESSENTIALS")}
 		for _, row := range rows {
@@ -902,7 +957,10 @@ func (m *model) statusLine() string {
 	if m.notice != "" {
 		status = mutedStyle.Render(sanitize(m.notice))
 	}
-	if !m.viewport.AtBottom() && len(m.entries) > 0 && m.pending == nil && m.question == nil && m.picker == nil && m.notice == "" {
+	if m.fleetView != nil && m.fleetView.below > 0 && m.pending == nil && m.question == nil && m.notice == "" {
+		status = violetStyle.Render("↑ Reading the agent's work") + mutedStyle.Render(" · Ctrl+End to follow it")
+	}
+	if !m.viewport.AtBottom() && len(m.entries) > 0 && m.pending == nil && m.question == nil && m.picker == nil && m.fleetView == nil && m.notice == "" {
 		status = violetStyle.Render("↑ Reading history") + mutedStyle.Render(" · Ctrl+End to follow output")
 	}
 	return ansi.Truncate(status, m.mainWidth, "…")
@@ -930,6 +988,9 @@ func (m *model) footer() string {
 		}
 		return coralStyle.Render("y / enter "+strings.ToLower(allowLabel(m.pending.Approval))) + mutedStyle.Render("  any other key denies  mouse wheel scrolls")
 	}
+	if m.fleetView != nil {
+		return m.fleetFooter()
+	}
 	if m.picker != nil {
 		if m.width < 40 {
 			return mutedStyle.Render("↑↓ select · enter · esc back")
@@ -948,10 +1009,14 @@ func (m *model) footer() string {
 	}
 	// Shortcuts join in order of usefulness while they fit beside the sidebar,
 	// then show in their usual order.
-	extras := []string{"ctrl+o tools", "ctrl+p models", "drag copy", "ctrl+v image"}
+	extras, priority := []string{"ctrl+o tools", "ctrl+p models", "drag copy", "ctrl+v image"}, []int{1, 0, 2, 3}
+	if len(m.fleet) > 0 {
+		// With agents at work, the fleet is the shortcut worth knowing first.
+		extras, priority = []string{"ctrl+f fleet", "ctrl+o tools", "ctrl+p models", "drag copy", "ctrl+v image"}, []int{0, 2, 1, 3, 4}
+	}
 	shown := make([]bool, len(extras))
 	used := ansi.StringWidth("enter send  alt+enter newline  esc interrupt  /help")
-	for _, i := range []int{1, 0, 2, 3} {
+	for _, i := range priority {
 		if used+2+len(extras[i]) <= m.mainWidth {
 			used, shown[i] = used+2+len(extras[i]), true
 		}

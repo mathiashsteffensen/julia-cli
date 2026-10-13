@@ -44,6 +44,7 @@ func (m *model) resetCounters() {
 	m.toolCount, m.inputTokens, m.outputTokens = 0, 0, 0
 	m.live = core.SessionUsage{}
 	m.lastDuration = 0
+	m.fleet, m.fleetView = nil, nil
 }
 
 // recordUsage notes one model call. A call that reports nothing (a pure context

@@ -66,6 +66,9 @@ type Config struct {
 	EnabledModels []core.ModelOption
 	ApplySettings func(*core.Session, string, string, string) error
 	WeeklyUsage   func(context.Context) (*core.WeeklyUsage, error)
+	// Children lists the subagent sessions a session ran, so a resumed
+	// session's fleet shows what its children did.
+	Children      func(parent string) ([]*core.Session, error)
 	Version       string // shown in the sidebar masthead
 	ContextWindow int    // tokens the context gauge is measured against; <= 0 means core.DefaultContextWindow
 	// Hangup ends the interface when the terminal is gone, as a closed
@@ -77,6 +80,7 @@ type Config struct {
 type entry struct {
 	role           string
 	text           string
+	label          string       // the heading shown instead of the role's own, such as a fleet agent's task or name
 	images         []core.Image // a user message's attached images, or the image a tool returned
 	imageIDs       []int        // the Kitty image ID that draws each of images
 	call           *core.ToolCall
@@ -88,6 +92,14 @@ type entry struct {
 	cachedExpanded bool
 	cachedGraphics uint64
 	layout         entryLayout
+}
+
+// heading is the label an entry is shown under: its own, or fallback.
+func (e entry) heading(fallback string) string {
+	if e.label != "" {
+		return e.label
+	}
+	return fallback
 }
 
 type streamMsg struct {
@@ -161,6 +173,10 @@ type model struct {
 	thumbnailOrder         []int              // those IDs, in the order they were registered
 	picker                 *settingsPicker
 	pickerSequence         uint64
+	fleet                  []*agent    // every subagent of the session, oldest first
+	fleetView              *fleetState // the fleet window, while open
+	fleetMarkdown          *glamour.TermRenderer
+	fleetMarkdownWidth     int
 	models                 []core.ModelOption
 	weekly                 weeklyUsageState
 	reasoningCycleSequence uint64
@@ -224,8 +240,10 @@ func newModel(cfg Config) *model {
 	}
 	m.viewport.FillHeight = true
 	m.loadHistory()
+	m.loadFleet()
 	if cfg.Demo {
 		m.entries = demoEntries()
+		m.fleet = m.demoFleet()
 		m.toolCount = 3
 		m.lastDuration = 28 * time.Second
 		m.inputTokens, m.outputTokens = 117_300, 1_284
@@ -325,7 +343,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case imagesMsg:
 		return m, m.receiveImages(msg)
 	case tea.PasteMsg:
-		if m.pending == nil && m.question == nil && m.picker == nil {
+		if m.pending == nil && m.question == nil && m.picker == nil && m.fleetView == nil {
 			if cmd, handled := m.pasteText(msg.Content); handled {
 				return m, cmd
 			}
@@ -431,6 +449,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// question is released, so the tool sees a cancellation, not a skip.
 			return m, m.updateQuestion(msg)
 		}
+		if m.fleetView != nil && m.pending == nil && msg.String() != "ctrl+c" {
+			return m, m.updateFleet(msg)
+		}
+		if msg.String() == "ctrl+f" {
+			return m, m.openFleet()
+		}
 		if m.picker != nil && m.pending == nil && msg.String() != "ctrl+c" {
 			return m, m.updatePicker(msg)
 		}
@@ -486,6 +510,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.question != nil && m.pending == nil {
 			return m, m.clickQuestion(msg)
 		}
+		if m.fleetView != nil && m.pending == nil {
+			return m, m.clickFleet(msg)
+		}
 		return m, m.mouseDown(msg)
 	case tea.MouseMotionMsg:
 		return m, m.mouseDrag(msg)
@@ -498,6 +525,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.scrollSidebar(-1)
 			case tea.MouseWheelDown:
 				m.scrollSidebar(1)
+			}
+			return m, nil
+		}
+		if m.fleetView != nil && m.pending == nil {
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				m.scrollFleet(-3)
+			case tea.MouseWheelDown:
+				m.scrollFleet(3)
 			}
 			return m, nil
 		}
@@ -576,7 +612,7 @@ func (m *model) submit() tea.Cmd {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
 		case "/ask", "/ask text":
 			if !m.cfg.Demo {
 				m.notice = "Unknown command. /help lists the essentials."
@@ -688,12 +724,20 @@ func cloneEvent(event core.Event) core.Event {
 		result := *event.Result
 		event.Result = &result
 	}
+	if event.Subagent != nil {
+		ref := *event.Subagent
+		event.Subagent = &ref
+	}
 	return event
 }
 
 // applyEvent shows a provider event. It returns the upload of a thumbnail when
 // a tool's result brought an image.
 func (m *model) applyEvent(event core.Event) tea.Cmd {
+	if event.Subagent != nil {
+		m.applyAgentEvent(event)
+		return nil
+	}
 	var cmd tea.Cmd
 	switch event.Kind {
 	case "text":

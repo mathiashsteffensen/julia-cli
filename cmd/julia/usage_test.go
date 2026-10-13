@@ -103,9 +103,12 @@ func TestSubagentSpendRollsUpIntoParentSessionOnce(t *testing.T) {
 				roles:       agents.Builtin(),
 			}
 			s := session.New(t.TempDir(), "fake", "model")
+			// A child's own usage events are marked as the child's; a UI
+			// that sums the parent's events must skip them, since the
+			// roll-up the parent emits when the child finishes carries them.
 			var usage []core.Event
 			if err := runner.Run(context.Background(), s, core.Prompt{Text: "delegate this"}, nil, func(event core.Event) {
-				if event.Kind == "usage" {
+				if event.Kind == "usage" && event.Subagent == nil {
 					usage = append(usage, event)
 				}
 			}); err != nil {

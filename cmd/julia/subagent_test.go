@@ -81,20 +81,51 @@ func TestRuntimeSubagentsInheritSettingsAndAuthorization(t *testing.T) {
 		},
 		checkpoint: func(child *core.Session) error { mu.Lock(); defer mu.Unlock(); saved[child.ID] = *child; return nil },
 	}
+	// A child's events reach the parent stream only marked as the child's,
+	// opened by subagent_start with the task and closed by subagent_end.
+	var started, ended, childText int
 	err := runner.Run(context.Background(), s, core.Prompt{Text: "current follow-up"}, nil, func(event core.Event) {
-		if event.Kind == "text" {
-			t.Error("child text leaked into parent stream")
+		if event.Subagent == nil {
+			if event.Kind == "text" || event.Kind == "subagent_start" || event.Kind == "subagent_end" {
+				t.Errorf("%s event reached the parent stream unmarked", event.Kind)
+			}
+			return
+		}
+		if event.Subagent.Role != "delegate" || event.Subagent.Model != "fake/selected-model" || event.Subagent.ID == "" {
+			t.Errorf("child event names %+v", *event.Subagent)
+		}
+		switch event.Kind {
+		case "subagent_start":
+			started++
+			if !strings.HasPrefix(event.Text, "delegated task") {
+				t.Errorf("subagent_start carries %q, want the task", event.Text)
+			}
+		case "subagent_end":
+			ended++
+			if event.Text != "" {
+				t.Errorf("a completed child ended with %q", event.Text)
+			}
+		case "text":
+			childText++
 		}
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if started != 2 || ended != 2 || childText != 2 {
+		t.Fatalf("started=%d ended=%d text=%d, want 2 each", started, ended, childText)
+	}
 	if approvalCalls != 2 || len(saved) != 2 {
 		t.Fatalf("approvals=%d children=%d", approvalCalls, len(saved))
 	}
 	for _, child := range saved {
-		if len(child.Audit) != 1 || len(child.Messages) != 2 {
+		if len(child.Audit) != 1 || len(child.Messages) != 2 || child.Role != "delegate" {
 			t.Fatal("child final transcript not saved")
+		}
+	}
+	for _, event := range s.Audit {
+		if event.Event.Subagent != nil {
+			t.Fatalf("a child's %s event was audited in the parent", event.Event.Kind)
 		}
 	}
 	if err := selectSessionModel(&cfg, &core.Session{ParentID: s.ID}, s.Directory, "", "", false, true); err == nil {

@@ -81,6 +81,8 @@ type WeeklyUsage struct {
 	ResetsAt         time.Time
 }
 
+// Session is one conversation. A child session, run by a subagent, names its
+// parent in ParentID and the role it ran as in Role.
 type Session struct {
 	// Instructions is rebuilt from the current environment and user skills per turn.
 	// It is deliberately excluded from saved sessions.
@@ -93,6 +95,7 @@ type Session struct {
 	Model        string          `json:"model"`
 	Reasoning    string          `json:"reasoning,omitempty"`
 	ReasoningSet bool            `json:"reasoning_set,omitempty"`
+	Role         string          `json:"role,omitempty"`
 	RemoteID     string          `json:"remote_id,omitempty"`
 	State        json.RawMessage `json:"state,omitempty"`
 	PendingTool  *ToolCall       `json:"pending_tool,omitempty"`
@@ -104,7 +107,15 @@ type Session struct {
 }
 
 // Event is the single provider-independent stream consumed by the UI and headless CLI.
-// Kinds: status, text, tool_start, tool_end, usage, warning.
+// Kinds: status, text, tool_start, tool_end, usage, warning, subagent_start,
+// subagent_end.
+//
+// A subagent's events reach the stream too, each carrying the Subagent it came
+// from, so the delegating agent's own events are the ones without. A
+// subagent_start event opens a child, with its task in Text; subagent_end
+// closes it, with the failure in Text when it failed. A child's usage events
+// are its own calls, already summed into the Aggregate event its parent
+// emits when it finishes, so totals must count only one of the two.
 //
 // A usage event normally describes one model call. InputTokens is the whole
 // prompt sent (uncached, cache reads and cache writes together);
@@ -126,6 +137,15 @@ type Event struct {
 	OutputTokens      int         `json:"output_tokens,omitempty"`
 	ContextTokens     int         `json:"context_tokens,omitempty"`
 	Aggregate         bool        `json:"aggregate,omitempty"`
+	Subagent          *Subagent   `json:"subagent,omitempty"`
+}
+
+// Subagent names the child a subagent's event belongs to: its session ID, the
+// role it runs as, and the model it runs on.
+type Subagent struct {
+	ID    string `json:"id"`
+	Role  string `json:"role"`
+	Model string `json:"model"`
 }
 
 // DefaultContextWindow is the context size, in tokens, assumed for every model:

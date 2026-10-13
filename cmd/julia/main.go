@@ -266,6 +266,14 @@ func run() error {
 				_ = enc.Encode(e)
 				return
 			}
+			if e.Subagent != nil {
+				// A child's text is its report to the parent, not output; its
+				// tool calls show as progress under the role's name.
+				if e.Kind == "tool_start" && e.Call != nil {
+					fmt.Fprintln(os.Stderr, "  ›", safe(e.Subagent.Role), "›", e.Call.Name)
+				}
+				return
+			}
 			switch e.Kind {
 			case "text":
 				fmt.Print(safe(e.Text))
@@ -293,6 +301,19 @@ func run() error {
 	uiConfig := baseUIConfig(s, cfg, runner.Definitions())
 	uiConfig.Backend, uiConfig.Save, uiConfig.Approvals, uiConfig.Questions = runner, store.Save, approvals, questions
 	uiConfig.Hangup = hangup
+	uiConfig.Children = func(parent string) ([]*core.Session, error) {
+		all, err := store.List()
+		if err != nil {
+			return nil, err
+		}
+		var children []*core.Session
+		for _, child := range all {
+			if child.ParentID == parent {
+				children = append(children, child)
+			}
+		}
+		return children, nil
+	}
 	uiConfig.ApplySettings = func(current *core.Session, selectedProvider, selectedModel, reasoning string) error {
 		if selectedProvider == "compatible" && cfg.Enables("compatible") {
 			if cfg.CompatibleBaseURL == "" {
@@ -460,7 +481,8 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 	emit = func(event core.Event) {
 		emitMu.Lock()
 		defer emitMu.Unlock()
-		if event.Kind == "tool_start" || event.Kind == "tool_end" || event.Kind == "warning" || event.Kind == "status" {
+		// A child's events are audited in the child's session, not here.
+		if event.Subagent == nil && (event.Kind == "tool_start" || event.Kind == "tool_end" || event.Kind == "warning" || event.Kind == "status") {
 			s.Audit = append(s.Audit, core.AuditEntry{At: time.Now(), Event: event})
 		}
 		consumer(event)
@@ -524,6 +546,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 			}
 			child := session.New(directory, settings.Provider, settings.Model)
 			child.ParentID = parentID
+			child.Role = role.Name
 			child.Title = "Subagent " + role.Name + ": " + session.Title(task)
 			child.Reasoning, child.ReasoningSet = settings.Reasoning, true
 			child.Instructions = instructionText + subagentInstructions(role)
@@ -533,12 +556,24 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 				}
 			}
 			emit(core.Event{Kind: "status", Text: "Started " + role.Name + " on " + modelID + " · subagent " + child.ID})
+			// The child's events join the parent stream marked as the child's,
+			// so the interface can show the fleet at work; the child session
+			// audits them, as the parent's audits its own.
+			ref := &core.Subagent{ID: child.ID, Role: role.Name, Model: modelID}
+			emit(core.Event{Kind: "subagent_start", Text: task, Subagent: ref})
 			childEmit := func(event core.Event) {
 				if event.Kind == "tool_start" || event.Kind == "tool_end" || event.Kind == "warning" || event.Kind == "status" {
 					child.Audit = append(child.Audit, core.AuditEntry{At: time.Now(), Event: event})
 				}
+				event.Subagent = ref
+				emit(event)
 			}
 			err = childBackend.Run(childCtx, child, core.Prompt{Text: task}, childTools, childEmit)
+			ended := core.Event{Kind: "subagent_end", Subagent: ref}
+			if err != nil {
+				ended.Text = err.Error()
+			}
+			emit(ended)
 			if r.checkpoint != nil {
 				err = errors.Join(err, r.checkpoint(child))
 			}

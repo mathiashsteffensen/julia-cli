@@ -51,6 +51,7 @@ Other flags: `--model`, `--reasoning`, `--mode`, `--compatible-base-url`,
 | Ctrl+N | Switch to the next of your `enabled_models` |
 | Shift+Tab or `/reasoning` | Change reasoning effort |
 | Ctrl+O | Expand/collapse tool output and inspect full subagent tasks |
+| Ctrl+F | The fleet: every subagent of the session, with its task, tool calls and report |
 | Ctrl+V | Attach the clipboard's image (a screenshot, or an image file copied in Finder) |
 | Drop image files | Attach them instead of pasting their paths |
 | Drag | Copy the selection (without borders or padding) |
@@ -191,6 +192,14 @@ of work, can limit the child to some tools, and can run it on its own model (see
 | `reviewer` | Evidence-backed review of a diff, plan or area of the code, by severity | Read, List, Grep, ViewImage, Bash |
 | `oracle` | A second opinion on a decision: drift, contradictions, hidden assumptions | Read, List, Grep, ViewImage, Bash |
 | `delegate` | Anything that fits no other role | all |
+
+Ctrl+F opens the fleet, a window over the conversation that lists every
+subagent the session has run down its left side; the arrow keys move through
+them, and the chosen one's transcript fills the rest: the task it was given, each
+tool call as the conversation shows one, with Ctrl+O expanding its output, and
+its report. A running agent's pane follows its newest activity; PgUp and PgDn
+scroll it. A resumed session's fleet is rebuilt from its children's saved
+transcripts.
 
 A role's tools are the only ones its children are offered or can run. Bash can
 still write the workspace, so the read-only roles keep to inspection by
