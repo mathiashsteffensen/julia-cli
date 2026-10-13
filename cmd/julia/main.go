@@ -24,6 +24,7 @@ import (
 	"julia/internal/instructions"
 	"julia/internal/provider"
 	"julia/internal/session"
+	"julia/internal/throughput"
 	"julia/internal/tools"
 	"julia/internal/ui"
 )
@@ -258,6 +259,11 @@ func run() error {
 	}
 	duration, _ := time.ParseDuration(cfg.Timeout)
 	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path)}
+	// Every timed model call feeds the speed shown beside each model in the picker.
+	throughputPath, throughputErr := throughput.Path()
+	if throughputErr == nil && !demo && snapshot == 0 {
+		runner.throughputPath = throughputPath
+	}
 	if prompt != "" {
 		s.Title = session.Title(prompt)
 		enc := json.NewEncoder(os.Stdout)
@@ -351,6 +357,12 @@ func run() error {
 		}
 		return (&provider.Codex{Binary: binary}).Models(ctx)
 	}
+	if throughputErr == nil {
+		uiConfig.Throughput = func() map[string]throughput.Stats {
+			log, _ := throughput.Load(throughputPath)
+			return log.All()
+		}
+	}
 	uiConfig.WeeklyUsage = func(ctx context.Context) (*core.WeeklyUsage, error) {
 		binary, err := findCodex(codexBinary)
 		if err != nil {
@@ -425,9 +437,24 @@ type runtimeBackend struct {
 	parent          context.Context
 	// searchKeyFile holds the Firecrawl key saved by WebSearch's first-use setup.
 	searchKeyFile string
+	// throughputPath is where timed model calls are recorded; empty records none.
+	throughputPath string
+	throughputMu   sync.Mutex
 	// roles are the subagent roles a delegated task may name; children are run
 	// by makeBackend, so without it there are none.
 	roles []agents.Role
+}
+
+// recordThroughput logs the speed of a timed model call under the session's
+// model, which a Codex session learns from its thread, so the picker can show
+// it. An aggregate event sums a child's calls, each already logged by the child.
+func (r *runtimeBackend) recordThroughput(s *core.Session, event core.Event) {
+	if r.throughputPath == "" || event.Kind != "usage" || event.Aggregate || event.Elapsed <= 0 || event.OutputTokens <= 0 || s.Model == "" {
+		return
+	}
+	r.throughputMu.Lock()
+	defer r.throughputMu.Unlock()
+	_ = throughput.Add(r.throughputPath, config.JoinModel(s.Provider, s.Model), throughput.Sample{At: time.Now(), Output: event.OutputTokens, Seconds: event.Elapsed.Seconds()})
 }
 
 // headlessAsker answers for a run with no human: it skips the question at once.
@@ -479,6 +506,9 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 	consumer := emit
 	var emitMu sync.Mutex
 	emit = func(event core.Event) {
+		if event.Subagent == nil {
+			r.recordThroughput(s, event)
+		}
 		emitMu.Lock()
 		defer emitMu.Unlock()
 		// A child's events are audited in the child's session, not here.
@@ -562,6 +592,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 			ref := &core.Subagent{ID: child.ID, Role: role.Name, Model: modelID}
 			emit(core.Event{Kind: "subagent_start", Text: task, Subagent: ref})
 			childEmit := func(event core.Event) {
+				r.recordThroughput(child, event)
 				if event.Kind == "tool_start" || event.Kind == "tool_end" || event.Kind == "warning" || event.Kind == "status" {
 					child.Audit = append(child.Audit, core.AuditEntry{At: time.Now(), Event: event})
 				}

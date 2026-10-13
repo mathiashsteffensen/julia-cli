@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"julia/internal/core"
+	"julia/internal/throughput"
 )
 
 func settingsConfig() Config {
@@ -475,5 +476,57 @@ func TestNextTurnReceivesChosenSettings(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("next turn never started")
+	}
+}
+
+func TestPickerShowsEachModelsRecordedSpeed(t *testing.T) {
+	cfg := settingsConfig()
+	cfg.EnabledModels = []core.ModelOption{{Provider: "compatible", ID: "vendor/fast", Name: "Fast", Description: "Enabled model"}}
+	now := time.Now()
+	cfg.Throughput = func() map[string]throughput.Stats {
+		return map[string]throughput.Stats{
+			"compatible/vendor/fast": {TokensPerSecond: 148.6, Calls: 12, LastUsed: now.Add(-time.Hour)},
+			"codex/current":          {TokensPerSecond: 7.25, Calls: 1, LastUsed: now.Add(-20 * 24 * time.Hour)},
+		}
+	}
+	m := testModel(t, cfg)
+	fetchPicker(t, m, m.openPicker("model"))
+	notes := map[string]string{}
+	for _, choice := range m.pickerChoices() {
+		notes[choice.label] = choice.note
+	}
+	want := map[string]string{"compatible/vendor/fast": "149 tok/s · 12 calls", "codex/current": "7.2 tok/s · 1 call · 2w ago", "codex/next": ""}
+	for label, note := range want {
+		if notes[label] != note {
+			t.Errorf("%s note = %q, want %q", label, notes[label], note)
+		}
+	}
+	m.resize(100, 30)
+	view := ansi.Strip(m.pickerView())
+	if !strings.Contains(view, "149 tok/s · 12 calls") || !strings.Contains(view, "2w ago") {
+		t.Fatalf("picker hides the recorded speed:\n%s", view)
+	}
+	// Too narrow for the figure beside the name: the name wins.
+	m.resize(44, 30)
+	view = ansi.Strip(m.pickerView())
+	if strings.Contains(view, "tok/s") || !strings.Contains(view, "compatible/vendor/fast") {
+		t.Fatalf("narrow picker:\n%s", view)
+	}
+}
+
+func TestThroughputNoteAges(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		idle time.Duration
+		want string
+	}{
+		{time.Hour, "40 tok/s · 3 calls"},
+		{8 * 24 * time.Hour, "40 tok/s · 3 calls · 8d ago"},
+		{30 * 24 * time.Hour, "40 tok/s · 3 calls · 4w ago"},
+		{100 * 24 * time.Hour, "40 tok/s · 3 calls · 3mo ago"},
+	} {
+		if got := throughputNote(throughput.Stats{TokensPerSecond: 40, Calls: 3, LastUsed: now.Add(-tc.idle)}, now); got != tc.want {
+			t.Errorf("idle %v: %q, want %q", tc.idle, got, tc.want)
+		}
 	}
 }

@@ -226,12 +226,20 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 		journal = append([]fantasy.Message(nil), history...)
 		var completed *fantasy.StepResult
 		var partial strings.Builder
+		// The model's time over the step runs from the request, or the last
+		// retry of it, to the end of its response; tools run after that.
+		started, elapsed := time.Now(), time.Duration(0)
 		_, err := agent.Stream(ctx, fantasy.AgentStreamCall{
 			Messages: a.request(history),
+			OnRetry:  func(*fantasy.ProviderError, time.Duration) { started = time.Now() },
 			OnTextDelta: func(_ string, text string) error {
 				partial.WriteString(text)
 				emit(core.Event{Kind: "text", Text: text})
 				return ctx.Err()
+			},
+			OnStreamFinish: func(fantasy.Usage, fantasy.FinishReason, fantasy.ProviderMetadata) error {
+				elapsed = time.Since(started)
+				return nil
 			},
 			OnStepFinish: func(result fantasy.StepResult) error { completed = &result; return nil },
 		})
@@ -278,7 +286,9 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 		} else {
 			contextTokens += estimateTokens(completed.Messages)
 		}
-		record(core.UsageEvent(usage, contextTokens))
+		event := core.UsageEvent(usage, contextTokens)
+		event.Elapsed = elapsed
+		record(event)
 		if err = a.save(s, history); err != nil {
 			return err
 		}

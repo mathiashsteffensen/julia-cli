@@ -21,6 +21,7 @@ import (
 	"julia/internal/core"
 	"julia/internal/images"
 	sessions "julia/internal/session"
+	"julia/internal/throughput"
 )
 
 // ApprovalRequest bridges the permission engine to the terminal. Reply should
@@ -66,6 +67,9 @@ type Config struct {
 	EnabledModels []core.ModelOption
 	ApplySettings func(*core.Session, string, string, string) error
 	WeeklyUsage   func(context.Context) (*core.WeeklyUsage, error)
+	// Throughput reports each model's recorded speed, keyed by provider/model,
+	// read when the picker opens.
+	Throughput func() map[string]throughput.Stats
 	// Children lists the subagent sessions a session ran, so a resumed
 	// session's fleet shows what its children did.
 	Children      func(parent string) ([]*core.Session, error)
@@ -179,6 +183,7 @@ type model struct {
 	fleetMarkdownWidth     int
 	models                 []core.ModelOption
 	weekly                 weeklyUsageState
+	throughput             map[string]throughput.Stats // each model's recorded speed, loaded when the picker opens
 	reasoningCycleSequence uint64
 	reasoningCyclePending  int
 	reasoningCycleCancel   context.CancelFunc

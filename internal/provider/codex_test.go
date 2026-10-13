@@ -1231,6 +1231,11 @@ func TestCodexRecordsEachCallOfATurnOnce(t *testing.T) {
 		t.Fatalf("usage events %+v, want %+v", got, want)
 	}
 	for i := range want {
+		// Each call is timed from the previous report; the fixture replies at once.
+		if got[i].Elapsed <= 0 {
+			t.Errorf("usage event %d was not timed: %+v", i, got[i])
+		}
+		got[i].Elapsed = 0
 		if got[i] != want[i] {
 			t.Errorf("usage event %d = %+v, want %+v", i, got[i], want[i])
 		}

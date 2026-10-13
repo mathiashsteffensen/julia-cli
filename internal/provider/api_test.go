@@ -487,6 +487,11 @@ func TestAPIRecordsUsageAfterEveryStepBeforeCheckpointing(t *testing.T) {
 	if got := usage[1]; got.InputTokens != 1150 || got.CachedInputTokens != 1100 || got.CacheWriteTokens != 0 || got.OutputTokens != 10 || got.ContextTokens != 1160 {
 		t.Fatalf("second usage event %+v", got)
 	}
+	for i, got := range usage {
+		if got.Elapsed <= 0 {
+			t.Fatalf("usage event %d carries no model time: %+v", i, got)
+		}
+	}
 	wantTotal := core.TokenUsage{Input: 150, CacheRead: 2000, CacheWrite: 20, Output: 40}
 	if session.Usage.Total != wantTotal || session.Usage.Context != 1160 {
 		t.Fatalf("session usage %+v, want total %+v context 1160", session.Usage, wantTotal)

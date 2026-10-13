@@ -386,6 +386,9 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 		emit(core.Event{Kind: "status", Text: "Reasoning · " + reasoning})
 	}
 	emit(core.Event{Kind: "status", Text: "Working · Codex"})
+	// Codex reports usage per model call, in its own time: a call's duration
+	// is the time since the previous report, less the tools run in between.
+	callStarted, toolTime := time.Now(), time.Duration(0)
 	var pending strings.Builder
 	streamed := map[string]bool{}
 	var usage codexUsageTracker
@@ -439,6 +442,7 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 				}
 			}
 			flush()
+			toolStarted := time.Now()
 			if allowed {
 				emit(core.Event{Kind: "tool_start", Call: &tool})
 				if previous, ok := journal.Calls[tool.ID]; ok {
@@ -469,6 +473,7 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 				}
 				emit(core.Event{Kind: "tool_end", Call: &tool, Result: &result})
 			}
+			toolTime += time.Since(toolStarted)
 			session.Messages = append(session.Messages, core.Message{Role: "assistant", ToolCalls: []core.ToolCall{tool}}, core.Message{Role: "tool", ToolCallID: tool.ID, Content: result.Transcript()})
 			if err = checkpoint(); err != nil {
 				return fmt.Errorf("save tool result: %w", err)
@@ -535,6 +540,8 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 		case "thread/tokenUsage/updated":
 			// The approval reviewer runs on its own throwaway thread; its tokens never belong to the conversation.
 			if event, ok := usage.update(notification.TokenUsage.Last, notification.TokenUsage.Total); ok && !review {
+				event.Elapsed = max(time.Since(callStarted)-toolTime, 0)
+				callStarted, toolTime = time.Now(), 0
 				session.RecordUsage(event)
 				// Saved with the usage it explains, so the next run counts only growth beyond it.
 				journal.Usage = &codexUsageBaseline{Thread: session.RemoteID, Total: usage.total}

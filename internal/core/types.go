@@ -117,7 +117,10 @@ type Session struct {
 // are its own calls, already summed into the Aggregate event its parent
 // emits when it finishes, so totals must count only one of the two.
 //
-// A usage event normally describes one model call. InputTokens is the whole
+// A usage event normally describes one model call. Elapsed is how long the
+// model took over that call, from the request to the end of its response and
+// excluding any tools run in between, so OutputTokens over it is the model's
+// speed; zero means the provider did not time the call. InputTokens is the whole
 // prompt sent (uncached, cache reads and cache writes together);
 // CachedInputTokens and CacheWriteTokens are the portions of it served from, or
 // written to, the provider's prompt cache. ContextTokens is the estimated
@@ -127,17 +130,18 @@ type Session struct {
 // finished subagent made. Summing the usage events of a run gives what the run
 // added to the session's totals.
 type Event struct {
-	Kind              string      `json:"kind"`
-	Text              string      `json:"text,omitempty"`
-	Call              *ToolCall   `json:"call,omitempty"`
-	Result            *ToolResult `json:"result,omitempty"`
-	InputTokens       int         `json:"input_tokens,omitempty"`
-	CachedInputTokens int         `json:"cached_input_tokens,omitempty"`
-	CacheWriteTokens  int         `json:"cache_write_tokens,omitempty"`
-	OutputTokens      int         `json:"output_tokens,omitempty"`
-	ContextTokens     int         `json:"context_tokens,omitempty"`
-	Aggregate         bool        `json:"aggregate,omitempty"`
-	Subagent          *Subagent   `json:"subagent,omitempty"`
+	Kind              string        `json:"kind"`
+	Text              string        `json:"text,omitempty"`
+	Call              *ToolCall     `json:"call,omitempty"`
+	Result            *ToolResult   `json:"result,omitempty"`
+	InputTokens       int           `json:"input_tokens,omitempty"`
+	CachedInputTokens int           `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int           `json:"cache_write_tokens,omitempty"`
+	OutputTokens      int           `json:"output_tokens,omitempty"`
+	ContextTokens     int           `json:"context_tokens,omitempty"`
+	Elapsed           time.Duration `json:"elapsed_ns,omitempty"`
+	Aggregate         bool          `json:"aggregate,omitempty"`
+	Subagent          *Subagent     `json:"subagent,omitempty"`
 }
 
 // Subagent names the child a subagent's event belongs to: its session ID, the

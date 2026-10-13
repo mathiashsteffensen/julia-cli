@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"julia/internal/config"
 	"julia/internal/core"
+	"julia/internal/throughput"
 )
 
 type settingsPicker struct {
@@ -41,7 +42,10 @@ type reasoningCycleMsg struct {
 
 type settingChoice struct {
 	value, label, detail string
-	active               bool
+	// note is a short figure set against the label's right edge, such as a
+	// model's recorded speed.
+	note   string
+	active bool
 }
 
 func (m *model) openPicker(kind string) tea.Cmd {
@@ -76,7 +80,11 @@ func (m *model) openPicker(kind string) tea.Cmd {
 	m.notice = ""
 	if m.cfg.Demo {
 		m.models = previewModelOptions(m.cfg.Session.Provider)
+		m.throughput = previewThroughput(m.cfg.Session.Provider, m.now)
 		return textinput.Blink
+	}
+	if m.cfg.Throughput != nil {
+		m.throughput = m.cfg.Throughput()
 	}
 	return m.loadPickerModels(true)
 }
@@ -151,7 +159,7 @@ func (m *model) loadPickerModels(blink bool) tea.Cmd {
 	fetch, err := m.catalogFetch()
 	if err != nil {
 		m.picker.loading = false
-		m.spinner.stop()
+		m.stopPickerSpinner()
 		if m.picker.kind == "reasoning" {
 			m.picker.err = "Effort catalog unavailable. Esc, then use /reasoning LEVEL."
 		} else {
@@ -194,8 +202,18 @@ func (m *model) closePicker() {
 		m.picker.cancel()
 	}
 	m.picker = nil
-	m.spinner.stop()
+	m.stopPickerSpinner()
 	m.input.Focus()
+}
+
+// stopPickerSpinner ends the picker's loading animation. The spinner is shared
+// with the running task's activity stream, so while a task is busy it is the
+// task's, and the picker leaves it alone: opening the fleet, or anything else
+// that closes the picker, must not freeze the stream.
+func (m *model) stopPickerSpinner() {
+	if !m.busy {
+		m.spinner.stop()
+	}
 }
 
 func (m *model) receiveModels(msg modelsMsg) tea.Cmd {
@@ -203,7 +221,7 @@ func (m *model) receiveModels(msg modelsMsg) tea.Cmd {
 		return nil
 	}
 	m.picker.loading = false
-	m.spinner.stop()
+	m.stopPickerSpinner()
 	m.picker.cancel = nil
 	if msg.err != nil {
 		m.picker.err = "Could not load models: " + oneLine(msg.err.Error()) + ". Esc to use a direct command."
@@ -242,6 +260,47 @@ func previewModelOptions(provider string) []core.ModelOption {
 	return []core.ModelOption{
 		{Provider: provider, ID: "preview-balanced", Name: "Balanced", Description: "Offline example · everyday coding and research", ReasoningEfforts: []string{"low", "medium", "high"}, DefaultReasoning: "medium", IsDefault: true},
 		{Provider: provider, ID: "preview-deep", Name: "Deep reasoning", Description: "Offline example · demanding, extended tasks", ReasoningEfforts: []string{"medium", "high"}, DefaultReasoning: "high"},
+	}
+}
+
+// previewThroughput gives the offline models a week of made-up speed, and one
+// of the enabled models an older record, as the picker shows them for real.
+func previewThroughput(provider string, now time.Time) map[string]throughput.Stats {
+	return map[string]throughput.Stats{
+		config.JoinModel(provider, "preview-balanced"): {TokensPerSecond: 64.2, Calls: 38, LastUsed: now.Add(-2 * time.Hour)},
+		config.JoinModel(provider, "preview-deep"):     {TokensPerSecond: 23.8, Calls: 7, LastUsed: now.Add(-25 * 24 * time.Hour)},
+	}
+}
+
+// throughputNote is a model's speed as the picker shows it: tokens per second
+// over its recorded calls, and how long ago it was last used once that is
+// beyond the week the record covers.
+func throughputNote(stats throughput.Stats, now time.Time) string {
+	speed := fmt.Sprintf("%.0f", stats.TokensPerSecond)
+	if stats.TokensPerSecond < 10 {
+		speed = fmt.Sprintf("%.1f", stats.TokensPerSecond)
+	}
+	calls := "calls"
+	if stats.Calls == 1 {
+		calls = "call"
+	}
+	note := fmt.Sprintf("%s tok/s · %d %s", speed, stats.Calls, calls)
+	if idle := now.Sub(stats.LastUsed); idle > throughput.Window {
+		note += " · " + roughAge(idle) + " ago"
+	}
+	return note
+}
+
+// roughAge is a duration in whole days, weeks or months, as "12d".
+func roughAge(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	switch {
+	case days >= 60:
+		return fmt.Sprintf("%dmo", days/30)
+	case days >= 14:
+		return fmt.Sprintf("%dw", days/7)
+	default:
+		return fmt.Sprintf("%dd", max(days, 1))
 	}
 }
 
@@ -405,7 +464,11 @@ func (m *model) pickerChoices() []settingChoice {
 				detail = "Provider default · " + detail
 			}
 			id := config.JoinModel(option.Provider, option.ID)
-			choices = append(choices, settingChoice{value: id, label: id, detail: detail, active: option.Provider == m.cfg.Session.Provider && (option.ID == m.cfg.Session.Model || (m.cfg.Session.Model == "" && option.IsDefault))})
+			note := ""
+			if stats, ok := m.throughput[id]; ok {
+				note = throughputNote(stats, m.now)
+			}
+			choices = append(choices, settingChoice{value: id, label: id, detail: detail, note: note, active: option.Provider == m.cfg.Session.Provider && (option.ID == m.cfg.Session.Model || (m.cfg.Session.Model == "" && option.IsDefault))})
 		}
 	}
 	query := strings.ToLower(strings.TrimSpace(m.picker.search.Value()))
@@ -720,6 +783,13 @@ func (m *model) pickerView() string {
 			}
 			name := ansi.Truncate(oneLine(choice.label), max(1, width-4-ansi.StringWidth(mark)), "…")
 			row := lead + label.Render(name) + mark
+			// The speed sits against the right edge, in the detail's ink,
+			// when the row has room for it after the name.
+			if choice.note != "" {
+				if fill := width - ansi.StringWidth(row) - ansi.StringWidth(choice.note) - 1; fill >= 2 {
+					row += ink(bg, cream).Render(strings.Repeat(" ", fill)) + detail.Render(choice.note) + ink(bg, cream).Render(" ")
+				}
+			}
 			lines = append(lines, paint(bg, width, row))
 			if rowHeight >= 2 {
 				lines = append(lines, paint(bg, width, lead+detail.Render(ansi.Truncate(oneLine(choice.detail), max(1, width-5), "…"))))
