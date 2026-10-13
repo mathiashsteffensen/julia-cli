@@ -148,7 +148,10 @@ host temp path, a listener beyond localhost), call Bash with
 and expected effects. A local listener's `bind: operation not permitted` needs only
 `loopback=true`. If a documented build or test command fails with another clear
 sandbox denial, rerun it once this way without asking the user first; use
-`network=true` instead when outbound network is the only need. Escalated commands
+`network=true` instead when outbound network is the only need. Escalate only the
+command that needs host access: make workspace edits with Write, Edit or a sandboxed
+call first, and never fold file writes or heredocs into an escalated command, since
+the reviewer judges the whole command against the task. Escalated commands
 run as the host user with unrestricted network (regardless of `network`), no sudo,
 and the same timeout and output limits; never claim sandbox isolation for them. Do
 not create archives, temporary checkouts, or HEAD comparisons just to classify a

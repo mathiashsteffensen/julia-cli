@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -9,19 +10,36 @@ import (
 	"julia/internal/core"
 )
 
-// The welcome's starters are one column: every number starts at the same cell.
+// The welcome's starters are set as a menu: every numeral starts at one cell
+// and every description at another, whatever the length of the title between
+// them, and the leaders between a title and its description are never fewer
+// than three dots, at the README size and in a split pane alike.
 func TestWelcomeStartersAlign(t *testing.T) {
 	for _, size := range [][2]int{{140, 44}, {90, 30}} {
-		var columns []int
+		var numerals, descriptions []int
 		for _, line := range strings.Split(ansi.Strip(RenderWelcome(size[0], size[1])), "\n") {
-			for _, number := range []string{"01  ", "02  ", "03  "} {
-				if i := strings.Index(line, number); i >= 0 {
-					columns = append(columns, i)
+			for i, s := range welcomeStarters {
+				n := strings.Index(line, fmt.Sprintf("%02d   %s", i+1, s[0]))
+				if n < 0 {
+					continue
+				}
+				d := strings.Index(line, s[1])
+				if d < n {
+					t.Errorf("%v: %q lost its description", size, s[0])
+					continue
+				}
+				// Cells, not bytes: the leaders between the columns are multibyte.
+				numerals = append(numerals, ansi.StringWidth(line[:n]))
+				descriptions = append(descriptions, ansi.StringWidth(line[:d]))
+				if dots := strings.Count(line[n:d], "·"); dots < 3 {
+					t.Errorf("%v: %q is followed by %d leader dots", size, s[0], dots)
 				}
 			}
 		}
-		if len(columns) != 3 || columns[0] != columns[1] || columns[1] != columns[2] {
-			t.Errorf("%v: starters stagger at columns %v", size, columns)
+		for name, columns := range map[string][]int{"numerals": numerals, "descriptions": descriptions} {
+			if len(columns) != 3 || columns[0] != columns[1] || columns[1] != columns[2] {
+				t.Errorf("%v: %s stagger at columns %v", size, name, columns)
+			}
 		}
 	}
 }

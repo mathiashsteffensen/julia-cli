@@ -712,39 +712,203 @@ func (m *model) bottomView() string {
 	return strings.Join(rows, "\n")
 }
 
-func (m *model) welcome() string {
-	w := m.mainWidth
-	if m.bodyHeight < 15 || w < 65 {
-		content := coralStyle.Bold(true).Render("J U L I A") + "\n\n" + creamStyle.Render("At your service, sir.") + "\n" + mutedStyle.Render("Give me something worth doing.")
-		return lipgloss.Place(w, m.bodyHeight, lipgloss.Center, lipgloss.Center, content)
+// heroGap is the number of cells between the hero's letters.
+const heroGap = 2
+
+// welcomeStarters are the three suggestions, set as a menu: a bold title and
+// a muted description, each in its own column, joined by faint leaders.
+var welcomeStarters = [][2]string{
+	{"Explore a codebase", "and explain the moving parts"},
+	{"Investigate a question", "and follow the evidence"},
+	{"Make a change", "verify it, and report back"},
+}
+
+// tracked letter-spaces a label: one cell between letters and four between
+// words, so the words still read as words.
+func tracked(s string) string {
+	var b strings.Builder
+	for i, word := range strings.Fields(s) {
+		if i > 0 {
+			b.WriteString("    ")
+		}
+		for j, r := range word {
+			if j > 0 {
+				b.WriteByte(' ')
+			}
+			b.WriteRune(r)
+		}
 	}
-	// The hero is the sidebar's wordmark at twice the width, with the starters
-	// under it as one left-aligned column. Every row is padded to the block's
-	// width before placing, so the column cannot stagger as centered rows would.
-	const gap = 2
-	starters := []string{"Explore a codebase and explain the moving parts", "Investigate a question. Follow the evidence.", "Make a change, verify it, and report back"}
-	hero := heroWidth(gap)
-	width := hero
-	for _, s := range starters {
-		width = max(width, 4+ansi.StringWidth(s))
+	return b.String()
+}
+
+// hairline is a faint rule, width cells wide, with a small rail-coloured
+// ornament at its centre.
+func hairline(width int, ornament string) string {
+	side := (width - 5) / 2
+	rule := faintStyle.Render(strings.Repeat("─", side))
+	return rule + "  " + lipgloss.NewStyle().Foreground(logoRule).Render(ornament) + "  " + rule
+}
+
+// crest is the ╱ rails with a ◈ between them: width cells wide, or one less
+// when width is even, so the rails stay equal.
+func crest(width int) string {
+	side := lipgloss.NewStyle().Foreground(logoRule).Render(strings.Repeat("╱", max(0, (width-5)/2)))
+	return side + "  " + coralStyle.Render("◈") + "  " + side
+}
+
+// centred is the top row that puts a block of size block in the middle of a
+// span of size total. Spare rows go below before above, so the block sits a
+// hair high, where the eye expects a title, and the row under the header
+// rule stays clear whenever there is a row to spare.
+func centred(total, block int) int {
+	free := max(0, total-block)
+	if free == 1 {
+		return 1
 	}
-	// Centered rows center on the wordmark; the starters hang from its left
-	// edge and may run past its right one.
-	left := func(line string) string { return line + strings.Repeat(" ", max(0, width-ansi.StringWidth(line))) }
-	center := func(line string) string {
-		pad := max(0, hero-ansi.StringWidth(line))
-		return left(strings.Repeat(" ", pad/2) + line)
+	return free / 2
+}
+
+// block pads every row to one odd width, centring each, so that
+// lipgloss.Place moves them as one rectangle. The width is odd so that the
+// crest, the label and the hairline, which are odd cells wide, share one axis
+// cell exactly, and the hero's letters and shadow together, also odd, sit on
+// it too; even rows lean half a cell left, as they must.
+func block(rows []string) []string {
+	width := 0
+	for _, row := range rows {
+		width = max(width, ansi.StringWidth(row))
 	}
+	width |= 1
+	out := make([]string, len(rows))
+	for i, row := range rows {
+		pad := width - ansi.StringWidth(row)
+		out[i] = strings.Repeat(" ", pad/2) + row + strings.Repeat(" ", pad-pad/2)
+	}
+	return out
+}
+
+// heroMark is the crest and the wordmark: the crest cut to the letters'
+// width, a blank row, and the hero rows each led by one space so that the
+// letters, not the shadow's extra column, are what the axis balances.
+func heroMark() []string {
+	rows := []string{crest(heroWidth(heroGap) - 1), ""}
+	for _, row := range heroLettering(heroGap) {
+		rows = append(rows, " "+row)
+	}
+	return rows
+}
+
+// jewelLockup is the small-terminal mark: the sidebar's quadrant lettering
+// with the tagline under it, and the crest above when there is a row for it
+// and one to keep it off the letters.
+func jewelLockup(withCrest bool) []string {
+	letters := logoLettering()
 	var rows []string
-	for _, row := range heroLettering(gap) {
-		rows = append(rows, center(row))
+	if withCrest {
+		rows = append(rows, crest(ansi.StringWidth(letters[0])), "")
 	}
-	rows = append(rows, "", "", center(creamStyle.Bold(true).Render("A little less supervision. A lot more done.")), center(mutedStyle.Render("Think deeply. Work carefully. Keep going.")), "")
-	rows = append(rows, center(lipgloss.NewStyle().Foreground(logoRule).Render(strings.Repeat("╱", hero))), "")
-	for i, s := range starters {
-		rows = append(rows, left(violetStyle.Render(fmt.Sprintf("%02d", i+1))+"  "+creamStyle.Render(s)))
+	rows = append(rows, letters...)
+	return append(rows, "", creamStyle.Render("At your service, sir."))
+}
+
+// starterMenu sets the starters as a menu: a violet numeral, a bold title and
+// a muted description, each column starting at one cell on every row, with
+// faint dot leaders between title and description. The leader zone is wide
+// enough that even the longest title is followed by three dots, and the dots
+// sit on one column parity so they align down the menu.
+func starterMenu() []string {
+	const numW = 5
+	titleW := 0
+	for _, s := range welcomeStarters {
+		titleW = max(titleW, ansi.StringWidth(s[0]))
 	}
-	return lipgloss.Place(w, m.bodyHeight, lipgloss.Center, lipgloss.Center, strings.Join(rows, "\n"))
+	// The zone runs from the cell after the title to the cell before the
+	// description, with dots on the description's parity, so the first dot
+	// after the longest title is six cells before the description.
+	descCol := numW + titleW + 7
+	rows := make([]string, len(welcomeStarters))
+	for i, s := range welcomeStarters {
+		var leader strings.Builder
+		for c := numW + ansi.StringWidth(s[0]) + 1; c < descCol-1; c++ {
+			if c%2 == descCol%2 {
+				leader.WriteString("·")
+			} else {
+				leader.WriteByte(' ')
+			}
+		}
+		rows[i] = violetStyle.Render(fmt.Sprintf("%02d", i+1)) + "   " + creamStyle.Bold(true).Render(s[0]) + " " + faintStyle.Render(leader.String()) + " " + mutedStyle.Render(s[1])
+	}
+	width := 0
+	for _, row := range rows {
+		width = max(width, ansi.StringWidth(row))
+	}
+	for i, row := range rows {
+		rows[i] = row + strings.Repeat(" ", width-ansi.StringWidth(row))
+	}
+	return rows
+}
+
+// welcome is the body before the first message, set like the title page of a
+// book. With room: the crest and wordmark as one lockup, a tracked label, a
+// hairline, the taglines, and the starters as a menu. With less room the
+// lockup alone over "At your service, sir."; smaller still, the quadrant
+// jewel; and at the last resort, two lines of text. The block is centred,
+// and never starts on the row under the header rule.
+func (m *model) welcome() string {
+	w, h := m.mainWidth, m.bodyHeight
+	var rows []string
+	switch {
+	case h >= 15 && w >= 65:
+		rows = welcomePage(h)
+	case h >= 10 && w >= heroWidth(heroGap)+6:
+		rows = append(heroMark(), "", creamStyle.Render("At your service, sir."))
+	case h >= 5 && w >= 24:
+		rows = jewelLockup(h >= 9)
+	default:
+		rows = []string{coralStyle.Bold(true).Render("J U L I A"), creamStyle.Render("At your service, sir.")}
+		if h < 2 {
+			rows = rows[:1]
+		}
+	}
+	rows = block(rows)
+	content := strings.Repeat("\n", centred(h, len(rows))) + strings.Join(rows, "\n")
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Top, content)
+}
+
+// welcomePage is the full welcome: the lockup with the label set directly
+// under the shadow's feet, a row, the hairline, a row, the headline, a row,
+// and the menu. That core of fifteen rows always keeps a row of air above and
+// below. The italic second tagline and then a second row before the menu are
+// added, in that order, while the block still keeps two rows of air at each
+// end, so a short pane sheds the italic before it ever crowds the hairline
+// onto the label.
+func welcomePage(h int) []string {
+	hero := heroWidth(heroGap) - 1
+	menu := starterMenu()
+	rows := heroMark()
+	rows = append(rows,
+		mutedStyle.Render(tracked("AT YOUR SERVICE")),
+		"",
+		hairline(hero, "◆"),
+		"",
+		creamStyle.Bold(true).Render("A little less supervision. A lot more done."),
+	)
+	core := len(rows) + 1 + len(menu)
+	fits := func(cost int) bool {
+		if core+cost <= h-4 {
+			core += cost
+			return true
+		}
+		return false
+	}
+	if fits(1) {
+		rows = append(rows, mutedStyle.Italic(true).Render("Think deeply. Work carefully. Keep going."))
+	}
+	rows = append(rows, "")
+	if fits(1) {
+		rows = append(rows, "")
+	}
+	return append(rows, menu...)
 }
 
 func showsReasoning(provider string, compatibleReasoning bool) bool {
