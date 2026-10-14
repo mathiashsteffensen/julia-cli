@@ -52,6 +52,10 @@ type Config struct {
 	// no Slack tool. SlackOwner is the user ID from SLACK_OWNER_USER_ID, the
 	// person the bot works for.
 	SlackToken, SlackOwner string
+	// LinearToken is the access token from LINEAR_ACCESS_TOKEN or the
+	// linear.json file beside the configuration (see LoadLinearToken);
+	// without it there is no Linear tool.
+	LinearToken string
 }
 type Executor struct {
 	config    Config
@@ -144,18 +148,19 @@ func integer(description string) map[string]any {
 	return map[string]any{"type": "integer", "description": description}
 }
 func (e *Executor) Definitions() []core.ToolDefinition {
-	return definitions(nil, e.config.SlackToken != "", e.config.SlackOwner)
+	return definitions(nil, e.config.SlackToken != "", e.config.SlackOwner, e.config.LinearToken != "")
 }
 
 // Definitions returns the same registry used by execution, without opening a
 // workspace. roles are the subagent roles the Subagent tool offers; with none,
 // there is no Subagent tool. The Slack tool is offered when the process has a
-// bot token in SLACK_BOT_TOKEN.
-func Definitions(roles []agents.Role) []core.ToolDefinition {
-	return definitions(roles, SlackEnabled(), os.Getenv(SlackOwnerEnv))
+// bot token in SLACK_BOT_TOKEN, and the Linear tool when linear is set: the
+// caller has an access token (see LoadLinearToken).
+func Definitions(roles []agents.Role, linear bool) []core.ToolDefinition {
+	return definitions(roles, SlackEnabled(), os.Getenv(SlackOwnerEnv), linear)
 }
 
-func definitions(roles []agents.Role, slack bool, slackOwner string) []core.ToolDefinition {
+func definitions(roles []agents.Role, slack bool, slackOwner string, linear bool) []core.ToolDefinition {
 	path := str("Workspace-relative path. Absolute paths, symlinks and protected credential/git paths are forbidden.")
 	edits := map[string]any{"type": "array", "minItems": 1, "maxItems": 100, "items": schema(map[string]any{"old_string": str("Nonempty exact text occurring once"), "new_string": str("Replacement text")}, "old_string", "new_string")}
 	// Reading, editing, running, then the web: the sidebar packs the names in
@@ -176,6 +181,9 @@ func definitions(roles []agents.Role, slack bool, slackOwner string) []core.Tool
 	}
 	if slack {
 		definitions = append(definitions, slackDefinition(slackOwner))
+	}
+	if linear {
+		definitions = append(definitions, linearDefinition())
 	}
 	if len(roles) > 0 {
 		definitions = append(definitions, subagentDefinition(roles))
@@ -246,6 +254,8 @@ func (e *Executor) execute(ctx context.Context, call core.ToolCall, scope int) c
 		content, err = e.webFetch(ctx, call)
 	case "Slack":
 		content, err = e.slack(ctx, call)
+	case "Linear":
+		content, err = e.linear(ctx, call)
 	case "Write", "Edit", "MultiEdit":
 		if e.config.Mode == "read-only" {
 			err = errors.New("read-only mode prohibits file changes")

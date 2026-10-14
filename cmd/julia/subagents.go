@@ -22,7 +22,8 @@ func rolesDir(configPath string) string {
 // the subagents setting assigns models only to roles that exist.
 func loadRoles(configPath string, cfg config.Config) ([]agents.Role, error) {
 	var names []string
-	for _, definition := range tools.Definitions(nil) {
+	linearToken, _ := tools.LoadLinearToken(linearTokenFile(configPath))
+	for _, definition := range tools.Definitions(nil, linearToken != "") {
 		names = append(names, definition.Name)
 	}
 	roles, err := agents.Load(rolesDir(configPath), names)

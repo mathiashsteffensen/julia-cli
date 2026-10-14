@@ -113,7 +113,7 @@ func TestSubagentRoleLimitsTools(t *testing.T) {
 	if !slices.Equal(seen["looker"], []string{"Read", "Grep"}) {
 		t.Fatalf("looker sees %v, want its tools in registry order", seen["looker"])
 	}
-	if !slices.Equal(seen["anything"], toolNames(Definitions(nil))) {
+	if !slices.Equal(seen["anything"], toolNames(Definitions(nil, false))) {
 		t.Fatalf("anything sees %v, want every tool", seen["anything"])
 	}
 	if !strings.Contains(got[0].Output, "the looker role cannot use Write; its tools are Grep, Read") || strings.Contains(got[0].Output, "cannot use Read") {
@@ -255,7 +255,7 @@ func TestRegistryMatchesExecutors(t *testing.T) {
 			t.Fatal("without roles, delegation was offered")
 		}
 		actual, _ := json.Marshal(executor.Definitions())
-		registered, _ := json.Marshal(Definitions(roles))
+		registered, _ := json.Marshal(Definitions(roles, false))
 		if string(actual) != string(registered) {
 			t.Fatal("display registry differs from executor")
 		}

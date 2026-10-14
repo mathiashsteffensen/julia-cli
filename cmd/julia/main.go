@@ -184,7 +184,11 @@ func run() error {
 			return fmt.Errorf("unknown command %q (use --prompt for a headless task)", args[0])
 		}
 	}
-	demoTools := append(tools.Definitions(roles), tools.QuestionDefinition())
+	linearToken, err := tools.LoadLinearToken(linearTokenFile(path))
+	if err != nil {
+		return fmt.Errorf("linear token: %w", err)
+	}
+	demoTools := append(tools.Definitions(roles, linearToken != ""), tools.QuestionDefinition())
 	if snapshot > 0 {
 		fmt.Print(ui.RenderDemo(snapshot, 40, demoTools...))
 		return nil
@@ -258,7 +262,7 @@ func run() error {
 		ask, questions = ui.NewAsker()
 	}
 	duration, _ := time.ParseDuration(cfg.Timeout)
-	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path)}
+	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path), linearToken: linearToken}
 	// Every timed model call feeds the speed shown beside each model in the picker.
 	throughputPath, throughputErr := throughput.Path()
 	if throughputErr == nil && !demo && snapshot == 0 {
@@ -437,6 +441,9 @@ type runtimeBackend struct {
 	parent          context.Context
 	// searchKeyFile holds the Firecrawl key saved by WebSearch's first-use setup.
 	searchKeyFile string
+	// linearToken is the Linear access token, from the environment or the
+	// linear.json file beside the configuration; empty offers no Linear tool.
+	linearToken string
 	// throughputPath is where timed model calls are recorded; empty records none.
 	throughputPath string
 	throughputMu   sync.Mutex
@@ -463,7 +470,7 @@ func headlessAsker(context.Context, core.Question) (core.Answer, error) {
 }
 
 func (r *runtimeBackend) Definitions() []core.ToolDefinition {
-	definitions := tools.Definitions(r.subagentRoles())
+	definitions := tools.Definitions(r.subagentRoles(), r.linearToken != "")
 	if r.ask != nil {
 		definitions = append(definitions, tools.QuestionDefinition())
 	}
@@ -518,7 +525,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		consumer(event)
 	}
 	task := newTaskContext(s.Messages, prompt.Text)
-	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: r.cfg.BrowserPath(), SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv)})
+	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: r.cfg.BrowserPath(), SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv), LinearToken: r.linearToken})
 	if err != nil {
 		return err
 	}
@@ -671,6 +678,11 @@ func searchKeyFile(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "firecrawl.json")
 }
 
+// linearTokenFile keeps the Linear access token beside the configuration file.
+func linearTokenFile(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "linear.json")
+}
+
 // reviewerSummary describes the reviewer_model for doctor.
 func reviewerSummary(c config.Config) string {
 	reviewer, model := c.Reviewer()
@@ -703,6 +715,15 @@ func doctor(ctx context.Context, c config.Config, path string, roles []agents.Ro
 		fmt.Printf("Search    Firecrawl (%s)\n", keyFile)
 	} else {
 		fmt.Println("Search    Firecrawl, set up on first WebSearch")
+	}
+	if os.Getenv(tools.LinearTokenEnv) != "" {
+		fmt.Printf("Linear    app token (%s)\n", tools.LinearTokenEnv)
+	} else if token, err := tools.LoadLinearToken(linearTokenFile(path)); err != nil {
+		fmt.Printf("Linear    token unreadable: %s\n", safe(err.Error()))
+	} else if token != "" {
+		fmt.Printf("Linear    app token (%s)\n", linearTokenFile(path))
+	} else {
+		fmt.Printf("Linear    off; save a token in %s\n", linearTokenFile(path))
 	}
 	for _, name := range []string{"rg", "bash"} {
 		p, err := exec.LookPath(name)

@@ -95,8 +95,9 @@ func compatibleAPIKeyEnv(cfg config.Config) string {
 // leave the live conversation and its continuation state untouched.
 func applySessionSettings(cfg config.Config, current *core.Session, selectedProvider, model, reasoning string, save func(*core.Session) error) error {
 	if selectedProvider != current.Provider {
-		// Efforts belong to a provider; do not carry them across providers.
-		reasoning = ""
+		// Efforts belong to a provider; do not carry them across providers. The
+		// destination model still starts at the effort its config entry gives.
+		reasoning = cfg.ReasoningFor(selectedProvider, model)
 	}
 	candidate := *current
 	candidate.Provider = selectedProvider

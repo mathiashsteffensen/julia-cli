@@ -132,6 +132,27 @@ func TestCompatibleCatalogRequiresItsConfiguredAPIKey(t *testing.T) {
 	}
 }
 
+func TestProviderSwitchStartsAtTheModelsConfiguredReasoning(t *testing.T) {
+	cfg := config.Default()
+	cfg.CompatibleBaseURL = "https://openrouter.ai/api/v1"
+	cfg.EnabledModels = []config.ModelEntry{{ID: "compatible/vendor/model", Reasoning: "xhigh"}, {ID: "compatible/vendor/plain"}}
+	for _, tt := range []struct{ name, model, passed, want string }{
+		{"configured effort survives the switch", "vendor/model", "xhigh", "xhigh"},
+		{"configured effort is used when none is passed", "vendor/model", "", "xhigh"},
+		{"the old provider's effort does not carry", "vendor/plain", "medium", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			current := settingsSession()
+			if err := applySessionSettings(cfg, current, "compatible", tt.model, tt.passed, nil); err != nil {
+				t.Fatal(err)
+			}
+			if current.Provider != "compatible" || current.Reasoning != tt.want || !current.ReasoningSet {
+				t.Fatalf("provider switch set reasoning %q, want %q", current.Reasoning, tt.want)
+			}
+		})
+	}
+}
+
 func TestUnchangedAPIModelKeepsContinuation(t *testing.T) {
 	current := settingsSession()
 	current.Provider, current.Model, current.Reasoning, current.ReasoningSet = "compatible", "openrouter/model", "", true

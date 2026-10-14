@@ -139,6 +139,7 @@ They contain transcripts and command output.
 
 `Read`, `ViewImage`, `List`, `Grep`, `Edit`, `MultiEdit`, `Write`, `Bash`,
 `Terminal`, `Browser`, `WebSearch`, `WebFetch`, `Slack` (when a bot token is set),
+`Linear` (when an access token is saved),
 `Subagent` (up to 3 parallel child tasks), and `AskUserQuestion` (interactive only). File tools are confined to the workspace,
 refuse symlinks and credential paths, and cap output at 32 KiB.
 
@@ -178,6 +179,19 @@ free. `SLACK_OWNER_USER_ID` tells the agent whose bot it is, so it can name the
 owner in a thread and message them directly. The bot needs the scopes
 `chat:write`, `reactions:write`, `channels:read`, `groups:read`,
 `channels:history`, `groups:history`, `im:history` and `im:write`.
+
+`Linear` appears when `~/.config/julia/linear.json` holds `{"api_key": "…"}`
+or `LINEAR_ACCESS_TOKEN` is set: list teams and their workflow states, list
+projects and issues, read an issue with its comments, create or update an
+issue, or comment on one. Teams, states, projects and people are named, never
+given as ids. Creating, updating and commenting are reviewed in auto mode and
+approved in ask mode; reading is free. The token is an OAuth application's
+access token, sent as a Bearer token: in Linear, open Settings → API → OAuth
+applications, create an application (a callback URL is required but never
+used), and under *Developer token* create one with the actor *Application*, so
+everything JULIA does shows as the app rather than as you. Developer tokens
+have no refresh token and may expire; when Linear answers 401, create a new one
+and replace it in the file. `julia doctor` shows where the token comes from.
 
 ### Subagent roles
 
