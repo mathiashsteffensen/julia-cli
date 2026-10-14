@@ -65,8 +65,9 @@ func linearOK(data string) func(linearCallRecord, int) *http.Response {
 }
 
 const (
-	linearTeamJSON  = `{"id":"T1","key":"QUA","name":"Quantrading","states":{"nodes":[{"id":"S1","name":"Todo","type":"unstarted","position":1},{"id":"S2","name":"In Progress","type":"started","position":2},{"id":"S3","name":"Done","type":"completed","position":3}]}}`
-	linearIssueJSON = `{"id":"I14","identifier":"QUA-14","title":"Implement alpha decay monitoring","priorityLabel":"High","url":"https://linear.app/q/issue/QUA-14","updatedAt":"2026-05-21T19:31:50.238Z","createdAt":"2026-05-20T10:00:00.000Z","state":{"name":"Todo"},"assignee":{"name":"Mathias","displayName":"mathias"},"delegate":{"name":"JULIA","displayName":"julia"},"creator":{"name":"Mathias"},"project":{"name":"Live trading"},"team":{"id":"T1","key":"QUA"},"description":"Use **measurable** triggers.","labels":{"nodes":[{"name":"research"}]},"comments":{"nodes":[{"body":"Second","createdAt":"2026-05-21T12:00:00.000Z","user":{"name":"JULIA"}},{"body":"First","createdAt":"2026-05-20T12:00:00.000Z","user":{"name":"Mathias"}}]}}`
+	linearTeamJSON   = `{"id":"T1","key":"QUA","name":"Quantrading","states":{"nodes":[{"id":"S1","name":"Todo","type":"unstarted","position":1},{"id":"S2","name":"In Progress","type":"started","position":2},{"id":"S3","name":"Done","type":"completed","position":3}]}}`
+	linearLabelsJSON = `{"issueLabels":{"nodes":[{"id":"L1","name":"research","team":{"key":"QUA"}},{"id":"L2","name":"Bug","team":null},{"id":"L3","name":"Infra","team":{"key":"QUA"}}]}}`
+	linearIssueJSON  = `{"id":"I14","identifier":"QUA-14","title":"Implement alpha decay monitoring","priorityLabel":"High","url":"https://linear.app/q/issue/QUA-14","updatedAt":"2026-05-21T19:31:50.238Z","createdAt":"2026-05-20T10:00:00.000Z","state":{"name":"Todo"},"assignee":{"name":"Mathias","displayName":"mathias"},"delegate":{"name":"JULIA","displayName":"julia"},"creator":{"name":"Mathias"},"project":{"name":"Live trading"},"team":{"id":"T1","key":"QUA"},"description":"Use **measurable** triggers.","labels":{"nodes":[{"name":"research"}]},"comments":{"nodes":[{"body":"Second","createdAt":"2026-05-21T12:00:00.000Z","user":{"name":"JULIA"}},{"body":"First","createdAt":"2026-05-20T12:00:00.000Z","user":{"name":"Mathias"}}]}}`
 )
 
 func TestLinearTokenLoading(t *testing.T) {
@@ -125,7 +126,7 @@ func TestLinearOfferedOnlyWithToken(t *testing.T) {
 
 func TestLinearReadsNeedNoReviewAndFormat(t *testing.T) {
 	e, calls := linearFixture(t, "read-only", []linearHandler{
-		{"viewer { name displayName } teams", linearOK(`{"viewer":{"name":"JULIA","displayName":"julia"},"teams":{"nodes":[` + linearTeamJSON + `]}}`)},
+		{"viewer { name displayName } teams", linearOK(`{"viewer":{"name":"JULIA","displayName":"julia"},"teams":{"nodes":[` + linearTeamJSON + `]},"issueLabels":{"nodes":[{"name":"research","team":{"key":"QUA"}},{"name":"Bug","team":null},{"name":"Infra","team":{"key":"QUA"}},{"name":"Other","team":{"key":"OPS"}}]}}`)},
 		{"teams(filter: { key: { eq: $key } }) { nodes { projects", linearOK(`{"teams":{"nodes":[{"projects":{"nodes":[{"id":"P1","name":"Live trading","description":"Ship the engine","targetDate":"2026-12-01","url":"https://linear.app/q/project/live","status":{"name":"In Progress"},"lead":{"name":"Mathias"},"teams":{"nodes":[{"key":"QUA"}]}}]}}]}}`)},
 		{"{ projects(first: 100)", linearOK(`{"projects":{"nodes":[]}}`)},
 		{"users(filter:", linearOK(`{"users":{"nodes":[{"id":"U1","name":"Mathias","displayName":"mathias"}]}}`)},
@@ -139,7 +140,7 @@ func TestLinearReadsNeedNoReviewAndFormat(t *testing.T) {
 		return core.Decision{}, nil
 	}
 	r := invoke(e, "Linear", map[string]any{"action": "list_teams"})
-	if r.IsError || r.Content != "Acting as JULIA.\n\nQUA Quantrading\n  states: Todo (unstarted), In Progress (started), Done (completed)" {
+	if r.IsError || r.Content != "Acting as JULIA.\nWorkspace labels: Bug\n\nQUA Quantrading\n  states: Todo (unstarted), In Progress (started), Done (completed)\n  labels: research, Infra" {
 		t.Fatalf("teams: %+v", r)
 	}
 	r = invoke(e, "Linear", map[string]any{"action": "list_projects", "team": "qua"})
@@ -174,6 +175,7 @@ func TestLinearReadsNeedNoReviewAndFormat(t *testing.T) {
 		{"action": "create_issue", "team": "QUA", "title": "x"},
 		{"action": "update_issue", "identifier": "QUA-14", "state": "Done"},
 		{"action": "add_comment", "identifier": "QUA-14", "body": "hi"},
+		{"action": "create_label", "name": "Bug"},
 	} {
 		if r := invoke(e, "Linear", args); !r.IsError || !strings.Contains(r.Content, "read-only") {
 			t.Fatalf("read-only %v: %+v", args, r)
@@ -278,7 +280,12 @@ func TestLinearValidatesArgumentsAndReportsErrors(t *testing.T) {
 		{"action": "create_issue", "team": "QUA"},
 		{"action": "create_issue", "team": "QUA", "title": "x", "priority": "asap"},
 		{"action": "update_issue", "identifier": "QUA-14"},
+		{"action": "update_issue", "identifier": "QUA-14", "labels": " , "},
+		{"action": "create_issue", "team": "QUA", "title": "x", "labels": "bad\x01label"},
 		{"action": "add_comment", "identifier": "QUA-14", "body": "  "},
+		{"action": "create_label"},
+		{"action": "create_label", "name": "Bug", "team": "not a key"},
+		{"action": "create_label", "name": "Bug", "color": "blue"},
 	} {
 		if r := invoke(e, "Linear", args); !r.IsError || len(*calls) != 0 {
 			t.Fatalf("accepted %v: %+v", args, r)
@@ -302,5 +309,103 @@ func TestLinearValidatesArgumentsAndReportsErrors(t *testing.T) {
 	}
 	if r := invoke(e, "Linear", map[string]any{"action": "add_comment", "identifier": "QUA-1", "body": "hi"}); !r.IsError || r.Content != "linear commentCreate did not succeed" {
 		t.Fatalf("failed mutation: %+v", r)
+	}
+}
+
+func TestLinearLabels(t *testing.T) {
+	e, calls := linearFixture(t, "auto", []linearHandler{
+		{"teams(filter: { key: { eq: $key } }) { nodes { id key name states", linearOK(`{"teams":{"nodes":[` + linearTeamJSON + `]}}`)},
+		{"issueLabels(first: 250, filter: { or: [ { team: { key: { eq: $key } } }, { team: { null: true } } ] })", linearOK(linearLabelsJSON)},
+		{"issueLabels(first: 250, filter: { team: { null: true } })", linearOK(`{"issueLabels":{"nodes":[{"id":"L2","name":"Bug","team":null}]}}`)},
+		{"issueCreate", linearOK(`{"issueCreate":{"success":true,"issue":{"identifier":"QUA-15","url":"https://linear.app/q/issue/QUA-15"}}}`)},
+		{"issue(id: $id)", linearOK(`{"issue":{"id":"I14","identifier":"QUA-14","team":{"id":"T1","key":"QUA"},"labels":{"nodes":[{"id":"L1","name":"research"}]}}}`)},
+		{"issueUpdate", linearOK(`{"issueUpdate":{"success":true,"issue":` + linearIssueJSON + `}}`)},
+		{"issueLabelCreate", func(call linearCallRecord, _ int) *http.Response {
+			name, _ := json.Marshal(call.variables["input"].(map[string]any)["name"])
+			return webResponse(http.StatusOK, "application/json", `{"data":{"issueLabelCreate":{"success":true,"issueLabel":{"id":"L4","name":`+string(name)+`}}}}`)
+		}},
+	})
+	var reviewed []core.Approval
+	e.config.Review = func(_ context.Context, a core.Approval) (core.Decision, error) {
+		reviewed = append(reviewed, a)
+		return core.Decision{Allow: true, Reason: "owner asked"}, nil
+	}
+	lastInput := func() string {
+		input, _ := json.Marshal((*calls)[len(*calls)-1].variables["input"])
+		return string(input)
+	}
+	// Names resolve case-insensitively, team labels and workspace labels
+	// alike, and repeats collapse.
+	r := invoke(e, "Linear", map[string]any{"action": "create_issue", "team": "qua", "title": "Label me", "labels": "bug, INFRA, Bug"})
+	if r.IsError || r.Content != "Created QUA-15: https://linear.app/q/issue/QUA-15" {
+		t.Fatalf("create: %+v", r)
+	}
+	if len(*calls) != 3 || (*calls)[1].variables["key"] != "QUA" || lastInput() != `{"labelIds":["L2","L3"],"teamId":"T1","title":"Label me"}` {
+		t.Fatalf("create calls %+v input %s", *calls, lastInput())
+	}
+	// An update adds to the issue's labels unless told to replace them.
+	r = invoke(e, "Linear", map[string]any{"action": "update_issue", "identifier": "QUA-14", "labels": "bug, Research"})
+	if r.IsError || !strings.HasPrefix(r.Content, "Updated QUA-14") || lastInput() != `{"labelIds":["L1","L2"]}` {
+		t.Fatalf("add labels: %+v input %s", r, lastInput())
+	}
+	r = invoke(e, "Linear", map[string]any{"action": "update_issue", "identifier": "QUA-14", "labels": "bug", "replace_labels": true})
+	if r.IsError || lastInput() != `{"labelIds":["L2"]}` {
+		t.Fatalf("replace labels: %+v input %s", r, lastInput())
+	}
+	r = invoke(e, "Linear", map[string]any{"action": "update_issue", "identifier": "QUA-14", "replace_labels": true})
+	if r.IsError || lastInput() != `{"labelIds":[]}` {
+		t.Fatalf("clear labels: %+v input %s", r, lastInput())
+	}
+	// An unknown label stops the write before the mutation.
+	before := len(*calls)
+	r = invoke(e, "Linear", map[string]any{"action": "create_issue", "team": "QUA", "title": "x", "labels": "nope"})
+	if !r.IsError || r.Content != "team QUA has no label named nope; the labels it can use are research, Bug, Infra" || len(*calls) != before+2 {
+		t.Fatalf("unknown label: %+v calls %d", r, len(*calls)-before)
+	}
+	r = invoke(e, "Linear", map[string]any{"action": "update_issue", "identifier": "QUA-14", "labels": "nope"})
+	if !r.IsError || !strings.Contains(r.Content, "no label named nope") || strings.Contains((*calls)[len(*calls)-1].query, "issueUpdate") {
+		t.Fatalf("unknown label on update: %+v", r)
+	}
+	// Labels are created after review, for a team or the workspace.
+	reviews := len(reviewed)
+	r = invoke(e, "Linear", map[string]any{"action": "create_label", "name": " Needs review ", "team": "qua", "color": "#4EA7FC"})
+	if r.IsError || r.Content != "Created label Needs review for team QUA" || lastInput() != `{"color":"#4EA7FC","name":"Needs review","teamId":"T1"}` {
+		t.Fatalf("create label: %+v input %s", r, lastInput())
+	}
+	if len(reviewed) != reviews+1 || !strings.Contains(reviewed[reviews].Reason, "label") || !strings.Contains(string(reviewed[reviews].Call.Arguments), "Needs review") {
+		t.Fatalf("label review %+v", reviewed)
+	}
+	r = invoke(e, "Linear", map[string]any{"action": "create_label", "name": "Ops"})
+	if r.IsError || r.Content != "Created workspace label Ops" || lastInput() != `{"name":"Ops"}` {
+		t.Fatalf("create workspace label: %+v input %s", r, lastInput())
+	}
+	if !strings.Contains((*calls)[len(*calls)-2].query, "filter: { team: { null: true } }") {
+		t.Fatalf("workspace label checked against %s", (*calls)[len(*calls)-2].query)
+	}
+	// A name already in use on the team or in the workspace is refused.
+	before = len(*calls)
+	for name, want := range map[string]string{
+		"RESEARCH": "team QUA already has a label named research",
+		"bug":      "the workspace already has a label named Bug, which team QUA can use",
+	} {
+		if r := invoke(e, "Linear", map[string]any{"action": "create_label", "name": name, "team": "QUA"}); !r.IsError || r.Content != want {
+			t.Fatalf("duplicate %s: %+v", name, r)
+		}
+	}
+	if r := invoke(e, "Linear", map[string]any{"action": "create_label", "name": "bug"}); !r.IsError || r.Content != "the workspace already has a label named Bug" {
+		t.Fatalf("duplicate workspace label: %+v", r)
+	}
+	for _, call := range (*calls)[before:] {
+		if strings.Contains(call.query, "issueLabelCreate") {
+			t.Fatalf("a duplicate label reached Linear: %+v", call)
+		}
+	}
+	// A denied label never reaches Linear.
+	before = len(*calls)
+	e.config.Review = func(context.Context, core.Approval) (core.Decision, error) {
+		return core.Decision{Allow: false, Reason: "not asked for"}, nil
+	}
+	if r := invoke(e, "Linear", map[string]any{"action": "create_label", "name": "Sneaky"}); !r.IsError || !strings.Contains(r.Content, "denied") || len(*calls) != before {
+		t.Fatalf("denied label: %+v calls %d", r, len(*calls)-before)
 	}
 }

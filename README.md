@@ -181,11 +181,13 @@ owner in a thread and message them directly. The bot needs the scopes
 `channels:history`, `groups:history`, `im:history` and `im:write`.
 
 `Linear` appears when `~/.config/julia/linear.json` holds `{"api_key": "…"}`
-or `LINEAR_ACCESS_TOKEN` is set: list teams and their workflow states, list
-projects and issues, read an issue with its comments, create or update an
-issue, or comment on one. Teams, states, projects and people are named, never
-given as ids. Creating, updating and commenting are reviewed in auto mode and
-approved in ask mode; reading is free. The token is an OAuth application's
+or `LINEAR_ACCESS_TOKEN` is set: list teams with their workflow states and
+labels, list projects and issues, read an issue with its comments, create or
+update an issue (labels included: an update adds to the issue's labels unless
+`replace_labels` is set), comment on one, or create a label for a team or the
+whole workspace with `create_label`. Teams, states, projects, labels and people
+are named, never given as ids. Creating, updating, labelling and commenting are
+reviewed in auto mode and approved in ask mode; reading is free. The token is an OAuth application's
 access token, sent as a Bearer token: in Linear, open Settings → API → OAuth
 applications, create an application (a callback URL is required but never
 used), and under *Developer token* create one with the actor *Application*, so
