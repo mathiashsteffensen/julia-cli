@@ -346,6 +346,13 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 				}
 			}
 		}
+		if item.call != nil && argumentsShown(item.call.Name) && m.expandTools {
+			// The arguments in full: the title row shows the message or issue
+			// text only as far as the width allows.
+			for _, row := range argumentRows(callArguments(item.call.Arguments), w-4) {
+				add(bar+"  "+row.text, rowMeta{gutter: 4 + row.indent, cont: row.cont, target: 0})
+			}
+		}
 		if item.result != nil {
 			result, markers := splitImageMarkers(strings.TrimSpace(sanitize(item.result.Content)))
 			screen, isScreen := terminalScreen{}, false
@@ -506,6 +513,16 @@ func toolSummary(call core.ToolCall) string {
 			return summary
 		}
 	}
+	if call.Name == "Slack" {
+		if summary, ok := slackSummary(call.Arguments); ok {
+			return summary
+		}
+	}
+	if call.Name == "Linear" {
+		if summary, ok := linearSummary(call.Arguments); ok {
+			return summary
+		}
+	}
 	var args map[string]json.RawMessage
 	if json.Unmarshal(call.Arguments, &args) != nil {
 		return string(call.Arguments)
@@ -528,7 +545,48 @@ func toolSummary(call core.ToolCall) string {
 			return fmt.Sprintf("%d exact edits", len(values))
 		}
 	}
+	// A tool with actions, whatever else it takes, at least says which one.
+	var action string
+	if json.Unmarshal(args["action"], &action) == nil {
+		return action
+	}
 	return ""
+}
+
+// argumentRow is one display line of a call's arguments: the key in violet and
+// the value in cream, a long value wrapped onto continuation lines aligned under
+// its first.
+type argumentRow struct {
+	text   string
+	indent int
+	cont   bool
+}
+
+func argumentRows(arguments []argument, width int) []argumentRow {
+	width = max(8, width)
+	keyWidth := 0
+	for _, a := range arguments {
+		keyWidth = max(keyWidth, ansi.StringWidth(sanitize(a.key)))
+	}
+	keyWidth = min(keyWidth, 16)
+	var rows []argumentRow
+	for _, a := range arguments {
+		key := ansi.Truncate(sanitize(a.key), keyWidth, "…")
+		label := violetStyle.Render(key) + strings.Repeat(" ", keyWidth-ansi.StringWidth(key)) + "  "
+		indent := keyWidth + 2
+		first := true
+		for _, paragraph := range strings.Split(sanitize(a.value), "\n") {
+			for _, line := range strings.Split(ansi.Wrap(paragraph, max(1, width-indent), ""), "\n") {
+				lead := strings.Repeat(" ", indent)
+				if first {
+					lead = label
+				}
+				rows = append(rows, argumentRow{text: lead + creamStyle.Render(line), indent: indent, cont: !first})
+				first = false
+			}
+		}
+	}
+	return rows
 }
 
 // subagentTask is one task of a Subagent call: the role it names and its prompt.
