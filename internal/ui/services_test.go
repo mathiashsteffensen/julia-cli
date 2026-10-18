@@ -45,6 +45,23 @@ func TestLinearSummary(t *testing.T) {
 	}
 }
 
+func TestMemorySummary(t *testing.T) {
+	for args, want := range map[string]string{
+		`{"action":"save","name":"process-group-cancel","description":"Cancelling a task must signal the process group","type":"feedback","paths":["internal/sandbox/**"]}`: `save · process-group-cancel · feedback · "Cancelling a task must signal the process group"`,
+		`{"action":"save","name":"prefers-tabs","description":"Indent with tabs,\nnever spaces","type":"user","scope":"global","body":"Said so twice."}`:                    `save · prefers-tabs · user · global · "Indent with tabs, ↵ never spaces"`,
+		`{"action":"read","name":"prefers-tabs"}`:                    `read · prefers-tabs`,
+		`{"action":"forget","name":"prefers-tabs","scope":"global"}`: `forget · prefers-tabs · global`,
+		`{"action":"list"}`: `list`,
+	} {
+		if got := toolSummary(core.ToolCall{Name: "Memory", Arguments: json.RawMessage(args)}); got != want {
+			t.Errorf("%s\n got %q\nwant %q", args, got, want)
+		}
+	}
+	if summary, ok := memorySummary(json.RawMessage(`{"name":"prefers-tabs"}`)); ok || summary != "" {
+		t.Errorf("no action: %q, %v", summary, ok)
+	}
+}
+
 func TestActionFallbackSummary(t *testing.T) {
 	if got := toolSummary(core.ToolCall{Name: "Future", Arguments: json.RawMessage(`{"action":"frobnicate","count":3}`)}); got != "frobnicate" {
 		t.Errorf("fallback = %q", got)

@@ -222,7 +222,9 @@ func (s *Store) Latest(directory string) (*core.Session, error) {
 		return nil, err
 	}
 	for _, v := range all {
-		if v.Directory == directory && v.ParentID == "" {
+		// A subagent's session has a parent, and the consolidation pass a
+		// role: neither is a conversation to continue.
+		if v.Directory == directory && v.ParentID == "" && v.Role == "" {
 			return v, nil
 		}
 	}

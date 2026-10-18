@@ -149,6 +149,38 @@ func TestApprovalCardRefusesCommandsItCannotShowFaithfully(t *testing.T) {
 	}
 }
 
+// A Memory card names the note whole and lets the lesson take the cut, in
+// the conversation and on the approval card alike: the name is what the user
+// would ask /memory for again, the lesson is read in full on expansion.
+func TestMemoryCardKeepsTheNameWhole(t *testing.T) {
+	m := testModel(t, Config{Demo: true})
+	m.resize(90, 30)
+	m.refresh(true)
+	var title string
+	for _, line := range m.lines {
+		if plain := ansi.Strip(line); strings.Contains(plain, "✓ Memory") {
+			title = strings.TrimRight(plain, " ")
+		}
+	}
+	if !strings.Contains(title, `save · process-group-cancel · feedback · "Cancelling`) || !strings.HasSuffix(title, "…") {
+		t.Fatalf("Memory title row at 90 columns: %q", title)
+	}
+	var call *core.ToolCall
+	for _, item := range m.entries {
+		if item.call != nil && item.call.Name == "Memory" {
+			call = item.call
+		}
+	}
+	m.pending = &ApprovalRequest{Approval: core.Approval{Call: *call, Reason: "Keep this workspace note for later sessions?"}, Reply: make(chan core.Decision, 1)}
+	m.refresh(true)
+	view := ansi.Strip(m.approvalView())
+	for _, want := range []string{"Memory  save · process-group-cancel · feedback", "Keep this workspace note for later sessions?", `"name": "process-group-cancel"`} {
+		if !strings.Contains(view, want) {
+			t.Errorf("approval omitted %q:\n%s", want, view)
+		}
+	}
+}
+
 // The rail drawn through the gap between two tool calls is decoration: a
 // dragged copy across it keeps the blank line and never the glyph.
 func TestRailGapIsNotCopiedText(t *testing.T) {

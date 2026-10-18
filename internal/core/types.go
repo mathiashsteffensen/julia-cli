@@ -100,10 +100,15 @@ type Session struct {
 	State        json.RawMessage `json:"state,omitempty"`
 	PendingTool  *ToolCall       `json:"pending_tool,omitempty"`
 	Audit        []AuditEntry    `json:"audit,omitempty"`
-	Usage        SessionUsage    `json:"usage"`
-	Messages     []Message       `json:"messages"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	// MemoryTaint names the tools that brought content from outside the
+	// user's words into this conversation so far. The model reasons from the
+	// whole conversation, so a page read in one turn can shape a note saved
+	// in the next; the mark lasts as long as the conversation does.
+	MemoryTaint []string     `json:"memory_taint,omitempty"`
+	Usage       SessionUsage `json:"usage"`
+	Messages    []Message    `json:"messages"`
+	CreatedAt   time.Time    `json:"created_at"`
+	UpdatedAt   time.Time    `json:"updated_at"`
 }
 
 // Event is the single provider-independent stream consumed by the UI and headless CLI.
@@ -246,6 +251,16 @@ type ToolExecutor interface {
 type Backend interface {
 	Name() string
 	Run(context.Context, *Session, Prompt, ToolExecutor, Emit) error
+}
+
+// Completer is a Backend that can also answer one isolated prompt: a model
+// call outside any conversation, with no tools and nothing of the session but
+// what the prompt carries, as the reflection that reviews a finished turn
+// needs. instructions is its system prompt and prompt its one user message;
+// schema, when not nil, is a JSON schema the answer must satisfy. It returns
+// the answer text and the tokens the call used, which the caller accounts for.
+type Completer interface {
+	Complete(ctx context.Context, instructions, prompt string, schema any) (string, TokenUsage, error)
 }
 
 type Approval struct {

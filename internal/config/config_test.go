@@ -409,3 +409,83 @@ func TestSubagentModelConfiguration(t *testing.T) {
 		t.Fatal("Enables ignores the subagents' models")
 	}
 }
+
+func TestMemoryConfiguration(t *testing.T) {
+	if Default().Memory.Reflection != "on" || !Default().ReflectionEnabled() || Default().Memory.Model != nil || Default().Memory.IndexBytes != 0 {
+		t.Fatalf("defaults %+v", Default().Memory)
+	}
+	// A config written before the key existed, and one that names the key
+	// without saying anything, both reflect.
+	for _, data := range []string{`{"mode":"auto"}`, `{"memory":{}}`, `{"memory":{"reflection":""}}`} {
+		cfg, err := Load(writeConfig(t, data))
+		if err != nil || !cfg.ReflectionEnabled() {
+			t.Fatalf("%s: %+v %v", data, cfg.Memory, err)
+		}
+	}
+	cfg, err := Load(writeConfig(t, `{"compatible_base_url":"https://openrouter.ai/api/v1","memory":{"reflection":"off","model":{"id":"compatible/minimax/minimax-m3","reasoning":"low"},"index_bytes":8192}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ReflectionEnabled() || cfg.Memory.Model == nil || *cfg.Memory.Model != (ModelEntry{ID: "compatible/minimax/minimax-m3", Reasoning: "low"}) || cfg.Memory.IndexBytes != 8192 {
+		t.Fatalf("memory not loaded: %+v", cfg.Memory)
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil || !strings.Contains(string(data), `"memory":{"reflection":"off","model":{"id":"compatible/minimax/minimax-m3","reasoning":"low"},"index_bytes":8192}`) {
+		t.Fatalf("memory does not round-trip: %s %v", data, err)
+	}
+	if cfg, err := Load(writeConfig(t, `{"memory":{"model":"codex"}}`)); err != nil || cfg.Memory.Model.ID != "codex" {
+		t.Fatalf("bare codex reflection model: %+v %v", cfg.Memory, err)
+	}
+	for _, tc := range []struct{ memory, want string }{
+		{`{"reflection":"yes"}`, `memory.reflection must be on or off, not "yes"`},
+		{`{"reflection":"On"}`, `memory.reflection must be on or off`},
+		{`{"model":"minimax/m3"}`, `memory.model "minimax/m3" must be provider/<model-id>`},
+		{`{"model":"openai"}`, `memory.model "openai" needs a model ID`},
+		{`{"model":"compatible/` + CompatibleDecisionsModel + `"}`, "decisions-only"},
+		{`{"model":{"id":"openai/m","reasoning":"high"}}`, "reasoning is configurable for Codex and OpenRouter"},
+		{`{"model":{"id":"compatible/m","reasoning":"extreme"}}`, "OpenRouter reasoning must be one of"},
+		{`{"model":{"id":"codex/m","effort":"high"}}`, `unknown field "effort"`},
+		{`{"model":""}`, `memory.model "" must be provider/<model-id>`},
+		{`{"index_bytes":4095}`, "memory.index_bytes must be between 4096 and 65536"},
+		{`{"index_bytes":-1}`, "memory.index_bytes must be between 4096 and 65536"},
+		{`{"index_bytes":65537}`, "memory.index_bytes must be between 4096 and 65536"},
+		{`{"reflect":"on"}`, `unknown field "reflect"`},
+		{`{"enabled":true}`, `unknown field "enabled"`},
+	} {
+		_, err := Load(writeConfig(t, `{"compatible_base_url":"https://openrouter.ai/api/v1","memory":`+tc.memory+`}`))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("memory %s: %v, want %q", tc.memory, err, tc.want)
+		}
+	}
+	if _, err := Load(writeConfig(t, `{"memory":{"model":"compatible/vendor/m"}}`)); err == nil || !strings.Contains(err.Error(), "memory.model runs on the compatible provider; set compatible_base_url") {
+		t.Fatalf("compatible reflection model without an endpoint: %v", err)
+	}
+	for _, bytes := range []int{0, MinMemoryIndexBytes, 16384, MaxMemoryIndexBytes} {
+		cfg := Default()
+		cfg.Memory.IndexBytes = bytes
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("index_bytes %d rejected: %v", bytes, err)
+		}
+	}
+}
+
+func TestInitWritesReflectionOn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "julia", "config.json")
+	if err := Init(path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw["memory"]) != `{"reflection":"on"}` && !strings.Contains(string(raw["memory"]), `"reflection": "on"`) {
+		t.Fatalf("memory not written for the user to see: %s", raw["memory"])
+	}
+	if cfg, err := Load(path); err != nil || !cfg.ReflectionEnabled() {
+		t.Fatalf("initialized config does not load: %+v %v", cfg.Memory, err)
+	}
+}

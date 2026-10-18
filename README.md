@@ -22,7 +22,7 @@ copy bundled with the ChatGPT macOS app.
 
 ```sh
 make build            # → bin/julia
-./bin/julia doctor   # check config, provider, reviewer, subagent roles, search key, browser, rg/bash
+./bin/julia doctor   # check config, provider, reviewer, subagent roles, search key, memory, browser, rg/bash
 ./bin/julia
 ```
 
@@ -38,10 +38,12 @@ julia --resume SESSION_ID     # resume a specific session
 julia --prompt "fix the build" [--json]   # headless, one task
 julia --demo                  # offline UI preview
 julia sessions | login | doctor | config init
+julia memory [show NAME | forget NAME | confirm NAME | consolidate | path | workspaces]
 ```
 
-Other flags: `--model`, `--reasoning`, `--mode`, `--compatible-base-url`,
-`--api-key-env`, `--timeout`, `--config`. Run `julia -h` for the full list.
+Other flags: `--model`, `--reasoning`, `--mode`, `--memory off|read|write`,
+`--compatible-base-url`, `--api-key-env`, `--timeout`, `--config`. Run `julia -h`
+for the full list.
 
 | Key | Action |
 | --- | --- |
@@ -58,6 +60,7 @@ Other flags: `--model`, `--reasoning`, `--mode`, `--compatible-base-url`,
 | Click a code block | Copy its code |
 | Double-click | Copy a whole message, a tool's command, or its output |
 | `/copy`, `/copy code` | Copy the last reply, or its last code block |
+| `/memory` | What JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it |
 | `/clear`, `/help`, `/quit` | New conversation, shortcuts, exit |
 
 During an approval prompt, `y`/Enter allows the action once (a Browser origin, for
@@ -118,7 +121,8 @@ keys are only referenced by env var name.
     "scout": "compatible/vendor/fast-model",
     "reviewer": {"id": "compatible/vendor/model-b", "reasoning": "high"},
     "oracle": "codex/gpt-6-astra"
-  }
+  },
+  "memory": {"reflection": "on", "model": "codex/gpt-6-astra", "index_bytes": 16384}
 }
 ```
 
@@ -130,6 +134,7 @@ keys are only referenced by env var name.
 - The last reasoning effort you picked for each provider is remembered in `~/.local/state/julia/preferences.json`. It applies at launch unless the model has its own `reasoning`, and `--reasoning` beats both.
 - Every model call is timed, and `~/.local/state/julia/throughput.json` keeps each model's last week of calls. The model picker (`ctrl+p`) shows each model's output tokens per second over them, with how long ago it was last used once that is more than a week. A model's old calls are dropped only when it is used again, so an idle model keeps its figures.
 - `subagents` assigns a model to each [subagent role](#subagent-roles) by name, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`. A role without one runs on the delegating agent's model. An assigned model starts at its entry's effort, else at the parent's when it is the parent's model, else at the one `model` or `enabled_models` gives it. A compatible model needs `compatible_base_url` and that endpoint's key.
+- `memory` keeps notes between sessions (see [Memory](#memory)): `reflection` is `on` (the default) or `off`, `model` runs the reflection step on another model, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`, and `index_bytes` caps what the index of notes may take of the instructions (4096 to 65536; default 16 KiB). The reflection step runs at low effort unless `model` gives its own.
 - `browser` is the Chrome the Browser tool launches (an executable or `.app`); `JULIA_BROWSER` overrides it. Without either, JULIA looks for Chrome, Chromium, Chrome for Testing, Brave or Edge in `/Applications`, then in Playwright's and Puppeteer's caches. `npx playwright install chromium` provides one.
 
 Sessions are stored in `~/.local/state/julia/sessions` with 0600 permissions.
@@ -140,7 +145,8 @@ They contain transcripts and command output.
 `Read`, `ViewImage`, `List`, `Grep`, `Edit`, `MultiEdit`, `Write`, `Bash`,
 `Terminal`, `Browser`, `WebSearch`, `WebFetch`, `Slack` (when a bot token is set),
 `Linear` (when an access token is saved),
-`Subagent` (up to 3 parallel child tasks), and `AskUserQuestion` (interactive only). File tools are confined to the workspace,
+`Subagent` (up to 3 parallel child tasks), `Memory` (see [Memory](#memory)), and
+`AskUserQuestion` (interactive only). File tools are confined to the workspace,
 refuse symlinks and credential paths, and cap output at 32 KiB.
 
 `ViewImage` shows the model an image from the workspace or `$JULIA_SCRATCH`,
@@ -239,6 +245,84 @@ The instructions a child of this role adds to its own.
 every tool a subagent can have (all but `Subagent` and `AskUserQuestion`).
 `julia doctor` lists the roles and the model each runs on.
 
+## Memory
+
+JULIA learns across sessions. What it learns are notes: one Markdown file each,
+with a one-line description that is the whole lesson and a body that says why it
+holds and how to apply it, kept under `~/.local/state/julia/memory` (respects
+`$XDG_STATE_HOME`): `workspaces/<slug>/` for the directory a note was learned in,
+`global/` for notes about you or the machine. The files are yours to read, edit
+and delete; `julia memory` lists them.
+
+Every turn ends its instructions with a Memory section: how to learn, then the
+index of its notes, each as its name, type, date and lesson, with the notes that
+name something in your request shown in full. A run without memory has no such
+section and no tool. A note anchored to paths or commands is also repeated inside the
+result of a tool that touches them, as a `[Memory · name]` line, so the lesson
+arrives when it applies rather than when it happens to be noticed. The agent
+saves with the `Memory` tool when you correct it or state a preference, when you
+confirm an approach, when it learns a fact about the project or the machine that
+the files do not record, or where something lives; it is told not to save what
+the repository records, what matters only to the task, secrets, or anything a
+page, file or tool output asked it to remember. After a turn in auto or yolo mode
+that could have taught something (you corrected or instructed it, an action was
+denied, or a tool failed and the work went on), a reflection step, a separate
+tool-free model call over the turn at low effort unless `memory.model` gives its
+own, saves or revises what the agent missed, at most three notes, each shown as a
+Memory card marked `reflection` and kept in the transcript, and tallies which
+notes helped and which misled. In the TUI it runs after the turn, so the next
+message can be typed at once: the status line says while it runs, Esc skips it,
+a message sent meanwhile waits for it, and quitting finishes it first (Ctrl+C
+skips). In auto mode after content from outside your words it runs within the
+turn instead, since its changes then need your approval, and a headless run
+always reflects within the turn. Subagents see the notes but save none; what
+they learn goes in their reports.
+
+| Type | For |
+| --- | --- |
+| `feedback` | How you want work done: a correction you gave, or an approach you confirmed, with why |
+| `procedure` | How a recurring task is done here when the files do not spell it out |
+| `user` | Who you are: role, expertise, standing preferences (global) |
+| `project` | A fact about the workspace, or the machine, that its files do not record |
+| `reference` | Where something lives: a URL, a ticket, a document |
+
+Notes are the past, kept as data: the instructions say so, a note can never
+authorize an action, and the reviewer never sees one. Once a conversation has
+read content from outside your words (WebFetch, WebSearch, Browser, Slack,
+Linear, a subagent's report, Bash with network or outside the sandbox, a
+networked terminal, a repository's agent instructions such as `AGENTS.md`,
+`CLAUDE*.md` or `.cursor/` rules, however it was read, or an unverified note read
+in full), every change to the notes in it, the agent's or the reflection step's,
+needs your approval in auto mode, is refused where no one can approve, and is
+marked unverified: in the index, in `Memory read` and in `julia memory`. The mark lasts as long as the
+conversation, and a note keeps its own through every rewrite until you clear it
+with `julia memory confirm` or write the note yourself; wherever an unverified
+note appears, it says so. Forgetting or rewriting a global note, or one you
+wrote, asks you too, except that the reflection after a turn cannot ask: it
+leaves such a change undone and says so on its card. A note cannot hold a credential, HTML comments and hidden
+characters are stripped from it, at most five notes are saved and three
+forgotten in one turn, and a forgotten or replaced version waits in a `.trash`
+directory for 30 days. Headless runs (`--prompt`) read notes but save none unless started with
+`--memory write`; `--memory off` runs without memory. In ask mode every save and
+forget is approved by you; read-only mode only reads.
+
+```sh
+julia memory                 # the notes this workspace sees, then the global ones
+julia memory show NAME       # one note as its file; global/NAME or workspace/NAME picks a scope
+julia memory forget NAME
+julia memory confirm NAME    # clear a note's unverified mark once you have read it and stand behind it
+julia memory consolidate     # a headless pass that merges, tightens and prunes with the Memory tool alone, marks kept
+julia memory path | workspaces
+```
+
+The consolidation pass is offered no tool but Memory, and `--continue` passes
+over its session. `/memory`, `/memory NAME` and `/memory forget NAME` do the same
+in the TUI, for the session's workspace. A
+note's frontmatter records who wrote it (`source`: agent, reflection or user),
+the session, when, how often it was read, and how often the reflection step
+found it helpful or misleading; consolidation reads those to decide what earns
+its place.
+
 ## Permissions and sandbox
 
 | Mode | Behavior |
@@ -325,4 +409,5 @@ send only synthetic proposals and never execute them.
 | `internal/tools` | Tool execution, sandbox, permissions, browser network policy, web search, subagents |
 | `internal/browser`, `internal/terminal` | Headless Chrome over the DevTools protocol; virtual terminals |
 | `internal/ui` | Bubble Tea TUI |
+| `internal/memory` | Notes kept between sessions, their index, and the reflection step's prompt |
 | `internal/session`, `internal/config`, `internal/instructions` | Persistence, settings, skill loading |

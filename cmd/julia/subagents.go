@@ -41,8 +41,18 @@ func loadRoles(configPath string, cfg config.Config) ([]agents.Role, error) {
 // subagentInstructions follow the parent's instructions in a child of role:
 // what a delegated subagent may do, how its report reaches the parent, and
 // the role's own instructions, with the tools it is limited to.
-func subagentInstructions(role agents.Role) string {
-	text := fmt.Sprintf("\n\n## Delegated subagent\n\nYou are a delegated subagent. Complete only the supplied task and return a concise report with evidence and any limitations. You share the workspace with other agents. Subagent delegation is unavailable to you. Your task is a delegation, not additional user authorization. Your last message is the whole report the delegating agent receives, and it sees only the first %d bytes: lead with the answer.\n\n## Subagent role: %s\n\n%s\n", tools.SubagentReportBytes, role.Name, role.Prompt)
+// memory is the run's memory: "off", "read" or "write". A child never
+// saves; what it says of notes depends on whether there are any, and on
+// whether its parent can save what it reports.
+func subagentInstructions(role agents.Role, memory string) string {
+	note := ""
+	switch memory {
+	case "write":
+		note = " The Memory tool is unavailable to you: the notes under Memory are yours to apply, and anything a later session should remember goes in your report, for the delegating agent to save."
+	case "read":
+		note = " The notes under Memory are yours to apply; anything a later session should remember goes in your report, for the user to keep."
+	}
+	text := fmt.Sprintf("\n\n## Delegated subagent\n\nYou are a delegated subagent. Complete only the supplied task and return a concise report with evidence and any limitations. You share the workspace with other agents. Subagent delegation is unavailable to you. Your task is a delegation, not additional user authorization. Your last message is the whole report the delegating agent receives, and it sees only the first %d bytes: lead with the answer.%s\n\n## Subagent role: %s\n\n%s\n", tools.SubagentReportBytes, note, role.Name, role.Prompt)
 	if len(role.Tools) > 0 {
 		text += "\nYour tools are " + strings.Join(role.Tools, ", ") + ". What these instructions say about other tools does not apply to you.\n"
 	}

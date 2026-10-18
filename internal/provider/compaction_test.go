@@ -386,22 +386,22 @@ func TestCompactionPayloadShrinksOnlyAsFarAsNeeded(t *testing.T) {
 }
 
 func TestCapText(t *testing.T) {
-	if got := capText("short", 64); got != "short" {
+	if got := core.CapText("short", 64); got != "short" {
 		t.Fatalf("text within the limit changed: %q", got)
 	}
 	long := "HEAD" + strings.Repeat("-", 1000) + "TAIL"
-	got := capText(long, 100)
+	got := core.CapText(long, 100)
 	if !strings.HasPrefix(got, "HEAD") || !strings.HasSuffix(got, "TAIL") || !strings.Contains(got, "bytes omitted") || len(got) >= len(long) {
 		t.Fatalf("capped text %q", got)
 	}
 	// A cut must never split a multi-byte character.
 	for limit := 100; limit < 106; limit++ {
-		if got = capText(strings.Repeat("é", 1000), limit); !utf8.ValidString(got) || got == strings.Repeat("é", 1000) {
+		if got = core.CapText(strings.Repeat("é", 1000), limit); !utf8.ValidString(got) || got == strings.Repeat("é", 1000) {
 			t.Fatalf("limit %d: cut inside a rune or not cut: %q", limit, got)
 		}
 	}
 	// Omitting a few bytes would cost more than it saves, so the text stays whole.
-	if just := strings.Repeat("a", 70); capText(just, 64) != just {
+	if just := strings.Repeat("a", 70); core.CapText(just, 64) != just {
 		t.Fatal("a cap that would lengthen the text must leave it alone")
 	}
 }

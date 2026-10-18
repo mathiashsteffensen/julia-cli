@@ -72,13 +72,18 @@ type Config struct {
 	Throughput func() map[string]throughput.Stats
 	// Children lists the subagent sessions a session ran, so a resumed
 	// session's fleet shows what its children did.
-	Children      func(parent string) ([]*core.Session, error)
+	Children func(parent string) ([]*core.Session, error)
+	// Memory answers the /memory command: an empty action lists the notes this workspace sees, "show" with a name shows one, and "forget" with a name deletes it; the Markdown returned is shown in the conversation.
+	Memory        func(action, name string) (string, error)
 	Version       string // shown in the sidebar masthead
 	ContextWindow int    // tokens the context gauge is measured against; <= 0 means core.DefaultContextWindow
 	// Hangup ends the interface when the terminal is gone, as a closed
 	// window's SIGHUP says, after the running task has stopped and cleaned
 	// up: its terminals and browser killed, not orphaned.
 	Hangup context.Context
+	// Followups announces work the backend finishes after a turn has
+	// ended, such as the reflection that reviews it; see Followup.
+	Followups <-chan Followup
 }
 
 type entry struct {
@@ -160,6 +165,9 @@ type model struct {
 	questionListening      bool
 	deferredApproval       *ApprovalRequest
 	deferredQuestion       *QuestionRequest
+	followup               *Followup // work under way after the last turn ended
+	followupListening      bool
+	turnStart              int // where the turn under way begins in entries; -1 when none
 	stream                 chan streamMsg
 	cancel                 context.CancelFunc
 	lifetime               context.Context
@@ -242,6 +250,7 @@ func newModel(cfg Config) *model {
 		cfg: cfg, input: input, viewport: viewport.New(),
 		status: "Ready", lifetime: ctx, stop: stop, now: time.Now(), clipboard: systemClipboard, clipboardImage: images.Clipboard,
 		knownModels: append([]core.ModelOption(nil), cfg.EnabledModels...),
+		turnStart:   -1,
 	}
 	m.viewport.FillHeight = true
 	m.loadHistory()
@@ -249,7 +258,7 @@ func newModel(cfg Config) *model {
 	if cfg.Demo {
 		m.entries = demoEntries()
 		m.fleet = m.demoFleet()
-		m.toolCount = 3
+		m.toolCount = 4
 		m.lastDuration = 28 * time.Second
 		m.inputTokens, m.outputTokens = 117_300, 1_284
 		if cfg.Session.Usage == (core.SessionUsage{}) {
@@ -265,7 +274,7 @@ func newModel(cfg Config) *model {
 }
 
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.waitApproval(), m.waitQuestion(), nextTick(), m.refreshWeeklyUsage(false))
+	return tea.Batch(textarea.Blink, m.waitApproval(), m.waitQuestion(), m.waitFollowup(), nextTick(), m.refreshWeeklyUsage(false))
 }
 
 func nextTick() tea.Cmd {
@@ -382,6 +391,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pending = &msg.request
 		m.refresh(true)
 		return m, nil
+	case followupMsg:
+		m.followupListening = false
+		m.receiveFollowup(msg.followup)
+		return m, m.waitFollowup()
 	case questionMsg:
 		m.questionListening = false
 		if !m.busy || m.quitting {
@@ -475,7 +488,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			if m.busy {
 				m.cancelTask()
-			} else {
+			} else if !m.skipFollowup() {
 				m.notice = ""
 			}
 			return m, nil
@@ -612,12 +625,15 @@ func (m *model) submit() tea.Cmd {
 		if handled, cmd := m.settingsCommand(prompt); handled {
 			return cmd
 		}
+		if m.memoryCommand(prompt) {
+			return nil
+		}
 		var cmd tea.Cmd
 		switch prompt {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
 		case "/ask", "/ask text":
 			if !m.cfg.Demo {
 				m.notice = "Unknown command. /help lists the essentials."
@@ -668,6 +684,7 @@ func (m *model) submit() tea.Cmd {
 	m.started, m.now = time.Now(), time.Now()
 	sent := entry{role: "user", text: request.Text, images: request.Images}
 	m.registerImages(&sent)
+	m.turnStart = len(m.entries)
 	m.entries = append(m.entries, sent)
 	m.refresh(true)
 	ctx, cancel := context.WithCancel(m.lifetime)
@@ -692,6 +709,44 @@ func (m *model) submit() tea.Cmd {
 		}
 	}()
 	return tea.Batch(waitStream(stream, m.lifetime), m.spinner.start(), m.uploadThumbnails(sent.imageIDs...))
+}
+
+// memoryCommand answers /memory: alone it lists the notes this workspace
+// sees, with a name it shows that note, and "forget NAME" deletes it. The
+// Markdown the hook returns joins the conversation under its own heading, so
+// what JULIA remembers reads like any other reply; an error is a notice.
+func (m *model) memoryCommand(prompt string) bool {
+	parts := strings.Fields(prompt)
+	if parts[0] != "/memory" {
+		return false
+	}
+	var action, name string
+	switch {
+	case len(parts) == 1:
+	case len(parts) == 2 && parts[1] != "forget":
+		action, name = "show", parts[1]
+	case len(parts) == 3 && parts[1] == "forget":
+		action, name = "forget", parts[2]
+	default:
+		m.notice = "Use /memory, /memory NAME or /memory forget NAME."
+		return true
+	}
+	if m.cfg.Memory == nil {
+		m.notice = "Memory is not configured."
+		if m.cfg.Demo {
+			m.notice = "Memory is unavailable in this preview."
+		}
+		return true
+	}
+	text, err := m.cfg.Memory(action, name)
+	if err != nil {
+		m.notice = "Memory: " + oneLine(err.Error())
+		return true
+	}
+	m.input.Reset()
+	m.entries = append(m.entries, entry{role: "assistant", label: "✦ MEMORY", text: text})
+	m.refresh(true)
+	return true
 }
 
 func cloneSession(original *core.Session) *core.Session {

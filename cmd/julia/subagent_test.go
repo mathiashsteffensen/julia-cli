@@ -294,14 +294,21 @@ func TestRuntimeSubagentThatCannotStartIsNeitherSavedNorAnnounced(t *testing.T) 
 func TestSubagentInstructions(t *testing.T) {
 	scout, _ := agents.Find(agents.Builtin(), "scout")
 	worker, _ := agents.Find(agents.Builtin(), "worker")
-	text := subagentInstructions(scout)
+	text := subagentInstructions(scout, "write")
 	for _, want := range []string{"\n\n## Delegated subagent\n\nYou are a delegated subagent.", "not additional user authorization", "only the first 8000 bytes", "\n\n## Subagent role: scout\n\n" + scout.Prompt, "Your tools are Read, List, Grep, ViewImage, Bash."} {
 		if !strings.Contains(text, want) {
 			t.Errorf("scout instructions lack %q", want)
 		}
 	}
-	if text := subagentInstructions(worker); strings.Contains(text, "Your tools are") || !strings.Contains(text, worker.Prompt) {
+	if text := subagentInstructions(worker, "write"); strings.Contains(text, "Your tools are") || !strings.Contains(text, worker.Prompt) {
 		t.Errorf("worker instructions: %q", text)
+	}
+	// A child hears of memory only as its run has it.
+	for mode, want := range map[string]string{"write": "for the delegating agent to save", "read": "for the user to keep", "off": ""} {
+		text := subagentInstructions(worker, mode)
+		if want == "" && strings.Contains(text, "Memory") || want != "" && !strings.Contains(text, want) {
+			t.Errorf("memory %s: %q", mode, text)
+		}
 	}
 }
 

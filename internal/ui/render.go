@@ -309,6 +309,10 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 		name, detail := "Tool", item.text
 		if item.call != nil {
 			name, detail = item.call.Name, toolSummary(*item.call)
+			// The reflection step's changes read as its own, live and resumed.
+			if item.text == "reflection" || strings.HasPrefix(item.call.ID, "reflection-") {
+				detail = "reflection · " + detail
+			}
 		}
 		if item.call != nil && item.call.Name == "Browser" && item.result != nil {
 			// The result names the elements the call gave only refs for.
@@ -461,9 +465,15 @@ func toolTargets(item entry) []copyTarget {
 	label, text := "tool call", ""
 	if item.call != nil {
 		label, text = "arguments", string(item.call.Arguments)
+		keys := []string{"command", "path", "file_path", "pattern", "query", "directory", "url", "script"}
+		if item.call.Name == "Memory" {
+			// The lesson is the note; a Linear issue's description stays
+			// under its raw arguments, as before.
+			keys = []string{"description"}
+		}
 		var args map[string]json.RawMessage
 		if json.Unmarshal(item.call.Arguments, &args) == nil {
-			for _, key := range []string{"command", "path", "file_path", "pattern", "query", "directory", "url", "script"} {
+			for _, key := range keys {
 				var value string
 				if json.Unmarshal(args[key], &value) == nil {
 					label, text = key, value
@@ -520,6 +530,11 @@ func toolSummary(call core.ToolCall) string {
 	}
 	if call.Name == "Linear" {
 		if summary, ok := linearSummary(call.Arguments); ok {
+			return summary
+		}
+	}
+	if call.Name == "Memory" {
+		if summary, ok := memorySummary(call.Arguments); ok {
 			return summary
 		}
 	}
@@ -1150,6 +1165,10 @@ func (m *model) statusLine() string {
 		status = "" // the activity is drawn under the latest entry
 	} else if m.busy {
 		status = m.activityLine(m.mainWidth)
+	} else if m.followup != nil {
+		// Work after the turn, such as its reflection: the interface is
+		// free, and says what is still under way.
+		status = violetStyle.Render("◌") + mutedStyle.Render(" "+sanitize(m.followup.Status))
 	} else if m.lastDuration > 0 {
 		status += faintStyle.Render(" · " + elapsed(m.lastDuration))
 	}
@@ -1269,9 +1288,11 @@ func (m *model) approvalView() string {
 	}
 	text := coralStyle.Bold(true).Render("PERMISSION REQUEST")
 	text += "\n" + creamStyle.Bold(true).Render(sanitize(request.Call.Name))
-	if request.Call.Name == "Browser" {
-		// What the browser would do, where, and what it would open up.
-		text += "  " + violetStyle.Render(ansi.Truncate(sanitize(toolSummary(request.Call)), max(6, w-9), "…"))
+	switch request.Call.Name {
+	case "Browser", "Memory":
+		// What the browser would do, where, and what it would open up; or
+		// the note that would be kept or forgotten, as its card words it.
+		text += "  " + violetStyle.Render(ansi.Truncate(sanitize(toolSummary(request.Call)), max(6, w-ansi.StringWidth(request.Call.Name)-2), "…"))
 	}
 	text += "\n\n" + creamStyle.Render(ansi.Wrap(sanitize(request.Reason), w, ""))
 	if request.Call.Name == "Browser" {
@@ -1395,6 +1416,7 @@ func demoEntries() []entry {
 		{role: "tool", call: &core.ToolCall{Name: "Grep", Arguments: json.RawMessage(`{"pattern":"CommandContext|ProcessGroup|Approve","path":"internal/"}`)}, done: true, result: &core.ToolResult{Content: "12 matches across 3 files"}},
 		{role: "tool", call: &core.ToolCall{Name: "Read", Arguments: json.RawMessage(`{"path":"internal/sandbox/runner.go"}`)}, done: true, result: &core.ToolResult{Content: "Read 148 lines · execution boundary and process lifecycle"}},
 		{role: "tool", call: &core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"go test -race ./internal/sandbox/..."}`)}, done: true, result: &core.ToolResult{Content: "ok   julia/internal/sandbox   1.284s"}},
+		{role: "tool", call: &core.ToolCall{Name: "Memory", Arguments: json.RawMessage(`{"action":"save","name":"process-group-cancel","description":"Cancelling a task must signal the ordinary process group; check it whenever the sandbox runner changes","type":"feedback","paths":["internal/sandbox/**"]}`)}, done: true, result: &core.ToolResult{Content: "Saved workspace note process-group-cancel"}},
 		{role: "assistant", text: "**The cancellation path is sound, sir.**\n\nThe runner signals the ordinary process group when a task is interrupted. Approval is checked before execution, and a denied action never reaches the shell.\n\nThe focused race checks passed. No files changed."},
 	}
 }

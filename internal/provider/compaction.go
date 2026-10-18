@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"julia/internal/core"
 
@@ -141,11 +140,11 @@ func compactionPayload(transcript []fantasy.Message, task string, budget int) ([
 	data, err := encode(messages, task)
 	for limit := 16 << 10; err == nil && len(data) > budget && limit >= 64; limit /= 2 {
 		messages = capBodies(transcript, limit)
-		data, err = encode(messages, capText(task, limit))
+		data, err = encode(messages, core.CapText(task, limit))
 	}
 	for err == nil && len(data) > budget && len(messages) > 1 {
 		messages = messages[len(messages)/2:]
-		data, err = encode(messages, capText(task, 64))
+		data, err = encode(messages, core.CapText(task, 64))
 	}
 	return data, err
 }
@@ -159,18 +158,18 @@ func capBodies(messages []fantasy.Message, limit int) []fantasy.Message {
 		for j, part := range message.Content {
 			switch p := part.(type) {
 			case fantasy.TextPart:
-				p.Text = capText(p.Text, limit)
+				p.Text = core.CapText(p.Text, limit)
 				part = p
 			case fantasy.ToolCallPart:
-				p.Input = capText(p.Input, limit)
+				p.Input = core.CapText(p.Input, limit)
 				part = p
 			case fantasy.ToolResultPart:
 				switch out := p.Output.(type) {
 				case fantasy.ToolResultOutputContentText:
-					p.Output = fantasy.ToolResultOutputContentText{Text: capText(out.Text, limit)}
+					p.Output = fantasy.ToolResultOutputContentText{Text: core.CapText(out.Text, limit)}
 				case fantasy.ToolResultOutputContentError:
 					if out.Error != nil {
-						p.Output = fantasy.ToolResultOutputContentError{Error: errors.New(capText(out.Error.Error(), limit))}
+						p.Output = fantasy.ToolResultOutputContentError{Error: errors.New(core.CapText(out.Error.Error(), limit))}
 					}
 				}
 				part = p
@@ -179,27 +178,6 @@ func capBodies(messages []fantasy.Message, limit int) []fantasy.Message {
 		}
 	}
 	return capped
-}
-
-// capText keeps the head and tail of an oversized body: the start says what it
-// is and the end how it finished. It cuts on rune boundaries and never makes the
-// text longer.
-func capText(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	head, tail := limit/2, len(s)-(limit-limit/2)
-	for head > 0 && !utf8.RuneStart(s[head]) {
-		head--
-	}
-	for tail < len(s) && !utf8.RuneStart(s[tail]) {
-		tail++
-	}
-	marker := fmt.Sprintf("\n[%d bytes omitted]\n", tail-head)
-	if len(marker) >= tail-head {
-		return s
-	}
-	return s[:head] + marker + s[tail:]
 }
 
 func (a *API) compactionOptions() fantasy.ProviderOptions {
@@ -223,14 +201,20 @@ func (a *API) compactionOptions() fantasy.ProviderOptions {
 }
 
 func usableContextSummary(response *fantasy.Response) (string, error) {
+	return usableAnswer(response, "summary")
+}
+
+// usableAnswer is the text of a tool-free response that finished on its own,
+// or why the response is not one; what names the answer that was asked for.
+func usableAnswer(response *fantasy.Response, what string) (string, error) {
 	if response == nil {
 		return "", errors.New("provider returned no response")
 	}
 	if response.FinishReason != fantasy.FinishReasonStop {
-		return "", errors.New("provider did not confirm a complete summary")
+		return "", fmt.Errorf("provider did not confirm a complete %s", what)
 	}
 	if len(response.Content.ToolCalls()) > 0 {
-		return "", errors.New("provider returned tool calls instead of a summary")
+		return "", fmt.Errorf("provider returned tool calls instead of a %s", what)
 	}
 	var parts []string
 	for _, content := range response.Content {
@@ -243,7 +227,7 @@ func usableContextSummary(response *fantasy.Response) (string, error) {
 		return "", errors.New("provider returned no answer text")
 	}
 	if strings.HasPrefix(strings.ToLower(text), "<tool_call") {
-		return "", errors.New("provider returned tool-call markup instead of a summary")
+		return "", fmt.Errorf("provider returned tool-call markup instead of a %s", what)
 	}
 	return text, nil
 }

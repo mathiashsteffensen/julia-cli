@@ -75,6 +75,37 @@ type Config struct {
 	// AGENTS.md, whose contents join the instructions as repository context.
 	// Empty reads none: a cloned repository's files are not trusted by default.
 	WorkspaceInstructions []string `json:"workspace_instructions,omitempty"`
+	// Memory configures what JULIA keeps between sessions; see memory.Store.
+	Memory MemoryConfig `json:"memory"`
+}
+
+// MemoryConfig is the "memory" entry: how notes are kept and reviewed.
+type MemoryConfig struct {
+	// Reflection is on or off: whether a reflection step reviews each
+	// finished turn in auto and yolo mode and saves what a later session
+	// should remember. Empty is on.
+	Reflection string `json:"reflection,omitempty"`
+	// Model runs the reflection step, as provider/<model-id> or
+	// {"id": ..., "reasoning": ...}; empty runs it on the session's model.
+	Model *ModelEntry `json:"model,omitempty"`
+	// IndexBytes caps how much of the instructions the index of notes may
+	// take; zero is memory.DefaultIndexBytes.
+	IndexBytes int `json:"index_bytes,omitempty"`
+}
+
+// Index bounds for memory.index_bytes: below the minimum the index could not
+// hold its framing and a handful of notes, above the maximum it would crowd
+// out the instructions it closes, which skills and repository instructions
+// may already fill to 128 KiB.
+const (
+	MinMemoryIndexBytes = 4096
+	MaxMemoryIndexBytes = 65536
+)
+
+// ReflectionEnabled reports whether a reflection step reviews finished
+// turns; it is on unless memory.reflection says off.
+func (c Config) ReflectionEnabled() bool {
+	return c.Memory.Reflection != "off"
 }
 
 // Providers are the providers a model ID may name.
@@ -215,7 +246,7 @@ func (c Config) BrowserPath() string {
 }
 
 func Default() Config {
-	return Config{Provider: "codex", Mode: "auto", CodexBinary: "codex", MaxSteps: 256, ContextTokens: core.DefaultContextWindow, Timeout: "4h"}
+	return Config{Provider: "codex", Mode: "auto", CodexBinary: "codex", MaxSteps: 256, ContextTokens: core.DefaultContextWindow, Timeout: "4h", Memory: MemoryConfig{Reflection: "on"}}
 }
 func Path() (string, error) {
 	d := os.Getenv("XDG_CONFIG_HOME")
@@ -330,6 +361,23 @@ func (c Config) Validate() error {
 	}
 	if len(c.Browser) > 4096 || c.Browser != strings.TrimSpace(c.Browser) || strings.IndexFunc(c.Browser, unicode.IsControl) >= 0 {
 		return errors.New("browser must be a path to a Chrome or Chromium executable or .app, without surrounding whitespace or control characters")
+	}
+	switch c.Memory.Reflection {
+	case "", "on", "off":
+	default:
+		return fmt.Errorf("memory.reflection must be on or off, not %q", c.Memory.Reflection)
+	}
+	if c.Memory.Model != nil {
+		provider, model := SplitModel(c.Memory.Model.ID)
+		if err := c.validateModel("memory.model", provider, model, c.Memory.Model.Reasoning); err != nil {
+			return err
+		}
+		if provider == "compatible" && c.CompatibleBaseURL == "" {
+			return errors.New("memory.model runs on the compatible provider; set compatible_base_url to its API endpoint")
+		}
+	}
+	if c.Memory.IndexBytes != 0 && (c.Memory.IndexBytes < MinMemoryIndexBytes || c.Memory.IndexBytes > MaxMemoryIndexBytes) {
+		return fmt.Errorf("memory.index_bytes must be between %d and %d, or 0 for the default", MinMemoryIndexBytes, MaxMemoryIndexBytes)
 	}
 	return nil
 }

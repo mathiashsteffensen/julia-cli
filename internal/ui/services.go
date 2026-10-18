@@ -144,6 +144,39 @@ func linearSummary(arguments json.RawMessage) (string, bool) {
 	return strings.Join(parts, " · "), true
 }
 
+// memorySummary is a Memory call's title row: the action, then the note it
+// names, and for a save its type, its scope when global, and the lesson last,
+// quoted, so a narrow row truncates the lesson and never the name.
+func memorySummary(arguments json.RawMessage) (string, bool) {
+	var a struct {
+		Action, Name, Description, Type, Scope string
+	}
+	if json.Unmarshal(arguments, &a) != nil || a.Action == "" {
+		return "", false
+	}
+	parts := []string{a.Action}
+	if a.Name != "" && a.Action != "list" {
+		parts = append(parts, typedLine(a.Name))
+	}
+	switch a.Action {
+	case "save":
+		if a.Type != "" {
+			parts = append(parts, a.Type)
+		}
+		if a.Scope == "global" {
+			parts = append(parts, a.Scope)
+		}
+		if a.Description != "" {
+			parts = append(parts, strconv.Quote(typedLine(a.Description)))
+		}
+	case "read", "forget":
+		if a.Scope != "" {
+			parts = append(parts, a.Scope)
+		}
+	}
+	return strings.Join(parts, " · "), true
+}
+
 // argument is one named value of a tool call, as the model wrote it.
 type argument struct{ key, value string }
 
@@ -201,10 +234,10 @@ func callArguments(raw json.RawMessage) []argument {
 
 // argumentsShown says whether a tool's arguments appear in full under its title
 // when tools are expanded: the tools whose calls carry text the title row can
-// only hint at, such as a message or an issue description.
+// only hint at, such as a message, an issue description or a note's body.
 func argumentsShown(name string) bool {
 	switch name {
-	case "Slack", "Linear":
+	case "Slack", "Linear", "Memory":
 		return true
 	}
 	return false

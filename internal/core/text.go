@@ -1,8 +1,10 @@
 package core
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // VisibleText removes what a reader cannot see but a model can read: control
@@ -44,4 +46,25 @@ func HasVisibleText(s string) bool {
 		}
 	}
 	return false
+}
+
+// CapText keeps the head and tail of an oversized body: the start says what it
+// is and the end how it finished. It cuts on rune boundaries and never makes the
+// text longer.
+func CapText(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	head, tail := limit/2, len(s)-(limit-limit/2)
+	for head > 0 && !utf8.RuneStart(s[head]) {
+		head--
+	}
+	for tail < len(s) && !utf8.RuneStart(s[tail]) {
+		tail++
+	}
+	marker := fmt.Sprintf("\n[%d bytes omitted]\n", tail-head)
+	if len(marker) >= tail-head {
+		return s
+	}
+	return s[:head] + marker + s[tail:]
 }

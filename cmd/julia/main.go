@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,6 +23,7 @@ import (
 	"julia/internal/config"
 	"julia/internal/core"
 	"julia/internal/instructions"
+	"julia/internal/memory"
 	"julia/internal/provider"
 	"julia/internal/session"
 	"julia/internal/throughput"
@@ -51,7 +53,7 @@ func run() error {
 		return err
 	}
 	flags := flag.NewFlagSet("julia", flag.ContinueOnError)
-	var path, dir, prompt, modelFlag, reasoning, mode, endpoint, keyEnv, resume, timeout string
+	var path, dir, prompt, modelFlag, reasoning, mode, endpoint, keyEnv, resume, timeout, memoryFlag string
 	var cont, demo, jsonMode, showVersion bool
 	var snapshot int
 	flags.StringVar(&path, "config", configPath, "configuration file")
@@ -64,6 +66,7 @@ func run() error {
 	flags.StringVar(&keyEnv, "api-key-env", "", "environment variable containing API key")
 	flags.StringVar(&resume, "resume", "", "resume a saved session ID")
 	flags.StringVar(&timeout, "timeout", "", "maximum duration per task, e.g. 4h")
+	flags.StringVar(&memoryFlag, "memory", "", "off, read or write: whether notes kept between sessions are seen and saved (default write; read for a headless --prompt run)")
 	flags.BoolVar(&cont, "continue", false, "resume latest session in this directory")
 	flags.BoolVar(&demo, "demo", false, "explore the interface offline")
 	flags.BoolVar(&jsonMode, "json", false, "emit JSON events in headless mode")
@@ -149,10 +152,20 @@ func run() error {
 		return errors.New("workspace must be a directory")
 	}
 	args := flags.Args()
+	// Consolidation is a headless task of the agent's: a pass over the notes
+	// with the Memory tool and nothing else, so the workspace tools run
+	// read-only while notes are written, and no reflection follows it.
+	consolidate := false
 	if len(args) > 0 {
 		switch args[0] {
 		case "doctor":
-			return doctor(ctx, cfg, path, roles)
+			return doctor(ctx, cfg, path, roles, dir)
+		case "memory":
+			if len(args) != 2 || args[1] != "consolidate" {
+				return memoryCommand(args[1:], dir, os.Stdout)
+			}
+			consolidate = true
+			prompt, memoryFlag, cfg.Mode = memory.ConsolidationPrompt, "write", "read-only"
 		case "login":
 			cmd := exec.CommandContext(ctx, cfg.CodexBinary, "login")
 			cmd.Stdin = os.Stdin
@@ -187,6 +200,26 @@ func run() error {
 	linearToken, err := tools.LoadLinearToken(linearTokenFile(path))
 	if err != nil {
 		return fmt.Errorf("linear token: %w", err)
+	}
+	// Notes are read in every run and written where someone watches: a
+	// headless task has no one to see what it saves, or to approve a save
+	// that follows content from outside the user's words, so it learns by
+	// reporting unless told otherwise.
+	if memoryFlag == "" {
+		memoryFlag = "write"
+		if prompt != "" {
+			memoryFlag = "read"
+		}
+	}
+	var memoryStore *memory.Store
+	switch memoryFlag {
+	case "off":
+	case "read", "write":
+		if memoryStore, err = memory.Default(); err != nil {
+			return err
+		}
+	default:
+		return errors.New("--memory must be off, read or write")
 	}
 	demoTools := append(tools.Definitions(roles, linearToken != ""), tools.QuestionDefinition())
 	if snapshot > 0 {
@@ -262,7 +295,12 @@ func run() error {
 		ask, questions = ui.NewAsker()
 	}
 	duration, _ := time.ParseDuration(cfg.Timeout)
-	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path), linearToken: linearToken}
+	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path), linearToken: linearToken, memory: memoryStore, memoryReadOnly: memoryFlag == "read", consolidating: consolidate}
+	if consolidate {
+		// The pass rewrites notes and nothing else: no one is asked, and a
+		// note it rewrites keeps its unverified mark, as a yolo save would.
+		runner.memoryMode = "yolo"
+	}
 	// Every timed model call feeds the speed shown beside each model in the picker.
 	throughputPath, throughputErr := throughput.Path()
 	if throughputErr == nil && !demo && snapshot == 0 {
@@ -270,6 +308,11 @@ func run() error {
 	}
 	if prompt != "" {
 		s.Title = session.Title(prompt)
+		if consolidate {
+			s.Title = "Consolidate memory"
+			// Not a conversation to continue: --continue skips it.
+			s.Role = "consolidation"
+		}
 		enc := json.NewEncoder(os.Stdout)
 		emit := func(e core.Event) {
 			if jsonMode {
@@ -310,7 +353,16 @@ func run() error {
 	}
 	uiConfig := baseUIConfig(s, cfg, runner.Definitions())
 	uiConfig.Backend, uiConfig.Save, uiConfig.Approvals, uiConfig.Questions = runner, store.Save, approvals, questions
+	if memoryStore != nil {
+		uiConfig.Memory = func(action, name string) (string, error) {
+			// The session's workspace, which a resumed session may not share with the current directory.
+			return memoryMarkdown(memoryStore, s.Directory, action, name, memoryFlag == "read")
+		}
+	}
 	uiConfig.Hangup = hangup
+	// The reflection on a turn runs after it, telling the interface as it goes.
+	followups := make(chan ui.Followup)
+	runner.followups, runner.closed, uiConfig.Followups = followups, make(chan struct{}), followups
 	uiConfig.Children = func(parent string) ([]*core.Session, error) {
 		all, err := store.List()
 		if err != nil {
@@ -374,7 +426,11 @@ func run() error {
 		}
 		return (&provider.Codex{Binary: binary}).WeeklyUsage(ctx)
 	}
-	return ui.Run(uiConfig)
+	runErr := ui.Run(uiConfig)
+	pending := runner.finish(ctx, func() {
+		fmt.Fprintln(os.Stderr, "julia: finishing the reflection on your last turn · Ctrl+C skips it")
+	})
+	return errors.Join(runErr, keepAfterTurns(pending, s, store))
 }
 
 // Resolve launch settings after locking and rereading a resumed session. An
@@ -447,6 +503,24 @@ type runtimeBackend struct {
 	// throughputPath is where timed model calls are recorded; empty records none.
 	throughputPath string
 	throughputMu   sync.Mutex
+	// memory holds the notes kept between sessions; nil keeps none and
+	// offers no Memory tool. memoryReadOnly lets a run see notes but save
+	// none, and memoryMode, when set, is the approval mode the Memory tool
+	// uses instead of the configuration's. consolidating marks the run
+	// that is itself the consolidation pass, which no reflection follows.
+	memory         *memory.Store
+	memoryReadOnly bool
+	memoryMode     string
+	consolidating  bool
+	// followups carries the reflection that runs after its turn has ended
+	// to the interface; nil reflects within the turn, as a headless run
+	// does. closed ends the carrying once the interface has gone (see
+	// finish), and afterTurns hold, by session, what reflections after a
+	// turn changed until the session takes it in.
+	followups  chan<- ui.Followup
+	closed     chan struct{}
+	afterMu    sync.Mutex
+	afterTurns map[string][]*afterTurn
 	// roles are the subagent roles a delegated task may name; children are run
 	// by makeBackend, so without it there are none.
 	roles []agents.Role
@@ -473,6 +547,9 @@ func (r *runtimeBackend) Definitions() []core.ToolDefinition {
 	definitions := tools.Definitions(r.subagentRoles(), r.linearToken != "")
 	if r.ask != nil {
 		definitions = append(definitions, tools.QuestionDefinition())
+	}
+	if r.memory != nil {
+		definitions = append(definitions, tools.MemoryDefinition())
 	}
 	return definitions
 }
@@ -512,6 +589,11 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 	}
 	consumer := emit
 	var emitMu sync.Mutex
+	// The turn's warnings, denials among them, are what the reflection step
+	// reads besides the transcript. recovered marks a turn in which a tool
+	// failed and the work went on: what made it go on is often the lesson.
+	var turnWarnings []string
+	failed, recovered := false, false
 	emit = func(event core.Event) {
 		if event.Subagent == nil {
 			r.recordThroughput(s, event)
@@ -522,7 +604,21 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		if event.Subagent == nil && (event.Kind == "tool_start" || event.Kind == "tool_end" || event.Kind == "warning" || event.Kind == "status") {
 			s.Audit = append(s.Audit, core.AuditEntry{At: time.Now(), Event: event})
 		}
+		if event.Subagent == nil && event.Kind == "warning" {
+			turnWarnings = append(turnWarnings, event.Text)
+		}
+		if event.Subagent == nil && event.Kind == "tool_end" && event.Result != nil && event.Result.IsError {
+			failed = true
+		} else if event.Subagent == nil && event.Kind == "tool_start" && failed {
+			recovered = true
+		}
 		consumer(event)
+	}
+	// What reflections on earlier turns changed joins the session first, so
+	// the transcript keeps its order and this turn sees their notes.
+	r.settleEarlier(ctx, s, emit)
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	task := newTaskContext(s.Messages, prompt.Text)
 	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: r.cfg.BrowserPath(), SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv), LinearToken: r.linearToken})
@@ -543,11 +639,36 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 			bashEnvironment[key] = value
 		}
 	}
+	// What earlier sessions learned joins the instructions: how to learn,
+	// then the index of notes, with the ones the request names shown in full.
+	// An unverified note shown in full brings its outside content with it.
+	memoryIndex := ""
+	if r.memory != nil {
+		if recall, err := r.memory.Recall(s.Directory); err != nil {
+			emit(core.Event{Kind: "warning", Text: "Memory not loaded this turn: " + err.Error()})
+		} else {
+			for _, warning := range recall.Warnings {
+				emit(core.Event{Kind: "warning", Text: warning})
+			}
+			// An unverified note is labelled wherever it is shown; only reading
+			// one in full on purpose taints the conversation, or a single such
+			// note with a common keyword would mark every session it reaches.
+			memoryIndex = recall.Section(r.cfg.Memory.IndexBytes, prompt.Text, r.memoryReadOnly)
+			if n := recall.Count(); n > 0 {
+				text := fmt.Sprintf("Recalled %d %s", n, map[bool]string{true: "note", false: "notes"}[n == 1])
+				if relevant := len(recall.Relevant(prompt.Text)); relevant > 0 {
+					text += fmt.Sprintf(" · %d relevant now", relevant)
+				}
+				emit(core.Event{Kind: "status", Text: text})
+			}
+		}
+	}
 	bundle, err := instructions.Build(instructions.Options{
 		Directory: s.Directory, Provider: s.Provider, Model: s.Model, Reasoning: selected.Reasoning, Mode: r.cfg.Mode,
 		Sandbox: executor.SandboxInfo(), Timeout: r.timeout.String(), Headless: r.headless,
 		SkillPaths: r.cfg.SkillPaths, CodexHome: os.Getenv("CODEX_HOME"),
 		BashEnvironment: bashEnvironment, WorkspaceInstructions: r.cfg.WorkspaceInstructions,
+		Memory: memoryIndex,
 	})
 	if err != nil {
 		return fmt.Errorf("load agent instructions: %w", err)
@@ -586,7 +707,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 			child.Role = role.Name
 			child.Title = "Subagent " + role.Name + ": " + session.Title(task)
 			child.Reasoning, child.ReasoningSet = settings.Reasoning, true
-			child.Instructions = instructionText + subagentInstructions(role)
+			child.Instructions = instructionText + subagentInstructions(role, r.memoryState())
 			if r.checkpoint != nil {
 				if err := r.checkpoint(child); err != nil {
 					return "", err
@@ -648,8 +769,96 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		// The user's answers are their own words: later approvals this turn are judged with them in view.
 		agentTools = withAnswerContext(agentTools, task, executor.SetTask)
 	}
-	return backend.Run(ctx, s, prompt, agentTools, emit)
+	// Outermost of all: the Memory tool sees every call, so it knows what the
+	// turn read before it saves, and children, who get the base executor,
+	// never save on their own.
+	var memoryTools *tools.Memory
+	if r.memory != nil {
+		mode := r.memoryMode
+		if mode == "" {
+			mode = r.cfg.Mode
+		}
+		// Headless, nobody can approve: the tool then refuses with a reason
+		// that tells the model to report instead.
+		approveMemory := r.approve
+		if r.headless {
+			approveMemory = nil
+		}
+		// The session carries the taint the moment it grows, so a checkpoint
+		// taken mid-turn, or a crash, cannot drop it.
+		onTaint := func(taint []string) {
+			emitMu.Lock()
+			s.MemoryTaint = taint
+			emitMu.Unlock()
+		}
+		if r.consolidating {
+			// The pass rewrites notes and nothing else.
+			agentTools = onlyMemory{agentTools}
+		}
+		memoryTools = tools.WithMemory(agentTools, tools.MemoryOptions{Store: r.memory, Workspace: s.Directory, Session: s.ID, Mode: mode, WorkspaceMode: r.cfg.Mode, ReadOnly: r.memoryReadOnly, Unbounded: r.consolidating, Approve: approveMemory, Task: task.String, Tainted: s.MemoryTaint, OnTaint: onTaint})
+		agentTools = memoryTools
+	}
+	start := len(s.Messages)
+	err = backend.Run(ctx, s, prompt, agentTools, emit)
+	if memoryTools != nil {
+		// The model reasons from the whole conversation, so what this turn
+		// read from outside the user's words weighs on every turn after it.
+		emitMu.Lock()
+		s.MemoryTaint = memoryTools.Tainted()
+		emitMu.Unlock()
+	}
+	if r.reflects(ctx, err) {
+		emitMu.Lock()
+		warnings, wentOn := append([]string(nil), turnWarnings...), recovered
+		emitMu.Unlock()
+		if start < len(s.Messages) && worthReflecting(s.Messages[start:], warnings, wentOn) {
+			in := reflectionInput{session: s.ID, directory: s.Directory, messages: slices.Clone(s.Messages[start:]), start: start, after: len(s.Messages), warnings: warnings, tainted: slices.Clone(s.MemoryTaint), task: task.String(), selected: selected, backend: backend}
+			// The reflection runs after the turn, unless its changes may
+			// need the user, who can be asked only while the turn lasts: in
+			// auto mode, after content from outside the user's words.
+			if r.followups != nil && !(r.cfg.Mode == "auto" && len(in.tainted) > 0) {
+				r.reflectLater(in)
+			} else {
+				in.canAsk = true
+				out := r.reflection(ctx, in, func(string) {
+					text := "Reflecting on this turn"
+					if !r.headless {
+						text += " · Esc skips"
+					}
+					emit(core.Event{Kind: "status", Text: text})
+				})
+				if !out.usage.IsZero() {
+					emit(core.AggregateUsageEvent(out.usage))
+				}
+				for _, event := range out.events {
+					emit(event)
+				}
+				settle(s, in.after, out, false)
+			}
+		}
+	}
+	return err
+}
 
+// memoryState is the run's memory as a child is told of it: off, read or write.
+func (r *runtimeBackend) memoryState() string {
+	switch {
+	case r.memory == nil:
+		return "off"
+	case r.memoryReadOnly:
+		return "read"
+	}
+	return "write"
+}
+
+// onlyMemory offers the consolidation pass the Memory tool alone, which
+// WithMemory adds around it, and refuses any other call should the model
+// make one anyway.
+type onlyMemory struct{ base core.ToolExecutor }
+
+func (onlyMemory) Definitions() []core.ToolDefinition { return nil }
+func (o onlyMemory) Execute(_ context.Context, call core.ToolCall) core.ToolResult {
+	return core.ToolResult{Content: "the consolidation pass uses the Memory tool alone; " + call.Name + " is unavailable", IsError: true}
 }
 
 // baseUIConfig is what the live and demo interfaces share. The context window
@@ -695,7 +904,7 @@ func reviewerSummary(c config.Config) string {
 	return fmt.Sprintf("Reviewer  Codex %s · reasoning %s · priority", safe(model), provider.CodexReviewerReasoning)
 }
 
-func doctor(ctx context.Context, c config.Config, path string, roles []agents.Role) error {
+func doctor(ctx context.Context, c config.Config, path string, roles []agents.Role, dir string) error {
 	fmt.Printf("JULIA %s\nConfig    %s\nProvider  %s\nMode      %s\n", version, path, c.Provider, c.Mode)
 	model, reasoning := modelSettings(c)
 	fmt.Printf("Model     %s\nReasoning %s\n", safe(model), safe(reasoning))
@@ -724,6 +933,9 @@ func doctor(ctx context.Context, c config.Config, path string, roles []agents.Ro
 		fmt.Printf("Linear    app token (%s)\n", linearTokenFile(path))
 	} else {
 		fmt.Printf("Linear    off; save a token in %s\n", linearTokenFile(path))
+	}
+	for _, line := range memorySummary(c, dir) {
+		fmt.Println(line)
 	}
 	for _, name := range []string{"rg", "bash"} {
 		p, err := exec.LookPath(name)
