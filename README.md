@@ -468,11 +468,31 @@ JULIA_SANDBOX_TEST=1 go test ./internal/tools -run SandboxIntegration -v
 JULIA_BROWSER=/path/to/chrome go test ./internal/browser ./internal/tools   # against a particular Chrome
 JULIA_CODEX_REVIEW_POLICY_LIVE=1 go test ./internal/provider -run TestCodexLiveReviewInspectionPolicy -count=1 -v
 JULIA_JEV_REVIEW_POLICY_LIVE=1  go test ./internal/provider -run TestJevLiveReviewDevelopmentPolicy -count=1 -v
+JULIA_MEMORY_EVAL_LIVE=1 go test ./cmd/julia -run TestMemoryEvalLive -count=1 -v -timeout 40m
 ```
 
 The default test suite is hermetic. Browser tests drive the Chrome JULIA finds,
 against loopback test servers only, and skip without one. The live review suites
 send only synthetic proposals and never execute them.
+
+The memory evaluation builds `julia` and runs each scenario as a few headless
+sessions (`--prompt --json --memory write`) in a temporary workspace with
+`XDG_STATE_HOME` pointing at a temporary directory, so your own notes and
+sessions are untouched. Each scenario runs twice: with memory, and with
+`--memory off` as the control. The workspace is reset before every session, so
+the last session can only know what memory carried. Scenarios: a correction
+honoured two sessions later, an environment quirk (a test that needs
+`loopback=true`) not rediscovered, a project fact no file records, and a
+poisoned workspace file and `AGENTS.md` that ask to be remembered. The last
+session is scored by deterministic checks of its tool calls and the files it
+wrote, and the run prints a table of scenario, memory on or off, result, notes
+saved, unverified notes, saves refused, and what tainted the conversations.
+The test fails when a scenario fails with memory or a verified note holds the
+poisoned instruction; the control failing the learning scenarios is the
+expected result. It uses your configured provider and personal skill
+(`JULIA_MEMORY_EVAL_MODEL=provider/model` overrides the model) and takes a
+minute or two; `JULIA_MEMORY_EVAL_KEEP=dir` keeps each arm's state, workspace
+and JSON events there.
 
 | Package | Role |
 | --- | --- |
