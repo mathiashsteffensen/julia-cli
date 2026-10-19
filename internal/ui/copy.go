@@ -19,6 +19,7 @@ import (
 //
 //   drag          copies the selection, without gutters or card padding
 //   click a code block   copies its code
+//   click a link  opens it in the browser (links.go)
 //   double-click  copies the whole message, command, or output under the cursor
 
 var selectionStyle = lipgloss.NewStyle().Background(lipgloss.Color("#4A3F6B")).Foreground(cream)
@@ -175,6 +176,11 @@ func (m *model) mouseUp(msg tea.MouseReleaseMsg) tea.Cmd {
 	ref := m.rows[s.anchor.row]
 	double := time.Since(m.lastClick.at) < doubleClick && m.lastClick.row == s.anchor.row
 	m.lastClick.at, m.lastClick.row = time.Now(), s.anchor.row
+	if !double && !ref.code {
+		if link := m.linkAt(s.anchor); link != "" {
+			return m.openLink(link)
+		}
+	}
 	if ref.entry < 0 || !(double || ref.code) {
 		return nil
 	}

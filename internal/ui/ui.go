@@ -142,6 +142,7 @@ type model struct {
 	}
 	flashSeq               uint64
 	clipboard              func(string) error
+	openURL                func(string) error
 	clipboardImage         func(context.Context) (core.Image, error)
 	attachments            []attachment // images pasted into the draft
 	imageSeq               int          // the last [Image #N] number handed out in this draft
@@ -248,7 +249,7 @@ func newModel(cfg Config) *model {
 	input.Focus()
 	m := &model{
 		cfg: cfg, input: input, viewport: viewport.New(),
-		status: "Ready", lifetime: ctx, stop: stop, now: time.Now(), clipboard: systemClipboard, clipboardImage: images.Clipboard,
+		status: "Ready", lifetime: ctx, stop: stop, now: time.Now(), clipboard: systemClipboard, openURL: openBrowser, clipboardImage: images.Clipboard,
 		knownModels: append([]core.ModelOption(nil), cfg.EnabledModels...),
 		turnStart:   -1,
 	}
@@ -354,6 +355,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.requestWordmark(), m.requestCellSize())
 	case copiedMsg:
 		return m, m.receiveCopied(msg)
+	case linkOpenedMsg:
+		m.receiveLinkOpened(msg)
+		return m, nil
 	case imagesMsg:
 		return m, m.receiveImages(msg)
 	case tea.PasteMsg:
@@ -633,7 +637,7 @@ func (m *model) submit() tea.Cmd {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **click** a link to open it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
 		case "/ask", "/ask text":
 			if !m.cfg.Demo {
 				m.notice = "Unknown command. /help lists the essentials."
