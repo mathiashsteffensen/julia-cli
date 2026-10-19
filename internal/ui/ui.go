@@ -124,6 +124,7 @@ type tickMsg time.Time
 type model struct {
 	cfg           Config
 	input         textarea.Model
+	composerRows  int // input rows the current layout was measured with
 	viewport      viewport.Model
 	spinner       activityModel
 	width         int
@@ -242,6 +243,12 @@ func newModel(cfg Config) *model {
 	})
 	input.ShowLineNumbers = false
 	input.CharLimit = 65536
+	// The composer grows with its draft; resize caps it at half the screen.
+	input.DynamicHeight = true
+	input.MinHeight = 2
+	// Without this the textarea treats MaxHeight as a line limit and stops
+	// accepting newlines once the draft fills the visible rows.
+	input.MaxContentHeight = 65536
 	input.SetHeight(2)
 	input.SetVirtualCursor(true)
 	input.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "shift+enter", "ctrl+j"))
@@ -312,6 +319,15 @@ func waitStream(stream <-chan streamMsg, ctx context.Context) tea.Cmd {
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	if m.input.Height() != m.composerRows {
+		// The draft grew or shrank a row: give the transcript the difference.
+		m.resize(m.width, m.height)
+	}
+	return next, cmd
+}
+
+func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case weeklyUsageMsg:
 		m.receiveWeeklyUsage(msg)

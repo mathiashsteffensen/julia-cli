@@ -75,7 +75,12 @@ func (m *model) resize(width, height int) {
 	if m.hasSidebar() {
 		m.mainWidth -= 29
 	}
-	m.input.SetWidth(max(8, m.mainWidth-m.composerStyle().GetHorizontalFrameSize()))
+	// The whole composer panel, frame and title row included, stays within
+	// half the screen however long the draft gets.
+	composer := m.composerStyle()
+	m.input.MaxHeight = max(2, m.height/2-composer.GetVerticalFrameSize()-1)
+	m.input.SetWidth(max(8, m.mainWidth-composer.GetHorizontalFrameSize()))
+	m.composerRows = m.input.Height()
 	// The placeholder emits just one end-of-buffer space. Fill its whole row
 	// here so the textarea viewport cannot pad it with the terminal background.
 	inputStyles := m.input.Styles()
