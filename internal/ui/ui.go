@@ -61,7 +61,7 @@ type Config struct {
 	Questions       <-chan QuestionRequest
 	Demo            bool
 	// NamedProviders are the configured OpenAI-compatible providers by id,
-	// each true when it takes a reasoning effort (OpenRouter).
+	// each true when it takes a reasoning effort.
 	NamedProviders map[string]bool
 	Models         func(context.Context) ([]core.ModelOption, error)
 	// EnabledModels are the configured enabled_models, which the picker lists

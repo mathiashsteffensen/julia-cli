@@ -88,10 +88,8 @@ func TestModelAndReasoningConfiguration(t *testing.T) {
 			t.Fatalf("accepted invalid reasoning %q", effort)
 		}
 	}
-	for _, provider := range []string{"openai", "anthropic", "google", "local"} {
+	for _, provider := range []string{"openai", "anthropic", "google"} {
 		cfg := Default()
-		// A named provider not served by OpenRouter takes no effort either.
-		cfg.Providers = []ProviderConfig{{ID: "local", BaseURL: "http://localhost:1234/v1"}}
 		cfg.Provider, cfg.Model, cfg.Reasoning = provider, "vendor-model", "medium"
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("silently accepted unmapped reasoning for %s", provider)
@@ -394,8 +392,8 @@ func TestSubagentModelConfiguration(t *testing.T) {
 		{`{"scout": "minimax/m3"}`, `subagents.scout "minimax/m3" must be provider/<model-id>`},
 		{`{"scout": "openai"}`, `subagents.scout "openai" needs a model ID`},
 		{`{"scout": "openrouter/` + CompatibleDecisionsModel + `"}`, "decisions-only"},
-		{`{"scout": {"id": "openai/m", "reasoning": "high"}}`, "reasoning is configurable for Codex and OpenRouter"},
-		{`{"scout": {"id": "openrouter/m", "reasoning": "extreme"}}`, "OpenRouter reasoning must be one of"},
+		{`{"scout": {"id": "openai/m", "reasoning": "high"}}`, "reasoning is configurable for Codex and your providers"},
+		{`{"scout": {"id": "openrouter/m", "reasoning": "extreme"}}`, "reasoning for a named provider must be one of"},
 		{`{"scout": {"id": "codex/m", "effort": "high"}}`, `unknown field "effort"`},
 		{`{"Scout": "codex/m"}`, `subagents "Scout" is not a role name, which is at most 32 lowercase letters, digits or hyphens, starting with a letter`},
 		{`{"2nd": "codex/m"}`, `subagents "2nd" is not a role name`},
@@ -445,8 +443,8 @@ func TestMemoryConfiguration(t *testing.T) {
 		{`{"model":"minimax/m3"}`, `memory.model "minimax/m3" must be provider/<model-id>`},
 		{`{"model":"openai"}`, `memory.model "openai" needs a model ID`},
 		{`{"model":"openrouter/` + CompatibleDecisionsModel + `"}`, "decisions-only"},
-		{`{"model":{"id":"openai/m","reasoning":"high"}}`, "reasoning is configurable for Codex and OpenRouter"},
-		{`{"model":{"id":"openrouter/m","reasoning":"extreme"}}`, "OpenRouter reasoning must be one of"},
+		{`{"model":{"id":"openai/m","reasoning":"high"}}`, "reasoning is configurable for Codex and your providers"},
+		{`{"model":{"id":"openrouter/m","reasoning":"extreme"}}`, "reasoning for a named provider must be one of"},
 		{`{"model":{"id":"codex/m","effort":"high"}}`, `unknown field "effort"`},
 		{`{"model":""}`, `memory.model "" must be provider/<model-id>`},
 		{`{"index_bytes":4095}`, "memory.index_bytes must be between 4096 and 65536"},
@@ -525,8 +523,8 @@ func TestNamedProviders(t *testing.T) {
 			t.Errorf("KeyEnv(%s) = %q, want %q", provider, got, want)
 		}
 	}
-	// Only Codex and OpenRouter take a reasoning effort.
-	for provider, want := range map[string]bool{"codex": true, "openrouter": true, "local": false, "openai": false, "missing": false} {
+	// Codex and every named provider take a reasoning effort.
+	for provider, want := range map[string]bool{"codex": true, "openrouter": true, "local": true, "openai": false, "missing": false} {
 		if got := cfg.SupportsReasoning(provider); got != want {
 			t.Errorf("SupportsReasoning(%s) = %v, want %v", provider, got, want)
 		}
@@ -534,8 +532,12 @@ func TestNamedProviders(t *testing.T) {
 	if cfg.ReasoningFor("openrouter", "vendor/model") != "high" {
 		t.Fatal("the named provider's model lost its reasoning")
 	}
-	if _, err := Load(writeConfig(t, `{"providers":[{"id":"local","base_url":"http://localhost:1234/v1"}],"enabled_models":[{"id":"local/m","reasoning":"high"}]}`)); err == nil || !strings.Contains(err.Error(), "reasoning is configurable for Codex and OpenRouter providers only") {
+	// A named provider off OpenRouter takes an effort too, from the same set.
+	if _, err := Load(writeConfig(t, `{"providers":[{"id":"local","base_url":"http://localhost:1234/v1"}],"enabled_models":[{"id":"local/m","reasoning":"high"}]}`)); err != nil {
 		t.Fatalf("effort on a provider that is not OpenRouter: %v", err)
+	}
+	if _, err := Load(writeConfig(t, `{"providers":[{"id":"local","base_url":"http://localhost:1234/v1"}],"enabled_models":[{"id":"local/m","reasoning":"turbo"}]}`)); err == nil || !strings.Contains(err.Error(), "reasoning for a named provider must be one of") {
+		t.Fatalf("unknown effort on a named provider: %v", err)
 	}
 	// The decisions-only model reviews on any named provider but cannot chat.
 	if _, err := Load(writeConfig(t, `{"providers":[{"id":"local","base_url":"http://localhost:1234/v1"}],"model":"local/`+CompatibleDecisionsModel+`"}`)); err == nil || !strings.Contains(err.Error(), "decisions-only") {

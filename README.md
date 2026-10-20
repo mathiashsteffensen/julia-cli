@@ -96,7 +96,9 @@ terminal (OSC 52) over SSH.
 
 Models are named `provider/<model-id>`, in the config and in `--model`. A bare
 `codex` is the model your Codex is configured with; every other provider needs a
-model ID. Reasoning effort is only supported on Codex and OpenRouter. Endpoints
+model ID. Reasoning effort is supported on Codex and your `providers`, which are
+sent `reasoning_effort` only when you pick one; an endpoint whose model has no
+reasoning may ignore it or refuse the request. Endpoints
 must be HTTPS unless they are on loopback.
 
 OpenAI-compatible endpoints are named in the config's `providers`, and each `id`

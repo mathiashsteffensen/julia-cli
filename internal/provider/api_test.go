@@ -194,15 +194,23 @@ func TestAPICompactionRetainsRuntimeInstructionsAndIsolatesReview(t *testing.T) 
 	}
 }
 
-func TestUnsupportedOpenRouterEffortErrorIsReturned(t *testing.T) {
+// Every named provider is sent a chosen effort, OpenRouter or not, and an
+// endpoint that refuses it reports why.
+func TestUnsupportedEffortErrorIsReturned(t *testing.T) {
 	model := &scriptedAPIModel{streamErr: errors.New("unsupported reasoning effort for this model")}
-	backend := &API{Model: model, OpenRouter: true, Reasoning: "high"}
+	backend := &API{Model: model, Provider: "compatible", Reasoning: "high"}
 	err := backend.Run(context.Background(), &core.Session{}, core.Prompt{Text: "Inspect the fixture"}, &testTools{}, func(core.Event) {})
 	if err == nil || !strings.Contains(err.Error(), "unsupported reasoning effort") {
 		t.Fatalf("unsupported model effort error was hidden: %v", err)
 	}
 	if len(model.calls) == 0 || len(model.calls[0].ProviderOptions) == 0 {
-		t.Fatal("selected OpenRouter effort was not applied to the model call")
+		t.Fatal("selected effort was not applied to the model call")
+	}
+	// Without a chosen effort nothing is sent for the endpoint to refuse.
+	model = &scriptedAPIModel{streamErr: errors.New("stop")}
+	_ = (&API{Model: model, Provider: "compatible"}).Run(context.Background(), &core.Session{}, core.Prompt{Text: "Inspect the fixture"}, &testTools{}, func(core.Event) {})
+	if len(model.calls) == 0 || len(model.calls[0].ProviderOptions) != 0 {
+		t.Fatalf("an effort was sent though none was chosen: %+v", model.calls)
 	}
 }
 

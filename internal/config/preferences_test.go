@@ -44,9 +44,8 @@ func TestRememberedReasoningIsPerProvider(t *testing.T) {
 
 func TestRememberedReasoningIgnoredWhenInvalid(t *testing.T) {
 	cfg := Default()
-	cfg.Providers = []ProviderConfig{{ID: "local", BaseURL: "https://example.com/v1"}}
-	cfg.Provider, cfg.Model = "local", "vendor/model"
-	cfg.ApplyStartingReasoning(Preferences{Reasoning: map[string]string{"local": "high"}})
+	cfg.Provider, cfg.Model = "openai", "vendor-model"
+	cfg.ApplyStartingReasoning(Preferences{Reasoning: map[string]string{"openai": "high"}})
 	if cfg.Reasoning != "" {
 		t.Fatalf("applied unsupported effort %q", cfg.Reasoning)
 	}

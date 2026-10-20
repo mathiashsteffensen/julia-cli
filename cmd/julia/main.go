@@ -60,7 +60,7 @@ func run() error {
 	flags.StringVar(&dir, "dir", ".", "workspace directory")
 	flags.StringVar(&prompt, "prompt", "", "run one task without the TUI")
 	flags.StringVar(&modelFlag, "model", "", "provider/<model-id>: codex, openai, anthropic, google or the id of one of your providers (bare codex uses your Codex model)")
-	flags.StringVar(&reasoning, "reasoning", "", "Reasoning effort (Codex model-supported value or OpenRouter value; model support varies)")
+	flags.StringVar(&reasoning, "reasoning", "", "Reasoning effort (Codex model-supported value, or reasoning_effort for your providers; model support varies)")
 	flags.StringVar(&mode, "mode", "", "auto, ask, read-only, or yolo (no sandbox, no review: for an unattended container)")
 	flags.StringVar(&resume, "resume", "", "resume a saved session ID")
 	flags.StringVar(&timeout, "timeout", "", "maximum duration per task, e.g. 4h")

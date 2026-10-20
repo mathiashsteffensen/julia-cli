@@ -445,7 +445,7 @@ func (m *model) pickerChoices() []settingChoice {
 		choices = append(choices, settingChoice{value: "", label: "Default", detail: detail, active: m.cfg.Session.Reasoning == ""})
 		if m.cfg.NamedProviders[m.cfg.Session.Provider] {
 			for _, effort := range config.OpenRouterReasoningEfforts() {
-				choices = append(choices, settingChoice{value: effort, label: effort, detail: "OpenRouter effort · model support unverified", active: effort == m.cfg.Session.Reasoning})
+				choices = append(choices, settingChoice{value: effort, label: effort, detail: "reasoning_effort · model support unverified", active: effort == m.cfg.Session.Reasoning})
 			}
 		} else if option := m.currentModelOption(); option != nil {
 			for _, effort := range option.ReasoningEfforts {

@@ -169,7 +169,9 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 	// Rebuild this on every Run; a resumed session must not retain a stale
 	// environment or policy. Agent-level system instructions survive compaction.
 	agentOptions := []fantasy.AgentOption{fantasy.WithSystemPrompt(sessionInstructions(s)), fantasy.WithTools(wrapped...), fantasy.WithStopConditions(fantasy.StepCountIs(1)), fantasy.WithMaxRetries(2), fantasy.WithMaxOutputTokens(a.stepOutputTokens())}
-	if a.OpenRouter {
+	// A named provider gets reasoning_effort only when an effort is chosen; an
+	// endpoint without reasoning ignores it or rejects it, as the user decided.
+	if a.Provider == "compatible" {
 		if effort := a.reasoningEffort(); effort != "" {
 			agentOptions = append(agentOptions, fantasy.WithProviderOptions(a.reasoningOptions(effort)))
 		}
@@ -608,7 +610,7 @@ func (a *API) reasoningEffort() string {
 	}
 	// Kimi K3's documented provider default is max. Send it explicitly so
 	// OpenRouter and its selected upstream apply the same default consistently.
-	if isKimiK3Model(a.Model.Model()) {
+	if a.OpenRouter && isKimiK3Model(a.Model.Model()) {
 		return string(openai.ReasoningEffortMax)
 	}
 	return ""
@@ -689,7 +691,7 @@ func (a *API) Complete(ctx context.Context, instructions, prompt string, schema 
 // endpoint's default.
 func (a *API) completionOptions() fantasy.ProviderOptions {
 	options := a.compactionOptions()
-	if !a.OpenRouter || a.Reasoning == "" {
+	if a.Provider != "compatible" || a.Reasoning == "" {
 		return options
 	}
 	if compat, ok := options[openaicompat.Name].(*openaicompat.ProviderOptions); ok {

@@ -472,12 +472,12 @@ func (c Config) validateReasoning(provider, effort string) error {
 		return nil
 	}
 	if !c.SupportsReasoning(provider) {
-		return errors.New("reasoning is configurable for Codex and OpenRouter providers only")
+		return errors.New("reasoning is configurable for Codex and your providers only")
 	}
-	// Codex advertises effort names per model as an open string. OpenRouter
-	// documents this shared set for its reasoning_effort request parameter.
+	// Codex advertises effort names per model as an open string. A named
+	// provider is sent reasoning_effort, whose values OpenRouter documents.
 	if provider != "codex" && !contains(OpenRouterReasoningEfforts(), effort) {
-		return errors.New("OpenRouter reasoning must be one of none, minimal, low, medium, high, xhigh, or max")
+		return errors.New("reasoning for a named provider must be one of none, minimal, low, medium, high, xhigh, or max")
 	}
 	if len(effort) > 64 || strings.IndexFunc(effort, func(r rune) bool {
 		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_')
@@ -491,15 +491,11 @@ func IsDecisionsOnlyCompatibleModel(model string) bool {
 	return model == CompatibleDecisionsModel
 }
 
-// SupportsReasoning reports providers where JULIA can send a mapped effort
-// setting instead of silently ignoring it: Codex, and a named provider
-// served by OpenRouter.
+// SupportsReasoning reports providers where JULIA sends a chosen effort
+// instead of silently ignoring it: Codex, and every named provider, which is
+// sent reasoning_effort whether or not its model supports it.
 func (c Config) SupportsReasoning(provider string) bool {
-	if provider == "codex" {
-		return true
-	}
-	p, ok := c.Endpoint(provider)
-	return ok && IsOpenRouter(p.BaseURL)
+	return provider == "codex" || c.IsNamed(provider)
 }
 
 // IsOpenRouter reports whether baseURL is an OpenRouter endpoint.
@@ -513,7 +509,8 @@ func IsOpenRouter(baseURL string) bool {
 }
 
 // OpenRouterReasoningEfforts returns the reasoning_effort values accepted by
-// OpenRouter's chat-completions API. Model-specific support can still vary.
+// OpenRouter's chat-completions API, which every named provider is offered.
+// Model and endpoint support can still vary.
 func OpenRouterReasoningEfforts() []string {
 	return []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 }
