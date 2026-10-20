@@ -295,15 +295,74 @@ type Question struct {
 
 // Answer is the human's reply to a Question. A picked option has Option set to
 // its 1-based index and Text set to its label; a written answer has Option 0.
-// Skipped means the user declined to answer; Text is then empty.
+// Skipped means the user declined to answer; Text is then empty. The reply to
+// a Review carries Triage instead, one entry per finding, in order.
 type Answer struct {
 	Text    string
 	Option  int
 	Skipped bool
+	Triage  []Triage
 }
 
 // Asker puts a Question in front of the human and waits. It honors cancellation.
 type Asker func(context.Context, Question) (Answer, error)
+
+// Finding is one problem a code review found, as the agent reports it.
+// Severity is P0, P1 or P2; Location is path:line; Detail is the evidence and
+// the smallest fix.
+type Finding struct {
+	Severity string `json:"severity"`
+	Title    string `json:"title"`
+	Location string `json:"location,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+// Review is a set of findings the agent puts before the human to triage.
+type Review struct {
+	Summary  string    `json:"summary,omitempty"`
+	Findings []Finding `json:"findings"`
+}
+
+// What the human decided for one finding. TriageFixed means they fixed it
+// themselves; TriageReply carries their own words instead of a verdict.
+const (
+	TriageOpen   = "open"
+	TriageFix    = "fix"
+	TriageIgnore = "ignore"
+	TriageFixed  = "fixed"
+	TriageReply  = "reply"
+)
+
+// Triage is the human's decision on one finding; an empty Decision is open.
+type Triage struct {
+	Decision string
+	Reply    string
+}
+
+// Triager puts a Review in front of the human and waits for an Answer whose
+// Triage has one entry per finding. It honors cancellation.
+type Triager func(context.Context, Review) (Answer, error)
+
+// ReviewTool is the model-facing name of the tool that hands review findings
+// to the user for triage.
+const ReviewTool = "ReviewFindings"
+
+// ReviewResult is the JSON object a ReviewTool call returns to the model, and
+// the shape the UI and session history decode to show the decisions again.
+type ReviewResult struct {
+	Decisions []FindingDecision `json:"decisions,omitempty"`
+	Skipped   bool              `json:"skipped,omitempty"`
+	Note      string            `json:"note,omitempty"`
+}
+
+// FindingDecision is one finding's outcome: Finding is its 1-based index and
+// Decision one of the Triage values; Reply is set for TriageReply.
+type FindingDecision struct {
+	Finding  int    `json:"finding"`
+	Title    string `json:"title"`
+	Decision string `json:"decision"`
+	Reply    string `json:"reply,omitempty"`
+}
 
 // QuestionTool is the model-facing name of the tool that asks the user a question.
 const QuestionTool = "AskUserQuestion"

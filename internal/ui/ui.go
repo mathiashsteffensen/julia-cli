@@ -274,7 +274,7 @@ func newModel(cfg Config) *model {
 		if cfg.Session.Usage == (core.SessionUsage{}) {
 			cfg.Session.Usage = demoUsage()
 		}
-		m.notice = "Preview · offline · no tools or provider calls · try /ask"
+		m.notice = "Preview · offline · no tools or provider calls · try /ask or /review"
 		if cfg.Session.Provider == "codex" {
 			m.weekly.value = &core.WeeklyUsage{RemainingPercent: 61, ResetsAt: m.now.Add(3 * 24 * time.Hour)}
 		}
@@ -643,6 +643,15 @@ func (m *model) submit() tea.Cmd {
 		m.notice = "Draft kept. Send when the task finishes, or Esc to interrupt."
 		return nil
 	}
+	if text, ok := reviewRequest(prompt); ok {
+		if m.cfg.Demo {
+			review := demoReview()
+			m.input.Reset()
+			return m.openQuestion(QuestionRequest{Review: &review}, true)
+		}
+		// From here it is an ordinary message, the same one a user could type.
+		prompt = text
+	}
 	if strings.HasPrefix(prompt, "/") {
 		if handled, cmd := m.settingsCommand(prompt); handled {
 			return cmd
@@ -655,7 +664,7 @@ func (m *model) submit() tea.Cmd {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **click** a link to open it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **click** a link to open it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/review` reviews your uncommitted changes · `/review WHAT` reviews what you name · you decide each finding in a card\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
 		case "/ask", "/ask text":
 			if !m.cfg.Demo {
 				m.notice = "Unknown command. /help lists the essentials."

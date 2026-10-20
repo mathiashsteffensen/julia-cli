@@ -52,22 +52,29 @@ func WithQuestions(base core.ToolExecutor, ask core.Asker) core.ToolExecutor {
 	if ask == nil {
 		return base
 	}
-	return &questionExecutor{base: base, ask: ask, slot: make(chan struct{}, 1)}
+	return WithInteractions(base, ask, nil)
 }
 
 type questionExecutor struct {
-	base core.ToolExecutor
-	ask  core.Asker
-	slot chan struct{}
+	base   core.ToolExecutor
+	ask    core.Asker
+	triage core.Triager
+	slot   chan struct{}
 }
 
 func (e *questionExecutor) Definitions() []core.ToolDefinition {
 	definitions := append([]core.ToolDefinition(nil), e.base.Definitions()...)
-	return append(definitions, QuestionDefinition())
+	if e.ask != nil {
+		definitions = append(definitions, QuestionDefinition())
+	}
+	if e.triage != nil {
+		definitions = append(definitions, ReviewDefinition())
+	}
+	return definitions
 }
 
 func (e *questionExecutor) Execute(ctx context.Context, call core.ToolCall) core.ToolResult {
-	if call.Name != core.QuestionTool {
+	if !(call.Name == core.QuestionTool && e.ask != nil) && !(call.Name == core.ReviewTool && e.triage != nil) {
 		return e.base.Execute(ctx, call)
 	}
 	// One question on screen at a time, even if a provider issues tool calls
@@ -80,6 +87,9 @@ func (e *questionExecutor) Execute(ctx context.Context, call core.ToolCall) core
 	}
 	if err := ctx.Err(); err != nil {
 		return failure(err)
+	}
+	if call.Name == core.ReviewTool {
+		return e.review(ctx, call)
 	}
 	question, err := parseQuestion(call.Arguments)
 	if err != nil {

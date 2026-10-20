@@ -75,11 +75,11 @@ func askQuestion(ctx context.Context, executor core.ToolExecutor, arguments stri
 	return executor.Execute(ctx, core.ToolCall{ID: "call-1", Name: core.QuestionTool, Arguments: json.RawMessage(arguments)})
 }
 
-// askerBlocked reports whether any goroutine is inside the UI asker, which has
+// askerBlocked reports whether any goroutine is inside the UI bridge, which has
 // no worker goroutines: a frame there means a caller is still waiting.
 func askerBlocked() bool {
 	buf := make([]byte, 1<<20)
-	return bytes.Contains(buf[:runtime.Stack(buf, true)], []byte("ui.NewAsker"))
+	return bytes.Contains(buf[:runtime.Stack(buf, true)], []byte("ui.NewBridge"))
 }
 
 func eventually(t *testing.T, what string, condition func() bool) {

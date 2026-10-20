@@ -52,6 +52,8 @@ type questionState struct {
 	// not show at all. A shortcut never answers with one of those: it highlights
 	// it first, so the user sees the full text before choosing.
 	cut []bool
+	// review is set when the card triages review findings instead of asking.
+	review *reviewState
 }
 
 // cardHit maps a run of card lines (inclusive) to the option row it shows.
@@ -72,7 +74,10 @@ func newQuestionState(request QuestionRequest) *questionState {
 	input.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "shift+enter", "ctrl+j"))
 	input.SetStyles(questionInputStyles())
 	input.Placeholder = "Write your own answer…"
-	if q.freeform() {
+	if request.Review != nil {
+		q.review = newReviewState(*request.Review)
+		input.Placeholder = "Tell JULIA what to do about this finding…"
+	} else if q.freeform() {
 		input.Placeholder = "Type your answer…"
 		q.writing = true
 	}
@@ -95,7 +100,7 @@ func questionInputStyles() textarea.Styles {
 }
 
 func (q *questionState) options() []core.QuestionOption { return q.request.Question.Options }
-func (q *questionState) freeform() bool                 { return len(q.options()) == 0 }
+func (q *questionState) freeform() bool                 { return len(q.options()) == 0 && q.review == nil }
 func (q *questionState) ownRow() int                    { return len(q.options()) }
 func (q *questionState) rows() int {
 	if q.freeform() {
@@ -200,9 +205,12 @@ func (m *model) answerQuestion(answer core.Answer) tea.Cmd {
 	if q == nil {
 		return nil
 	}
-	if q.demo {
+	switch {
+	case q.demo && q.review != nil:
+		m.recordDemoReview(q, answer)
+	case q.demo:
 		m.recordDemoQuestion(q, answer)
-	} else {
+	default:
 		replyQuestion(q.request, answer)
 	}
 	return m.closeQuestion()
@@ -264,10 +272,19 @@ func (m *model) updateQuestion(msg tea.Msg) tea.Cmd {
 		if time.Since(q.armedAt) < questionGuard {
 			return nil
 		}
+		if q.review != nil {
+			cmd = m.reviewKey(q, msg)
+			break
+		}
 		cmd = m.questionKey(q, msg)
 	case tea.PasteMsg:
 		if time.Since(q.armedAt) < questionGuard {
 			return nil
+		}
+		if q.review != nil {
+			cmd = m.reviewPaste(q, msg)
+			q.notice = ""
+			break
 		}
 		if !q.writing {
 			cmd = m.beginWriting(q)
@@ -390,6 +407,13 @@ func (m *model) clickQuestion(click tea.MouseClickMsg) tea.Cmd {
 	}
 	// The header takes three rows; the card sits below the conversation.
 	line := click.Y - 3 - m.viewport.Height()
+	if q.review != nil {
+		cmd := m.clickReview(q, line, click.X-q.cardLeft)
+		if m.question == q {
+			m.relayoutQuestion()
+		}
+		return cmd
+	}
 	for _, hit := range q.hits {
 		if line < hit.top || line > hit.bottom {
 			continue
@@ -432,7 +456,12 @@ func (m *model) relayoutQuestion() {
 		return
 	}
 	q := m.question
-	q.card, q.hits, q.cardCols = m.questionCard()
+	if q.review != nil {
+		q.card, q.cardCols = m.reviewCard()
+		q.hits = nil
+	} else {
+		q.card, q.hits, q.cardCols = m.questionCard()
+	}
 	q.cardLeft = m.margin()
 	m.syncQuestionLayout()
 }

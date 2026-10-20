@@ -311,6 +311,14 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 				break
 			}
 		}
+		if item.call != nil && item.call.Name == core.ReviewTool {
+			if rendered, ok := m.renderReviewEntry(item, w); ok {
+				for _, line := range strings.Split(rendered, "\n") {
+					add(line, rowMeta{gutter: 2})
+				}
+				break
+			}
+		}
 		name, detail := "Tool", item.text
 		if item.call != nil {
 			name, detail = item.call.Name, toolSummary(*item.call)
@@ -766,6 +774,9 @@ func (m *model) bottomView() string {
 	}
 	if m.question != nil {
 		composerTitle = label.Render("DRAFT") + note.Render(" · kept while you answer")
+		if m.question.review != nil {
+			composerTitle = label.Render("DRAFT") + note.Render(" · kept while you review")
+		}
 	}
 	if m.pending != nil {
 		composerTitle = ink(panel, coral).Render("APPROVAL · y / Enter")
@@ -1201,6 +1212,9 @@ func (m *model) statusLine() string {
 	}
 	if m.question != nil {
 		status = violetStyle.Render("◆ Waiting for your answer")
+		if r := m.question.review; r != nil {
+			status = violetStyle.Render("◆ Waiting for your decisions") + mutedStyle.Render(fmt.Sprintf(" · %d of %d findings decided", r.decidedCount(), len(r.triage)))
+		}
 	}
 	if m.notice != "" {
 		status = mutedStyle.Render(sanitize(m.notice))
@@ -1219,13 +1233,17 @@ func (m *model) footer() string {
 		if m.width < 36 {
 			return mutedStyle.Render("ctrl+c stops")
 		}
+		verb, where := "answering", "answer above"
+		if m.question.review != nil {
+			verb, where = "reviewing", "decide above"
+		}
 		if m.width < 62 {
-			return mutedStyle.Render("answer above · ctrl+c stops")
+			return mutedStyle.Render(where + " · ctrl+c stops")
 		}
 		if m.width < 78 {
-			return violetStyle.Render("answering") + mutedStyle.Render("  ctrl+c stops the task")
+			return violetStyle.Render(verb) + mutedStyle.Render("  ctrl+c stops the task")
 		}
-		return violetStyle.Render("answering") + mutedStyle.Render("  ctrl+c stops the task  mouse wheel scrolls the conversation")
+		return violetStyle.Render(verb) + mutedStyle.Render("  ctrl+c stops the task  mouse wheel scrolls the conversation")
 	}
 	if m.pending != nil {
 		if m.width < 40 {

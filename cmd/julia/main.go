@@ -213,7 +213,7 @@ func run() error {
 	default:
 		return errors.New("--memory must be off, read or write")
 	}
-	demoTools := append(tools.Definitions(roles, linearToken != ""), tools.QuestionDefinition())
+	demoTools := append(tools.Definitions(roles, linearToken != ""), tools.QuestionDefinition(), tools.ReviewDefinition())
 	if snapshot > 0 {
 		fmt.Print(ui.RenderDemo(snapshot, 40, demoTools...))
 		return nil
@@ -282,12 +282,12 @@ func run() error {
 	}
 	// The tool is registered in every run so a session's tool catalog is the same
 	// in the TUI and headless; with nobody to answer, a headless question is skipped.
-	ask, questions := headlessAsker, (<-chan ui.QuestionRequest)(nil)
+	ask, triage, questions := headlessAsker, headlessTriager, (<-chan ui.QuestionRequest)(nil)
 	if prompt == "" {
-		ask, questions = ui.NewAsker()
+		ask, triage, questions = ui.NewBridge()
 	}
 	duration, _ := time.ParseDuration(cfg.Timeout)
-	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path), linearToken: linearToken, memory: memoryStore, memoryReadOnly: memoryFlag == "read", consolidating: consolidate}
+	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, triage: triage, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path), linearToken: linearToken, memory: memoryStore, memoryReadOnly: memoryFlag == "read", consolidating: consolidate}
 	if consolidate {
 		// The pass rewrites notes and nothing else: no one is asked, and a
 		// note it rewrites keeps its unverified mark, as a yolo save would.
@@ -484,6 +484,7 @@ type runtimeBackend struct {
 	cfg             config.Config
 	approve, review core.Approver
 	ask             core.Asker
+	triage          core.Triager
 	timeout         time.Duration
 	parent          context.Context
 	// searchKeyFile holds the Firecrawl key saved by WebSearch's first-use setup.
@@ -534,10 +535,18 @@ func headlessAsker(context.Context, core.Question) (core.Answer, error) {
 	return core.Answer{Skipped: true}, nil
 }
 
+// headlessTriager skips a review the same way, so the model reports its findings.
+func headlessTriager(context.Context, core.Review) (core.Answer, error) {
+	return core.Answer{Skipped: true}, nil
+}
+
 func (r *runtimeBackend) Definitions() []core.ToolDefinition {
 	definitions := tools.Definitions(r.subagentRoles(), r.linearToken != "")
 	if r.ask != nil {
 		definitions = append(definitions, tools.QuestionDefinition())
+	}
+	if r.triage != nil {
+		definitions = append(definitions, tools.ReviewDefinition())
 	}
 	if r.memory != nil {
 		definitions = append(definitions, tools.MemoryDefinition())
@@ -755,8 +764,8 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		})
 	}
 	// Outermost: subagent children receive the base executor and so can never ask the user.
-	agentTools = tools.WithQuestions(agentTools, r.ask)
-	if r.ask != nil {
+	agentTools = tools.WithInteractions(agentTools, r.ask, r.triage)
+	if r.ask != nil || r.triage != nil {
 		// The user's answers are their own words: later approvals this turn are judged with them in view.
 		agentTools = withAnswerContext(agentTools, task, executor.SetTask)
 	}

@@ -30,7 +30,8 @@ defaults and project preferences.
 - Research: compare evidence, seek counterevidence, prefer primary sources, cite
   URLs, and separate findings from inference.
 - Reviews: report evidenced problems with locations and consequences; never invent
-  findings.
+  findings. When the user asked for the review and there are findings, hand them
+  over with ReviewFindings and act on each decision before you report.
 
 Report completed work, the checks actually run, and material limitations. Never
 claim a command, check, deployment, or external action succeeded without tool

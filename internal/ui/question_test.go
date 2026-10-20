@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -180,7 +181,7 @@ func TestPickingOptionsByKeys(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m, replies := askModel(t, sampleChoices)
 			press(m, tc.keys...)
-			if got := mustAnswer(t, replies); got != tc.want {
+			if got := mustAnswer(t, replies); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("got %+v, want %+v", got, tc.want)
 			}
 			if m.question != nil {
@@ -208,7 +209,7 @@ func TestWritingOwnAnswerFromTheOptionRow(t *testing.T) {
 	}
 	typeText(m, "  Use DuckDB instead ")
 	press(m, "enter")
-	if got := mustAnswer(t, replies); got != (core.Answer{Text: "Use DuckDB instead"}) {
+	if got := mustAnswer(t, replies); !reflect.DeepEqual(got, (core.Answer{Text: "Use DuckDB instead"})) {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -221,7 +222,7 @@ func TestTypingStartsAnAnswerWithoutNavigating(t *testing.T) {
 		t.Fatalf("typing did not move into the answer field: %+v", m.question)
 	}
 	press(m, "enter")
-	if got := mustAnswer(t, replies); got != (core.Answer{Text: "Neither"}) {
+	if got := mustAnswer(t, replies); !reflect.DeepEqual(got, (core.Answer{Text: "Neither"})) {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -283,7 +284,7 @@ func TestAltEnterAddsALineAndEnterSendsTheWholeAnswer(t *testing.T) {
 		t.Fatalf("both lines of the answer should be visible while typing:\n%s", card)
 	}
 	press(m, "enter")
-	if got := mustAnswer(t, replies); got != (core.Answer{Text: "first\nsecond"}) {
+	if got := mustAnswer(t, replies); !reflect.DeepEqual(got, (core.Answer{Text: "first\nsecond"})) {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -295,7 +296,7 @@ func TestFreeformQuestionStartsInTheField(t *testing.T) {
 	}
 	press(m, "1")
 	press(m, "enter")
-	if got := mustAnswer(t, replies); got != (core.Answer{Text: "1"}) {
+	if got := mustAnswer(t, replies); !reflect.DeepEqual(got, (core.Answer{Text: "1"})) {
 		t.Fatalf("digits are text in a free-form question, got %+v", got)
 	}
 	m, replies = askModel(t, core.Question{Text: "What should the flag be called?"})
@@ -750,7 +751,7 @@ func TestClickingAnOptionPicksIt(t *testing.T) {
 	// Every line a row occupies, description included, activates that row.
 	hit := m.question.hits[1]
 	click(m, hit.bottom)
-	if got := mustAnswer(t, replies); got != (core.Answer{Text: "Postgres", Option: 2}) {
+	if got := mustAnswer(t, replies); !reflect.DeepEqual(got, (core.Answer{Text: "Postgres", Option: 2})) {
 		t.Fatalf("got %+v", got)
 	}
 	// The chrome around the rows does nothing.

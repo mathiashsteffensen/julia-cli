@@ -60,11 +60,19 @@ for the full list.
 | Click a code block | Copy its code |
 | Double-click | Copy a whole message, a tool's command, or its output |
 | `/copy`, `/copy code` | Copy the last reply, or its last code block |
+| `/review`, `/review WHAT` | Review your uncommitted changes, or what you name (a commit, a path, a PR), and triage the findings |
 | `/memory` | What JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it |
 | `/clear`, `/help`, `/quit` | New conversation, shortcuts, exit |
 
 During an approval prompt, `y`/Enter allows the action once (a Browser origin, for
 the rest of the turn); any other key denies it.
+
+When you ask for a code review, in your own words or with `/review`, JULIA puts its findings in a review card and waits
+for your call on each one: **Fix**, **Ignore**, **I fixed it**, or **Reply** with your
+own words. ↑↓ moves between findings, ←→ and Enter choose (or `f` `i` `d` `r`), `F`
+marks every open finding Fix, Backspace undoes a decision, and Ctrl+S or the Send row
+hands the decisions back; JULIA then fixes what you marked. Esc skips the review
+(twice once you have decided something). Try it offline with `julia --demo` and `/review`.
 
 Each attached image puts an `[Image #N]` token in your message; delete the token
 to drop the image. Images are scaled to at most 2000 px on the long side and sent

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -19,7 +20,8 @@ const (
 )
 
 // taskContext is what the action reviewer treats as the user's authorization:
-// every user message, plus the user's own answers to questions the agent asked.
+// every user message, plus the user's own answers to questions the agent asked
+// and their decisions on the findings of a review.
 type taskContext struct {
 	mu      sync.Mutex
 	entries []core.TaskEntry
@@ -31,7 +33,7 @@ func newTaskContext(messages []core.Message, prompt string) *taskContext {
 	// A question is answered by the tool message that follows the assistant
 	// message which asked it, once. Matching on the call ID alone would let a
 	// later tool output that reuses an ID pass as the user's reply.
-	var asked map[string]core.Question
+	var asked map[string]core.ToolCall
 	for _, message := range messages {
 		switch message.Role {
 		case "user":
@@ -40,11 +42,9 @@ func newTaskContext(messages []core.Message, prompt string) *taskContext {
 		case "assistant":
 			asked = questionsAsked(message.ToolCalls)
 		case "tool":
-			if question, ok := asked[message.ToolCallID]; ok {
+			if call, ok := asked[message.ToolCallID]; ok {
 				delete(asked, message.ToolCallID)
-				if entry, ok := answerEntry(question, message.Content); ok {
-					t.entries = append(t.entries, entry)
-				}
+				t.entries = append(t.entries, answerEntries(call, message.Content)...)
 			}
 		}
 	}
@@ -52,16 +52,15 @@ func newTaskContext(messages []core.Message, prompt string) *taskContext {
 	return t
 }
 
-// questionsAsked indexes the question calls of one assistant message by call ID,
-// dropping empty IDs and any ID used more than once.
-func questionsAsked(calls []core.ToolCall) map[string]core.Question {
-	asked := make(map[string]core.Question)
+// questionsAsked indexes the question and review calls of one assistant
+// message by call ID, dropping empty IDs and any ID used more than once.
+func questionsAsked(calls []core.ToolCall) map[string]core.ToolCall {
+	asked := make(map[string]core.ToolCall)
 	counts := make(map[string]int)
 	for _, call := range calls {
 		counts[call.ID]++
-		var question core.Question
-		if call.ID != "" && call.Name == core.QuestionTool && json.Unmarshal(call.Arguments, &question) == nil {
-			asked[call.ID] = question
+		if call.ID != "" && (call.Name == core.QuestionTool || call.Name == core.ReviewTool) {
+			asked[call.ID] = call
 		}
 	}
 	for id, n := range counts {
@@ -84,24 +83,81 @@ func (t *taskContext) String() string {
 	return core.EncodeTask(t.entries)
 }
 
-// answered records a finished question call and returns the updated context.
-// It reports false for any other call, a failed call, or a skipped question.
+// answered records a finished question or review call and returns the updated
+// context. It reports false for any other call, a failed call, or one the user
+// skipped or left without a decision.
 func (t *taskContext) answered(call core.ToolCall, result core.ToolResult) (string, bool) {
-	if call.Name != core.QuestionTool || result.IsError {
+	if result.IsError {
 		return "", false
 	}
-	var question core.Question
-	if json.Unmarshal(call.Arguments, &question) != nil {
-		return "", false
-	}
-	entry, ok := answerEntry(question, result.Content)
-	if !ok {
+	entries := answerEntries(call, result.Content)
+	if len(entries) == 0 {
 		return "", false
 	}
 	t.mu.Lock()
-	t.entries = append(t.entries, entry)
+	t.entries = append(t.entries, entries...)
 	t.mu.Unlock()
 	return t.String(), true
+}
+
+// answerEntries records what the user said in reply to one question or review call.
+func answerEntries(call core.ToolCall, content string) []core.TaskEntry {
+	switch call.Name {
+	case core.QuestionTool:
+		var question core.Question
+		if json.Unmarshal(call.Arguments, &question) != nil {
+			return nil
+		}
+		if entry, ok := answerEntry(question, content); ok {
+			return []core.TaskEntry{entry}
+		}
+	case core.ReviewTool:
+		var review core.Review
+		if json.Unmarshal(call.Arguments, &review) != nil {
+			return nil
+		}
+		return reviewEntries(review, content)
+	}
+	return nil
+}
+
+// triageLabels name each decision as the card offered it to the user.
+var triageLabels = map[string]string{core.TriageFix: "Fix", core.TriageIgnore: "Ignore", core.TriageFixed: "I fixed it"}
+
+// reviewEntries records the user's decision on each finding they decided. The
+// finding is the agent's; a picked decision is the user's choice among those
+// the card offered, and a reply is the user's own words.
+func reviewEntries(review core.Review, content string) []core.TaskEntry {
+	var result core.ReviewResult
+	decoder := json.NewDecoder(strings.NewReader(content))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF || result.Skipped {
+		return nil
+	}
+	var entries []core.TaskEntry
+	for _, decision := range result.Decisions {
+		if decision.Finding < 1 || decision.Finding > len(review.Findings) {
+			continue
+		}
+		finding := review.Findings[decision.Finding-1]
+		ask := "Code review finding " + strconv.Itoa(decision.Finding) + " [" + finding.Severity + "] " + finding.Title
+		if finding.Location != "" {
+			ask += " (" + finding.Location + ")"
+		}
+		if finding.Detail != "" {
+			ask += ": " + finding.Detail
+		}
+		entry := core.TaskEntry{AssistantQuestion: clip(strings.TrimSpace(core.VisibleText(ask+"\nFix, ignore, already fixed by you, or reply?", true)), maxContextQuestion)}
+		if label, ok := triageLabels[decision.Decision]; ok {
+			entry.UserSelectedOption = label
+		} else if reply := core.VisibleText(decision.Reply, true); decision.Decision == core.TriageReply && strings.TrimSpace(reply) != "" {
+			entry.UserTypedAnswer = clip(reply, maxContextAnswer)
+		} else {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	return entries
 }
 
 // answerEntry records one answered question. The question and any option text
