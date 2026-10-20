@@ -72,7 +72,7 @@ func TestRuntimeRefreshesInstructionsWithoutExpandingToolAccess(t *testing.T) {
 func TestCLIReasoningAndModelOverridesConfigurationWithoutProviderCalls(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(`{"model":"codex/gpt-6-astra","reasoning":"medium","skill_paths":[]}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"model":"codex/gpt-6-astra","reasoning":"medium","skill_paths":[],"providers":[{"id":"local","base_url":"http://127.0.0.1:1/v1"}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -96,8 +96,11 @@ func TestCLIReasoningAndModelOverridesConfigurationWithoutProviderCalls(t *testi
 		{"unknown provider", []string{"--model", "vendor/model"}, "provider/<model-id>"},
 		{"invalid effort override", []string{"--reasoning", "bad effort"}, "reasoning must"},
 		{"invalid model override", []string{"--model", "codex/ leading-space"}, "model IDs must"},
-		{"API cannot ignore configured effort", []string{"--model", "compatible/vendor/model", "--compatible-base-url", "http://127.0.0.1:1/v1"}, "Codex and OpenRouter-compatible sessions only"},
-		{"explicit empty clears configured effort", []string{"--model", "compatible/vendor/model", "--compatible-base-url", "http://127.0.0.1:1/v1", "--reasoning="}, ""},
+		{"API cannot ignore configured effort", []string{"--model", "local/vendor/model"}, "Codex and OpenRouter providers only"},
+		{"explicit empty clears configured effort", []string{"--model", "local/vendor/model", "--reasoning="}, ""},
+		{"the compatible provider is gone", []string{"--model", "compatible/vendor/model", "--reasoning="}, "provider/<model-id>"},
+		{"removed endpoint flag", []string{"--compatible-base-url", "http://127.0.0.1:1/v1"}, "flag provided but not defined"},
+		{"removed key flag", []string{"--api-key-env", "OPENROUTER_API_KEY"}, "flag provided but not defined"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			os.Args = append([]string{"julia", "--config", path, "--dir", dir, "--snapshot", "40"}, tc.flags...)
@@ -143,7 +146,7 @@ func TestResumeModelAndReasoningPrecedence(t *testing.T) {
 		})
 	}
 	cfg := config.Default()
-	s := &core.Session{Directory: "/workspace", Provider: "compatible", Model: "saved-api"}
+	s := &core.Session{Directory: "/workspace", Provider: "openai", Model: "saved-api"}
 	if err := selectSessionModel(&cfg, s, "/workspace", "", "other-api", false, true); err == nil {
 		t.Fatal("API model switch accepted without history migration")
 	}

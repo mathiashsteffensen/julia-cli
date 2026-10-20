@@ -365,22 +365,41 @@ func TestModelAndReasoningVisibleAcrossLayouts(t *testing.T) {
 	}
 }
 
-func TestCompatibleReasoningVisibleAcrossLayouts(t *testing.T) {
+func TestOpenRouterReasoningVisibleAcrossLayouts(t *testing.T) {
 	for _, size := range [][2]int{{100, 30}, {128, 40}} {
 		m := testModel(t, Config{
-			Session:             &core.Session{ID: "test", Provider: "compatible", Model: "vendor/model", Reasoning: "high"},
-			CompatibleReasoning: true,
+			Session:        &core.Session{ID: "test", Provider: "openrouter", Model: "vendor/model", Reasoning: "high"},
+			NamedProviders: map[string]bool{"openrouter": true},
 		})
 		m.resize(size[0], size[1])
 		view := ansi.Strip(m.View().Content)
 		if !strings.Contains(view, "high") {
-			t.Fatalf("compatible effort hidden at %v", size)
+			t.Fatalf("OpenRouter effort hidden at %v", size)
 		}
 
 		m.cfg.Session.Reasoning = ""
 		view = ansi.Strip(m.View().Content)
 		if !strings.Contains(view, "provider default") || strings.Contains(view, "inherited") {
-			t.Fatalf("compatible default label is wrong at %v: %s", size, view)
+			t.Fatalf("OpenRouter default label is wrong at %v: %s", size, view)
+		}
+	}
+}
+
+func TestReasoningShownOnlyWhereItIsSent(t *testing.T) {
+	named := map[string]bool{"openrouter": true, "local": false}
+	for provider, want := range map[string]bool{"codex": true, "openrouter": true, "local": false, "openai": false, "compatible": false} {
+		if got := showsReasoning(provider, named); got != want {
+			t.Errorf("showsReasoning(%s) = %v, want %v", provider, got, want)
+		}
+	}
+	for _, tc := range []struct{ provider, effort, want string }{
+		{"codex", "", "inherited"},
+		{"openrouter", "", "provider default"},
+		{"local", "", "provider default"},
+		{"openrouter", "high", "high"},
+	} {
+		if got := reasoningDisplay(tc.provider, tc.effort, named); got != tc.want {
+			t.Errorf("reasoningDisplay(%s, %q) = %q, want %q", tc.provider, tc.effort, got, tc.want)
 		}
 	}
 }

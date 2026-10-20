@@ -14,7 +14,7 @@ func TestRememberedReasoningIsPerProvider(t *testing.T) {
 	if err := RememberReasoning(path, "codex", "high"); err != nil {
 		t.Fatal(err)
 	}
-	if err := RememberReasoning(path, "compatible", ""); err != nil {
+	if err := RememberReasoning(path, "openrouter", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := RememberReasoning(path, "codex", "low"); err != nil {
@@ -24,7 +24,7 @@ func TestRememberedReasoningIsPerProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if effort, ok := p.Reasoning["compatible"]; !ok || effort != "" {
+	if effort, ok := p.Reasoning["openrouter"]; !ok || effort != "" {
 		t.Fatalf("default choice not remembered: %+v", p)
 	}
 
@@ -44,8 +44,9 @@ func TestRememberedReasoningIsPerProvider(t *testing.T) {
 
 func TestRememberedReasoningIgnoredWhenInvalid(t *testing.T) {
 	cfg := Default()
-	cfg.Provider, cfg.Model, cfg.CompatibleBaseURL = "compatible", "vendor/model", "https://example.com/v1"
-	cfg.ApplyStartingReasoning(Preferences{Reasoning: map[string]string{"compatible": "high"}})
+	cfg.Providers = []ProviderConfig{{ID: "local", BaseURL: "https://example.com/v1"}}
+	cfg.Provider, cfg.Model = "local", "vendor/model"
+	cfg.ApplyStartingReasoning(Preferences{Reasoning: map[string]string{"local": "high"}})
 	if cfg.Reasoning != "" {
 		t.Fatalf("applied unsupported effort %q", cfg.Reasoning)
 	}

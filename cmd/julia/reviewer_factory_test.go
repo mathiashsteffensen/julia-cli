@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +33,7 @@ func (m *forbiddenReviewerModel) Generate(context.Context, fantasy.Call) (*fanta
 }
 
 func TestBackendFactoryUsesFixedCodexReviewerForEveryProvider(t *testing.T) {
-	for _, name := range []string{"codex", "openai", "anthropic", "google", "compatible"} {
+	for _, name := range []string{"codex", "openai", "anthropic", "google", "openrouter"} {
 		t.Run(name, func(t *testing.T) {
 			binary, capture := reviewerProtocolFixture(t)
 			cfg := reviewerFactoryConfig(t, name, binary)
@@ -101,13 +102,13 @@ func TestDoctorShowsTheConfiguredReviewer(t *testing.T) {
 	if got := reviewerSummary(cfg); !strings.Contains(got, "Codex "+provider.CodexReviewerModel) {
 		t.Fatal(got)
 	}
-	cfg.ReviewerModel, cfg.CompatibleBaseURL = "compatible/"+config.CompatibleDecisionsModel, "https://openrouter.ai/api/v1"
-	if got := reviewerSummary(cfg); !strings.Contains(got, "Compatible "+config.CompatibleDecisionsModel) || strings.Contains(got, "Codex") {
+	cfg.ReviewerModel, cfg.Providers = "openrouter/"+config.CompatibleDecisionsModel, []config.ProviderConfig{openRouter}
+	if got := reviewerSummary(cfg); !strings.Contains(got, "openrouter "+config.CompatibleDecisionsModel+" · Decisions API at https://openrouter.ai/api/v1") || strings.Contains(got, "Codex") {
 		t.Fatal(got)
 	}
 }
 
-func TestConfiguredCompatibleModelReviewsWithProbability(t *testing.T) {
+func TestConfiguredNamedProviderReviewsWithProbability(t *testing.T) {
 	var modelID, authorization string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/alpha/decisions" {
@@ -143,23 +144,23 @@ func TestConfiguredCompatibleModelReviewsWithProbability(t *testing.T) {
 	defer server.Close()
 	binary, _ := reviewerProtocolFixture(t)
 	cfg := reviewerFactoryConfig(t, "codex", binary)
-	cfg.ReviewerModel = "compatible/" + config.CompatibleDecisionsModel
-	cfg.CompatibleBaseURL, cfg.APIKeyEnv = server.URL+"/api/v1", "REVIEWER_API_KEY"
-	t.Setenv(cfg.APIKeyEnv, "reviewer-secret")
+	cfg.ReviewerModel = "openrouter/" + config.CompatibleDecisionsModel
+	cfg.Providers = []config.ProviderConfig{{ID: "openrouter", BaseURL: server.URL + "/api/v1", APIKeyEnv: "REVIEWER_API_KEY"}}
+	t.Setenv("REVIEWER_API_KEY", "reviewer-secret")
 	backend, review, err := newBackend(context.Background(), cfg, nil)
 	if err != nil || backend.Name() != "codex" {
 		t.Fatal("configured Codex backend failed to initialize:", backend, err)
 	}
 	decision, err := review(context.Background(), core.Approval{Task: "Inspect the workspace", Call: core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
 	if err != nil || !decision.Allow {
-		t.Fatal("compatible reviewer did not approve above threshold:", decision, err)
+		t.Fatal("OpenRouter reviewer did not approve above threshold:", decision, err)
 	}
 	if modelID != config.CompatibleDecisionsModel || authorization != "Bearer reviewer-secret" {
-		t.Fatal("review did not use the configured compatible model and key:", modelID, authorization)
+		t.Fatal("review did not use the configured OpenRouter model and key:", modelID, authorization)
 	}
 }
 func TestAPIFactoryMissingCodexIsLazyAndNeverFallsBackToExecutingModel(t *testing.T) {
-	for _, name := range []string{"openai", "anthropic", "google", "compatible"} {
+	for _, name := range []string{"openai", "anthropic", "google", "openrouter"} {
 		for _, mode := range []string{"auto", "ask", "read-only"} {
 			t.Run(name+"/"+mode, func(t *testing.T) {
 				cfg := reviewerFactoryConfig(t, name, filepath.Join(t.TempDir(), "missing-codex"))
@@ -186,8 +187,10 @@ func reviewerFactoryConfig(t *testing.T, name, binary string) config.Config {
 	if name == "codex" {
 		cfg.Reasoning = "high"
 	} else {
-		cfg.CompatibleBaseURL = "https://unused.invalid"
-		t.Setenv(cfg.KeyEnv(), "fixture-key-never-sent")
+		if !slices.Contains(config.BuiltinProviders, name) {
+			cfg.Providers = []config.ProviderConfig{{ID: name, BaseURL: "https://unused.invalid", APIKeyEnv: "UNUSED_TEST_KEY"}}
+		}
+		t.Setenv(cfg.KeyEnv(name), "fixture-key-never-sent")
 	}
 	return cfg
 }

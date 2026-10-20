@@ -53,17 +53,15 @@ func run() error {
 		return err
 	}
 	flags := flag.NewFlagSet("julia", flag.ContinueOnError)
-	var path, dir, prompt, modelFlag, reasoning, mode, endpoint, keyEnv, resume, timeout, memoryFlag string
+	var path, dir, prompt, modelFlag, reasoning, mode, resume, timeout, memoryFlag string
 	var cont, demo, jsonMode, showVersion bool
 	var snapshot int
 	flags.StringVar(&path, "config", configPath, "configuration file")
 	flags.StringVar(&dir, "dir", ".", "workspace directory")
 	flags.StringVar(&prompt, "prompt", "", "run one task without the TUI")
-	flags.StringVar(&modelFlag, "model", "", "provider/<model-id>: codex, openai, anthropic, google or compatible (bare codex uses your Codex model)")
+	flags.StringVar(&modelFlag, "model", "", "provider/<model-id>: codex, openai, anthropic, google or the id of one of your providers (bare codex uses your Codex model)")
 	flags.StringVar(&reasoning, "reasoning", "", "Reasoning effort (Codex model-supported value or OpenRouter value; model support varies)")
 	flags.StringVar(&mode, "mode", "", "auto, ask, read-only, or yolo (no sandbox, no review: for an unattended container)")
-	flags.StringVar(&endpoint, "compatible-base-url", "", "compatible provider API endpoint")
-	flags.StringVar(&keyEnv, "api-key-env", "", "environment variable containing API key")
 	flags.StringVar(&resume, "resume", "", "resume a saved session ID")
 	flags.StringVar(&timeout, "timeout", "", "maximum duration per task, e.g. 4h")
 	flags.StringVar(&memoryFlag, "memory", "", "off, read or write: whether notes kept between sessions are seen and saved (default write; read for a headless --prompt run)")
@@ -104,12 +102,6 @@ func run() error {
 	})
 	if mode != "" {
 		cfg.Mode = mode
-	}
-	if endpoint != "" {
-		cfg.CompatibleBaseURL = endpoint
-	}
-	if keyEnv != "" {
-		cfg.APIKeyEnv = keyEnv
 	}
 	if timeout != "" {
 		cfg.Timeout = timeout
@@ -377,13 +369,9 @@ func run() error {
 		return children, nil
 	}
 	uiConfig.ApplySettings = func(current *core.Session, selectedProvider, selectedModel, reasoning string) error {
-		if selectedProvider == "compatible" && cfg.Enables("compatible") {
-			if cfg.CompatibleBaseURL == "" {
-				return errors.New("configure compatible_base_url for the compatible provider")
-			}
-			keyEnv := compatibleAPIKeyEnv(cfg)
-			if os.Getenv(keyEnv) == "" {
-				return fmt.Errorf("set %s before switching to the compatible provider", keyEnv)
+		if selectedProvider != "codex" {
+			if _, err := apiKey(cfg, selectedProvider); err != nil {
+				return err
 			}
 		}
 		previousProvider := current.Provider
@@ -401,7 +389,10 @@ func run() error {
 		provider, id := config.SplitModel(entry.ID)
 		uiConfig.EnabledModels = append(uiConfig.EnabledModels, core.ModelOption{Provider: provider, ID: id, Name: id, Description: "Enabled model", DefaultReasoning: entry.Reasoning})
 	}
-	uiConfig.CompatibleReasoning = config.SupportsReasoning("compatible", cfg.CompatibleBaseURL)
+	uiConfig.NamedProviders = map[string]bool{}
+	for _, p := range cfg.Providers {
+		uiConfig.NamedProviders[p.ID] = cfg.SupportsReasoning(p.ID)
+	}
 	codexBinary := cfg.CodexBinary
 	if codex, ok := raw.(*provider.Codex); ok {
 		codexBinary = codex.Binary
@@ -478,7 +469,7 @@ func modelSettings(cfg config.Config) (model, reasoning string) {
 		reasoning = "not configurable for this provider"
 		if cfg.Provider == "codex" {
 			reasoning = "inherited from Codex"
-		} else if config.SupportsReasoning(cfg.Provider, cfg.CompatibleBaseURL) {
+		} else if cfg.SupportsReasoning(cfg.Provider) {
 			reasoning = "provider/model default"
 		}
 	}
@@ -895,8 +886,8 @@ func linearTokenFile(configPath string) string {
 // reviewerSummary describes the reviewer_model for doctor.
 func reviewerSummary(c config.Config) string {
 	reviewer, model := c.Reviewer()
-	if reviewer == "compatible" {
-		return fmt.Sprintf("Reviewer  Compatible %s · Decisions API at %s", safe(model), safe(c.CompatibleBaseURL))
+	if endpoint, ok := c.Endpoint(reviewer); ok {
+		return fmt.Sprintf("Reviewer  %s %s · Decisions API at %s", safe(reviewer), safe(model), safe(endpoint.BaseURL))
 	}
 	if model == "" {
 		model = provider.CodexReviewerModel

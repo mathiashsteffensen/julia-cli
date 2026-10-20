@@ -29,8 +29,7 @@ const reflectionEffort = "low"
 
 // reflectionSettings is what the reflection step runs on: the model the
 // memory setting assigns it, else the session's own, at the setting's effort
-// or reflectionEffort. As for a subagent, a key named for one provider must
-// not reach another's endpoint.
+// or reflectionEffort.
 func reflectionSettings(cfg, parent config.Config) config.Config {
 	child := parent
 	child.Reasoning = reflectionEffort
@@ -40,12 +39,6 @@ func reflectionSettings(cfg, parent config.Config) config.Config {
 	child.Provider, child.Model = config.SplitModel(cfg.Memory.Model.ID)
 	if cfg.Memory.Model.Reasoning != "" {
 		child.Reasoning = cfg.Memory.Model.Reasoning
-	}
-	if child.Provider != cfg.Provider {
-		child.APIKeyEnv = ""
-		if child.Provider == "compatible" {
-			child.APIKeyEnv = compatibleAPIKeyEnv(cfg)
-		}
 	}
 	return child
 }

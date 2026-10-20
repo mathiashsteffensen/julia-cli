@@ -291,7 +291,7 @@ func memorySummary(c config.Config, dir string) []string {
 			reflection += " " + safe(c.Memory.Model.ID)
 		}
 		// An effort is shown only where JULIA sends one.
-		if settings := reflectionSettings(c, c); config.SupportsReasoning(settings.Provider, settings.CompatibleBaseURL) {
+		if settings := reflectionSettings(c, c); settings.SupportsReasoning(settings.Provider) {
 			reflection += " · reasoning " + safe(settings.Reasoning)
 		}
 	}

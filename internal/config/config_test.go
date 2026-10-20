@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -39,19 +40,25 @@ func TestYoloModeAndWorkspaceInstructionsLoad(t *testing.T) {
 	}
 }
 
+// openRouterProvider is the "providers" entry tests name openrouter.
+const openRouterProvider = `"providers":[{"id":"openrouter","base_url":"https://openrouter.ai/api/v1","api_key_env":"OPENROUTER_API_KEY"}]`
+
+// openRouter is openRouterProvider as a ProviderConfig.
+var openRouter = ProviderConfig{ID: "openrouter", BaseURL: "https://openrouter.ai/api/v1", APIKeyEnv: "OPENROUTER_API_KEY"}
+
 func TestEnabledModelConfiguration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	data := `{"enabled_models":["anthropic/claude-sonnet", "compatible/openai/gpt-model", "codex/gpt-6-astra"],"compatible_base_url":"https://openrouter.ai/api/v1"}`
+	data := `{"enabled_models":["anthropic/claude-sonnet", "openrouter/openai/gpt-model", "codex/gpt-6-astra"],` + openRouterProvider + `}`
 	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
-	if err != nil || len(cfg.EnabledModels) != 3 || cfg.EnabledModels[1].ID != "compatible/openai/gpt-model" || !cfg.Enables("compatible") || cfg.Enables("google") {
+	if err != nil || len(cfg.EnabledModels) != 3 || cfg.EnabledModels[1].ID != "openrouter/openai/gpt-model" {
 		t.Fatalf("enabled models not loaded: %#v %v", cfg.EnabledModels, err)
 	}
-	for _, models := range [][]ModelEntry{{{ID: ""}}, {{ID: "codex"}}, {{ID: "vendor/model"}}, {{ID: "openai/ model"}}, {{ID: "openai/bad\nmodel"}}, {{ID: "openai/m"}, {ID: "openai/m"}}, {{ID: "compatible/" + CompatibleDecisionsModel}}} {
+	for _, models := range [][]ModelEntry{{{ID: ""}}, {{ID: "codex"}}, {{ID: "vendor/model"}}, {{ID: "openai/ model"}}, {{ID: "openai/bad\nmodel"}}, {{ID: "openai/m"}, {ID: "openai/m"}}, {{ID: "openrouter/" + CompatibleDecisionsModel}}, {{ID: "compatible/vendor/model"}}, {{ID: "local/vendor/model"}}} {
 		cfg := Default()
-		cfg.EnabledModels, cfg.CompatibleBaseURL = models, "https://openrouter.ai/api/v1"
+		cfg.EnabledModels, cfg.Providers = models, []ProviderConfig{openRouter}
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("accepted invalid enabled models %#v", models)
 		}
@@ -59,7 +66,7 @@ func TestEnabledModelConfiguration(t *testing.T) {
 }
 
 func TestOldModelKeysAreRejected(t *testing.T) {
-	for _, data := range []string{`{"provider":"codex"}`, `{"compatible_models":["vendor/m"]}`, `{"base_url":"https://openrouter.ai/api/v1"}`, `{"model":"gpt-6-astra"}`} {
+	for _, data := range []string{`{"provider":"codex"}`, `{"compatible_models":["vendor/m"]}`, `{"base_url":"https://openrouter.ai/api/v1"}`, `{"model":"gpt-6-astra"}`, `{"compatible_base_url":"https://openrouter.ai/api/v1"}`, `{"api_key_env":"OPENROUTER_API_KEY"}`} {
 		if _, err := Load(writeConfig(t, data)); err == nil {
 			t.Fatalf("accepted %s", data)
 		}
@@ -81,8 +88,10 @@ func TestModelAndReasoningConfiguration(t *testing.T) {
 			t.Fatalf("accepted invalid reasoning %q", effort)
 		}
 	}
-	for _, provider := range []string{"openai", "anthropic", "google", "compatible"} {
+	for _, provider := range []string{"openai", "anthropic", "google", "local"} {
 		cfg := Default()
+		// A named provider not served by OpenRouter takes no effort either.
+		cfg.Providers = []ProviderConfig{{ID: "local", BaseURL: "http://localhost:1234/v1"}}
 		cfg.Provider, cfg.Model, cfg.Reasoning = provider, "vendor-model", "medium"
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("silently accepted unmapped reasoning for %s", provider)
@@ -233,10 +242,10 @@ func TestReviewerModelConfiguration(t *testing.T) {
 	for _, tc := range []struct{ value, provider, model string }{
 		{"", "codex", ""},
 		{"codex/gpt-6-luna", "codex", "gpt-6-luna"},
-		{"compatible/" + CompatibleDecisionsModel, "compatible", CompatibleDecisionsModel},
+		{"openrouter/" + CompatibleDecisionsModel, "openrouter", CompatibleDecisionsModel},
 	} {
 		cfg := Default()
-		cfg.ReviewerModel, cfg.CompatibleBaseURL = tc.value, "https://openrouter.ai/api/v1"
+		cfg.ReviewerModel, cfg.Providers = tc.value, []ProviderConfig{openRouter}
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("rejected %q: %v", tc.value, err)
 		}
@@ -244,25 +253,25 @@ func TestReviewerModelConfiguration(t *testing.T) {
 			t.Fatalf("%q split into %q %q", tc.value, provider, model)
 		}
 	}
-	for _, value := range []string{"gpt-6-luna", "codex/", "openai/gpt-5", " codex/gpt-6-luna", "codex/bad\nmodel"} {
+	for _, value := range []string{"gpt-6-luna", "codex/", "openai/gpt-5", " codex/gpt-6-luna", "codex/bad\nmodel", "openrouter/", "compatible/" + CompatibleDecisionsModel} {
 		cfg := Default()
-		cfg.ReviewerModel, cfg.CompatibleBaseURL = value, "https://openrouter.ai/api/v1"
+		cfg.ReviewerModel, cfg.Providers = value, []ProviderConfig{openRouter}
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("accepted reviewer_model %q", value)
 		}
 	}
 	cfg := Default()
-	cfg.ReviewerModel = "compatible/" + CompatibleDecisionsModel
+	cfg.ReviewerModel = "openrouter/" + CompatibleDecisionsModel
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("accepted a compatible reviewer without compatible_base_url")
+		t.Fatal("accepted a reviewer on a provider that is not configured")
 	}
 }
 
 func TestModelsAreIDsOrObjectsWithReasoning(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	data := `{"compatible_base_url":"https://openrouter.ai/api/v1",
-		"model":{"id":"compatible/mistral/mistral-large-4-0","reasoning":"high"},
-		"enabled_models":["compatible/deepseek/deepseek-v4.1-flash",{"id":"compatible/mistral/mistral-large-4-0","reasoning":"high"},{"id":"codex/gpt-6-astra","reasoning":"xhigh"}]}`
+	data := `{` + openRouterProvider + `,
+		"model":{"id":"openrouter/mistral/mistral-large-4-0","reasoning":"high"},
+		"enabled_models":["openrouter/deepseek/deepseek-v4.1-flash",{"id":"openrouter/mistral/mistral-large-4-0","reasoning":"high"},{"id":"codex/gpt-6-astra","reasoning":"xhigh"}]}`
 	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -270,10 +279,10 @@ func TestModelsAreIDsOrObjectsWithReasoning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Provider != "compatible" || cfg.Model != "mistral/mistral-large-4-0" || cfg.ModelReasoning != "high" {
+	if cfg.Provider != "openrouter" || cfg.Model != "mistral/mistral-large-4-0" || cfg.ModelReasoning != "high" {
 		t.Fatalf("model object not loaded: %q %q %q", cfg.Provider, cfg.Model, cfg.ModelReasoning)
 	}
-	want := []ModelEntry{{ID: "compatible/deepseek/deepseek-v4.1-flash"}, {ID: "compatible/mistral/mistral-large-4-0", Reasoning: "high"}, {ID: "codex/gpt-6-astra", Reasoning: "xhigh"}}
+	want := []ModelEntry{{ID: "openrouter/deepseek/deepseek-v4.1-flash"}, {ID: "openrouter/mistral/mistral-large-4-0", Reasoning: "high"}, {ID: "codex/gpt-6-astra", Reasoning: "xhigh"}}
 	if len(cfg.EnabledModels) != len(want) {
 		t.Fatalf("enabled_models = %#v", cfg.EnabledModels)
 	}
@@ -282,7 +291,7 @@ func TestModelsAreIDsOrObjectsWithReasoning(t *testing.T) {
 			t.Fatalf("enabled_models[%d] = %#v, want %#v", i, cfg.EnabledModels[i], want[i])
 		}
 	}
-	if got := cfg.ReasoningFor("compatible", "deepseek/deepseek-v4.1-flash"); got != "" {
+	if got := cfg.ReasoningFor("openrouter", "deepseek/deepseek-v4.1-flash"); got != "" {
 		t.Fatal("a bare model ID got reasoning", got)
 	}
 	if got := cfg.ReasoningFor("codex", "gpt-6-astra"); got != "xhigh" {
@@ -298,10 +307,10 @@ func TestModelsAreIDsOrObjectsWithReasoning(t *testing.T) {
 		t.Fatal(err)
 	}
 	var again Config
-	if err := json.Unmarshal(encoded, &again); err != nil || again.Provider != "compatible" || again.Model != cfg.Model || again.ModelReasoning != "high" || len(again.EnabledModels) != 3 {
+	if err := json.Unmarshal(encoded, &again); err != nil || again.Provider != "openrouter" || again.Model != cfg.Model || again.ModelReasoning != "high" || len(again.EnabledModels) != 3 {
 		t.Fatalf("round trip lost models: %s %v", encoded, err)
 	}
-	if !strings.Contains(string(encoded), `"compatible/deepseek/deepseek-v4.1-flash"`) {
+	if !strings.Contains(string(encoded), `"openrouter/deepseek/deepseek-v4.1-flash"`) {
 		t.Fatalf("a bare model ID was not written as a string: %s", encoded)
 	}
 }
@@ -312,8 +321,8 @@ func TestModelObjectsAreChecked(t *testing.T) {
 		`{"model":{"id":"codex/m","effort":"high"}}`,
 		`{"model":42}`,
 		`{"model":"openai"}`,
-		`{"enabled_models":[{"id":"compatible/m","reasoning":"high"}]}`,
-		`{"compatible_base_url":"https://openrouter.ai/api/v1","enabled_models":[{"id":"compatible/m","reasoning":"turbo"}]}`,
+		`{"enabled_models":[{"id":"openrouter/m","reasoning":"high"}]}`,
+		`{` + openRouterProvider + `,"enabled_models":[{"id":"openrouter/m","reasoning":"turbo"}]}`,
 		`{"model":{"id":"openai/m","reasoning":"high"}}`,
 	} {
 		p := filepath.Join(t.TempDir(), "config.json")
@@ -327,16 +336,16 @@ func TestModelObjectsAreChecked(t *testing.T) {
 }
 
 func TestModelReasoningBeatsRememberedReasoning(t *testing.T) {
-	remembered := Preferences{Reasoning: map[string]string{"compatible": "low"}}
+	remembered := Preferences{Reasoning: map[string]string{"openrouter": "low"}}
 	cfg := Default()
-	cfg.Provider, cfg.CompatibleBaseURL = "compatible", "https://openrouter.ai/api/v1"
+	cfg.Provider, cfg.Providers = "openrouter", []ProviderConfig{openRouter}
 	cfg.Model, cfg.ModelReasoning = "vendor/a", "high"
 	cfg.ApplyStartingReasoning(remembered)
 	if cfg.Reasoning != "high" {
 		t.Fatal("the model's reasoning did not win", cfg.Reasoning)
 	}
 	cfg.Model, cfg.ModelReasoning, cfg.Reasoning = "vendor/b", "", ""
-	cfg.EnabledModels = []ModelEntry{{ID: "compatible/vendor/b", Reasoning: "max"}}
+	cfg.EnabledModels = []ModelEntry{{ID: "openrouter/vendor/b", Reasoning: "max"}}
 	cfg.ApplyStartingReasoning(remembered)
 	if cfg.Reasoning != "max" {
 		t.Fatal("the enabled_models entry's reasoning did not apply", cfg.Reasoning)
@@ -351,22 +360,21 @@ func TestModelReasoningBeatsRememberedReasoning(t *testing.T) {
 func TestSubagentModelConfiguration(t *testing.T) {
 	cfg, err := Load(writeConfig(t, `{
   "model": "codex/gpt-6-astra",
-  "compatible_base_url": "https://openrouter.ai/api/v1",
-  "api_key_env": "OPENROUTER_API_KEY",
+  "providers": [{"id": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY"}],
   "subagents": {
-    "reviewer": "compatible/mistralai/mistral-large-4-0",
-    "scout": {"id": "compatible/minimax/minimax-m3", "reasoning": "low"},
+    "reviewer": "openrouter/mistralai/mistral-large-4-0",
+    "scout": {"id": "openrouter/minimax/minimax-m3", "reasoning": "low"},
     "oracle": "codex/gpt-6-astra",
     "my-role": "codex"
   },
-  "reviewer_model": "compatible/typesafe/jev-1.13"
+  "reviewer_model": "openrouter/typesafe/jev-1.13"
 }`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]ModelEntry{
-		"reviewer": {ID: "compatible/mistralai/mistral-large-4-0"},
-		"scout":    {ID: "compatible/minimax/minimax-m3", Reasoning: "low"},
+		"reviewer": {ID: "openrouter/mistralai/mistral-large-4-0"},
+		"scout":    {ID: "openrouter/minimax/minimax-m3", Reasoning: "low"},
 		"oracle":   {ID: "codex/gpt-6-astra"},
 		"my-role":  {ID: "codex"},
 	}
@@ -379,34 +387,29 @@ func TestSubagentModelConfiguration(t *testing.T) {
 		}
 	}
 	data, err := json.Marshal(cfg)
-	if err != nil || !strings.Contains(string(data), `"subagents":{"my-role":"codex","oracle":"codex/gpt-6-astra","reviewer":"compatible/mistralai/mistral-large-4-0","scout":{"id":"compatible/minimax/minimax-m3","reasoning":"low"}}`) {
+	if err != nil || !strings.Contains(string(data), `"subagents":{"my-role":"codex","oracle":"codex/gpt-6-astra","reviewer":"openrouter/mistralai/mistral-large-4-0","scout":{"id":"openrouter/minimax/minimax-m3","reasoning":"low"}}`) {
 		t.Fatalf("subagents do not round-trip: %s %v", data, err)
 	}
 	for _, tc := range []struct{ subagents, want string }{
 		{`{"scout": "minimax/m3"}`, `subagents.scout "minimax/m3" must be provider/<model-id>`},
 		{`{"scout": "openai"}`, `subagents.scout "openai" needs a model ID`},
-		{`{"scout": "compatible/` + CompatibleDecisionsModel + `"}`, "decisions-only"},
+		{`{"scout": "openrouter/` + CompatibleDecisionsModel + `"}`, "decisions-only"},
 		{`{"scout": {"id": "openai/m", "reasoning": "high"}}`, "reasoning is configurable for Codex and OpenRouter"},
-		{`{"scout": {"id": "compatible/m", "reasoning": "extreme"}}`, "OpenRouter reasoning must be one of"},
+		{`{"scout": {"id": "openrouter/m", "reasoning": "extreme"}}`, "OpenRouter reasoning must be one of"},
 		{`{"scout": {"id": "codex/m", "effort": "high"}}`, `unknown field "effort"`},
 		{`{"Scout": "codex/m"}`, `subagents "Scout" is not a role name, which is at most 32 lowercase letters, digits or hyphens, starting with a letter`},
 		{`{"2nd": "codex/m"}`, `subagents "2nd" is not a role name`},
 		{`{"": "codex/m"}`, `subagents "" is not a role name`},
 		{`{"scout": ""}`, `subagents.scout "" must be provider/<model-id>`},
 	} {
-		_, err := Load(writeConfig(t, `{"compatible_base_url":"https://openrouter.ai/api/v1","subagents":`+tc.subagents+`}`))
+		_, err := Load(writeConfig(t, `{`+openRouterProvider+`,"subagents":`+tc.subagents+`}`))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("subagents %s: %v, want %q", tc.subagents, err, tc.want)
 		}
 	}
-	if _, err := Load(writeConfig(t, `{"subagents":{"scout":"compatible/vendor/m"}}`)); err == nil || !strings.Contains(err.Error(), "subagents.scout runs on the compatible provider; set compatible_base_url") {
-		t.Fatalf("compatible role without an endpoint: %v", err)
-	}
-	// A role's compatible model, like an enabled one, means the endpoint needs its key.
-	roles := Default()
-	roles.Subagents = map[string]ModelEntry{"scout": {ID: "compatible/vendor/m"}}
-	if !roles.Enables("compatible") || roles.Enables("openai") {
-		t.Fatal("Enables ignores the subagents' models")
+	// A role on a provider that is not configured names no provider.
+	if _, err := Load(writeConfig(t, `{"subagents":{"scout":"openrouter/vendor/m"}}`)); err == nil || !strings.Contains(err.Error(), `subagents.scout "openrouter/vendor/m" must be provider/<model-id>`) {
+		t.Fatalf("role on an unconfigured provider: %v", err)
 	}
 }
 
@@ -422,15 +425,15 @@ func TestMemoryConfiguration(t *testing.T) {
 			t.Fatalf("%s: %+v %v", data, cfg.Memory, err)
 		}
 	}
-	cfg, err := Load(writeConfig(t, `{"compatible_base_url":"https://openrouter.ai/api/v1","memory":{"reflection":"off","model":{"id":"compatible/minimax/minimax-m3","reasoning":"low"},"index_bytes":8192}}`))
+	cfg, err := Load(writeConfig(t, `{`+openRouterProvider+`,"memory":{"reflection":"off","model":{"id":"openrouter/minimax/minimax-m3","reasoning":"low"},"index_bytes":8192}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ReflectionEnabled() || cfg.Memory.Model == nil || *cfg.Memory.Model != (ModelEntry{ID: "compatible/minimax/minimax-m3", Reasoning: "low"}) || cfg.Memory.IndexBytes != 8192 {
+	if cfg.ReflectionEnabled() || cfg.Memory.Model == nil || *cfg.Memory.Model != (ModelEntry{ID: "openrouter/minimax/minimax-m3", Reasoning: "low"}) || cfg.Memory.IndexBytes != 8192 {
 		t.Fatalf("memory not loaded: %+v", cfg.Memory)
 	}
 	data, err := json.Marshal(cfg)
-	if err != nil || !strings.Contains(string(data), `"memory":{"reflection":"off","model":{"id":"compatible/minimax/minimax-m3","reasoning":"low"},"index_bytes":8192}`) {
+	if err != nil || !strings.Contains(string(data), `"memory":{"reflection":"off","model":{"id":"openrouter/minimax/minimax-m3","reasoning":"low"},"index_bytes":8192}`) {
 		t.Fatalf("memory does not round-trip: %s %v", data, err)
 	}
 	if cfg, err := Load(writeConfig(t, `{"memory":{"model":"codex"}}`)); err != nil || cfg.Memory.Model.ID != "codex" {
@@ -441,9 +444,9 @@ func TestMemoryConfiguration(t *testing.T) {
 		{`{"reflection":"On"}`, `memory.reflection must be on or off`},
 		{`{"model":"minimax/m3"}`, `memory.model "minimax/m3" must be provider/<model-id>`},
 		{`{"model":"openai"}`, `memory.model "openai" needs a model ID`},
-		{`{"model":"compatible/` + CompatibleDecisionsModel + `"}`, "decisions-only"},
+		{`{"model":"openrouter/` + CompatibleDecisionsModel + `"}`, "decisions-only"},
 		{`{"model":{"id":"openai/m","reasoning":"high"}}`, "reasoning is configurable for Codex and OpenRouter"},
-		{`{"model":{"id":"compatible/m","reasoning":"extreme"}}`, "OpenRouter reasoning must be one of"},
+		{`{"model":{"id":"openrouter/m","reasoning":"extreme"}}`, "OpenRouter reasoning must be one of"},
 		{`{"model":{"id":"codex/m","effort":"high"}}`, `unknown field "effort"`},
 		{`{"model":""}`, `memory.model "" must be provider/<model-id>`},
 		{`{"index_bytes":4095}`, "memory.index_bytes must be between 4096 and 65536"},
@@ -452,13 +455,13 @@ func TestMemoryConfiguration(t *testing.T) {
 		{`{"reflect":"on"}`, `unknown field "reflect"`},
 		{`{"enabled":true}`, `unknown field "enabled"`},
 	} {
-		_, err := Load(writeConfig(t, `{"compatible_base_url":"https://openrouter.ai/api/v1","memory":`+tc.memory+`}`))
+		_, err := Load(writeConfig(t, `{`+openRouterProvider+`,"memory":`+tc.memory+`}`))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("memory %s: %v, want %q", tc.memory, err, tc.want)
 		}
 	}
-	if _, err := Load(writeConfig(t, `{"memory":{"model":"compatible/vendor/m"}}`)); err == nil || !strings.Contains(err.Error(), "memory.model runs on the compatible provider; set compatible_base_url") {
-		t.Fatalf("compatible reflection model without an endpoint: %v", err)
+	if _, err := Load(writeConfig(t, `{"memory":{"model":"openrouter/vendor/m"}}`)); err == nil || !strings.Contains(err.Error(), `memory.model "openrouter/vendor/m" must be provider/<model-id>`) {
+		t.Fatalf("reflection model on an unconfigured provider: %v", err)
 	}
 	for _, bytes := range []int{0, MinMemoryIndexBytes, 16384, MaxMemoryIndexBytes} {
 		cfg := Default()
@@ -487,5 +490,83 @@ func TestInitWritesReflectionOn(t *testing.T) {
 	}
 	if cfg, err := Load(path); err != nil || !cfg.ReflectionEnabled() {
 		t.Fatalf("initialized config does not load: %+v %v", cfg.Memory, err)
+	}
+}
+
+func TestNamedProviders(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "")
+	cfg, err := Load(writeConfig(t, `{
+  "model": "openrouter/vendor/model",
+  "providers": [
+    {"id": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY"},
+    {"id": "local", "base_url": "http://localhost:1234/v1"}
+  ],
+  "enabled_models": [{"id": "openrouter/vendor/model", "reasoning": "high"}, "local/qwen/coder"],
+  "reviewer_model": "local/`+CompatibleDecisionsModel+`"
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider != "openrouter" || cfg.Model != "vendor/model" || len(cfg.Providers) != 2 || cfg.Providers[0] != openRouter {
+		t.Fatalf("providers not loaded: %+v", cfg)
+	}
+	if want := []string{"codex", "openai", "anthropic", "google", "openrouter", "local"}; !slices.Equal(cfg.ProviderIDs(), want) {
+		t.Fatalf("provider ids %v, want %v", cfg.ProviderIDs(), want)
+	}
+	if !cfg.IsNamed("local") || cfg.IsNamed("codex") || cfg.IsNamed("compatible") {
+		t.Fatal("IsNamed does not match the configured providers")
+	}
+	if p, ok := cfg.Endpoint("local"); !ok || p.BaseURL != "http://localhost:1234/v1" || p.APIKeyEnv != "" {
+		t.Fatalf("local endpoint %+v %v", p, ok)
+	}
+	// Each key belongs to one provider; a named provider without one is keyless.
+	for provider, want := range map[string]string{"openrouter": "OPENROUTER_API_KEY", "local": "", "openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY"} {
+		if got := cfg.KeyEnv(provider); got != want {
+			t.Errorf("KeyEnv(%s) = %q, want %q", provider, got, want)
+		}
+	}
+	// Only Codex and OpenRouter take a reasoning effort.
+	for provider, want := range map[string]bool{"codex": true, "openrouter": true, "local": false, "openai": false, "missing": false} {
+		if got := cfg.SupportsReasoning(provider); got != want {
+			t.Errorf("SupportsReasoning(%s) = %v, want %v", provider, got, want)
+		}
+	}
+	if cfg.ReasoningFor("openrouter", "vendor/model") != "high" {
+		t.Fatal("the named provider's model lost its reasoning")
+	}
+	if _, err := Load(writeConfig(t, `{"providers":[{"id":"local","base_url":"http://localhost:1234/v1"}],"enabled_models":[{"id":"local/m","reasoning":"high"}]}`)); err == nil || !strings.Contains(err.Error(), "reasoning is configurable for Codex and OpenRouter providers only") {
+		t.Fatalf("effort on a provider that is not OpenRouter: %v", err)
+	}
+	// The decisions-only model reviews on any named provider but cannot chat.
+	if _, err := Load(writeConfig(t, `{"providers":[{"id":"local","base_url":"http://localhost:1234/v1"}],"model":"local/`+CompatibleDecisionsModel+`"}`)); err == nil || !strings.Contains(err.Error(), "decisions-only") {
+		t.Fatalf("decisions-only chat model: %v", err)
+	}
+
+	for _, tc := range []struct{ providers, want string }{
+		{`[{"id":"","base_url":"https://a.example/v1"}]`, `providers id "" must be 1 to 64 lowercase letters`},
+		{`[{"id":"OpenRouter","base_url":"https://a.example/v1"}]`, `providers id "OpenRouter" must be`},
+		{`[{"id":"1router","base_url":"https://a.example/v1"}]`, `providers id "1router" must be`},
+		{`[{"id":"open/router","base_url":"https://a.example/v1"}]`, `providers id "open/router" must be`},
+		{`[{"id":"` + strings.Repeat("a", 65) + `","base_url":"https://a.example/v1"}]`, `must be 1 to 64 lowercase letters`},
+		{`[{"id":"codex","base_url":"https://a.example/v1"}]`, `providers id "codex" is a built-in provider`},
+		{`[{"id":"openai","base_url":"https://a.example/v1"}]`, `providers id "openai" is a built-in provider`},
+		{`[{"id":"a","base_url":"https://a.example/v1"},{"id":"a","base_url":"https://b.example/v1"}]`, `providers contains "a" twice`},
+		{`[{"id":"a"}]`, `providers "a" needs a base_url`},
+		{`[{"id":"a","base_url":"ftp://a.example/v1"}]`, `providers "a" needs a base_url`},
+		{`[{"id":"a","base_url":"https:///v1"}]`, `providers "a" needs a base_url`},
+		{`[{"id":"a","base_url":"localhost:1234/v1"}]`, `providers "a" needs a base_url`},
+		{`[{"id":"a","base_url":" https://a.example/v1"}]`, `providers "a" needs a base_url`},
+		{`[{"id":"a","base_url":"https://a.example/v1","api_key_env":"MY-KEY"}]`, `providers "a" api_key_env "MY-KEY" is not an environment variable name`},
+		{`[{"id":"a","base_url":"https://a.example/v1","api_key_env":"1KEY"}]`, `api_key_env "1KEY" is not an environment variable name`},
+		{`[{"id":"a","base_url":"https://a.example/v1","key":"secret"}]`, `unknown field "key"`},
+	} {
+		_, err := Load(writeConfig(t, `{"providers":`+tc.providers+`}`))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("providers %s: %v, want %q", tc.providers, err, tc.want)
+		}
+	}
+	// "compatible" is not a provider of its own any more.
+	if _, err := Load(writeConfig(t, `{"model":"compatible/vendor/model"}`)); err == nil || !strings.Contains(err.Error(), "must be provider/<model-id>") {
+		t.Fatalf("accepted the compatible provider: %v", err)
 	}
 }

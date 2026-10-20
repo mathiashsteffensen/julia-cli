@@ -289,18 +289,17 @@ func TestReflectionFailuresAreWarningsNotErrors(t *testing.T) {
 
 func TestReflectionSettingsFollowTheMemoryModel(t *testing.T) {
 	cfg := config.Default()
-	cfg.CompatibleBaseURL = "https://openrouter.ai/api/v1"
-	cfg.APIKeyEnv = "MY_KEY"
+	cfg.Providers = []config.ProviderConfig{openRouter}
 	parent := cfg
 	parent.Reasoning = "high"
 	// The session's model, at the reflection's own low effort.
 	if got := reflectionSettings(cfg, parent); got.Provider != "codex" || got.Reasoning != "low" {
 		t.Fatalf("no model: %+v", got)
 	}
-	cfg.Memory.Model = &config.ModelEntry{ID: "compatible/vendor/small", Reasoning: "low"}
+	cfg.Memory.Model = &config.ModelEntry{ID: "openrouter/vendor/small", Reasoning: "low"}
 	got := reflectionSettings(cfg, parent)
-	// The configured api_key_env names the compatible endpoint's key, as it does for a subagent.
-	if got.Provider != "compatible" || got.Model != "vendor/small" || got.Reasoning != "low" || got.APIKeyEnv != "MY_KEY" {
+	// The named provider's own key, as for a subagent.
+	if got.Provider != "openrouter" || got.Model != "vendor/small" || got.Reasoning != "low" || got.KeyEnv(got.Provider) != "OPENROUTER_API_KEY" {
 		t.Fatalf("configured model: %+v", got)
 	}
 }

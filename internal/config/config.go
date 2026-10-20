@@ -37,9 +37,9 @@ type Config struct {
 	// EnabledModels are the models the picker lists and ctrl+n cycles, each
 	// provider/<model-id> or an object with that id and a reasoning effort.
 	EnabledModels []ModelEntry `json:"enabled_models,omitempty"`
-	// CompatibleBaseURL is the endpoint of the compatible provider.
-	CompatibleBaseURL string `json:"compatible_base_url,omitempty"`
-	APIKeyEnv         string `json:"api_key_env,omitempty"`
+	// Providers are named OpenAI-compatible endpoints. Each id is a provider
+	// a model ID may name, as <id>/<model-id>.
+	Providers []ProviderConfig `json:"providers,omitempty"`
 	// Mode is the approval mode: auto, ask, read-only, or yolo. Yolo runs
 	// Bash and terminals directly on the host, outside any sandbox and with
 	// the process environment, and grants every action without review. It is
@@ -63,9 +63,9 @@ type Config struct {
 	// overrides it.
 	Browser string `json:"browser,omitempty"`
 	// ReviewerModel is the model that reviews risky actions, as
-	// provider/<model-id>: codex/gpt-6-luna, or compatible/<model-id> for a
-	// model served through compatible_base_url's Decisions API. Empty is the
-	// default Codex reviewer.
+	// provider/<model-id>: codex/gpt-6-luna, or <id>/<model-id> for a model
+	// served through a named provider's Decisions API. Empty is the default
+	// Codex reviewer.
 	ReviewerModel string `json:"reviewer_model,omitempty"`
 	// Subagents assigns models to subagent roles by name, each
 	// provider/<model-id> or an object with that id and a reasoning effort. A
@@ -108,8 +108,43 @@ func (c Config) ReflectionEnabled() bool {
 	return c.Memory.Reflection != "off"
 }
 
-// Providers are the providers a model ID may name.
-var Providers = []string{"codex", "openai", "anthropic", "google", "compatible"}
+// BuiltinProviders are the providers a model ID may name besides the
+// configured ones.
+var BuiltinProviders = []string{"codex", "openai", "anthropic", "google"}
+
+// ProviderConfig is a named OpenAI-compatible endpoint in "providers". Its key
+// is read from APIKeyEnv; without one the endpoint is called keyless.
+type ProviderConfig struct {
+	ID        string `json:"id"`
+	BaseURL   string `json:"base_url"`
+	APIKeyEnv string `json:"api_key_env,omitempty"`
+}
+
+// Endpoint is the named provider id, if one is configured.
+func (c Config) Endpoint(id string) (ProviderConfig, bool) {
+	for _, p := range c.Providers {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return ProviderConfig{}, false
+}
+
+// IsNamed reports whether provider is one of the configured endpoints.
+func (c Config) IsNamed(provider string) bool {
+	_, ok := c.Endpoint(provider)
+	return ok
+}
+
+// ProviderIDs are every provider a model ID may name: the built-in ones,
+// then the configured ones.
+func (c Config) ProviderIDs() []string {
+	ids := slices.Clone(BuiltinProviders)
+	for _, p := range c.Providers {
+		ids = append(ids, p.ID)
+	}
+	return ids
+}
 
 // SplitModel splits provider/<model-id> at its first slash; the model ID may
 // itself contain slashes. A bare provider name has an empty model ID.
@@ -125,9 +160,6 @@ func JoinModel(provider, model string) string {
 	}
 	return provider + "/" + model
 }
-
-// ReviewerProviders are the providers reviewer_model may name.
-var ReviewerProviders = []string{"codex", "compatible"}
 
 // Reviewer splits reviewer_model into its provider and model ID. The model ID
 // may itself contain slashes; only the first separates the provider. Unset,
@@ -222,17 +254,6 @@ func (c Config) ReasoningFor(provider, model string) string {
 	return ""
 }
 
-// Enables reports whether enabled_models lists a model of provider, or
-// subagents assigns one to a role.
-func (c Config) Enables(provider string) bool {
-	for _, entry := range slices.Concat(c.EnabledModels, slices.Collect(maps.Values(c.Subagents))) {
-		if p, _ := SplitModel(entry.ID); p == provider {
-			return true
-		}
-	}
-	return false
-}
-
 // BrowserEnv names the environment variable that overrides Config.Browser.
 const BrowserEnv = "JULIA_BROWSER"
 
@@ -280,6 +301,9 @@ func Load(path string) (Config, error) {
 	return c, c.Validate()
 }
 func (c Config) Validate() error {
+	if err := c.validateProviders(); err != nil {
+		return err
+	}
 	if len(c.SkillPaths) > 8 {
 		return errors.New("at most 8 skill_paths are allowed")
 	}
@@ -293,11 +317,8 @@ func (c Config) Validate() error {
 	}
 	if c.ReviewerModel != "" {
 		reviewer, model := c.Reviewer()
-		if !contains(ReviewerProviders, reviewer) || model == "" || len(c.ReviewerModel) > 512 || c.ReviewerModel != strings.TrimSpace(c.ReviewerModel) || strings.IndexFunc(c.ReviewerModel, unicode.IsControl) >= 0 {
-			return fmt.Errorf("reviewer_model must be provider/<model-id> with provider %s, such as codex/gpt-6-luna or compatible/%s", strings.Join(ReviewerProviders, " or "), CompatibleDecisionsModel)
-		}
-		if reviewer == "compatible" && c.CompatibleBaseURL == "" {
-			return errors.New("a compatible reviewer_model reviews actions through compatible_base_url; set it to the compatible API endpoint")
+		if (reviewer != "codex" && !c.IsNamed(reviewer)) || model == "" || len(c.ReviewerModel) > 512 || c.ReviewerModel != strings.TrimSpace(c.ReviewerModel) || strings.IndexFunc(c.ReviewerModel, unicode.IsControl) >= 0 {
+			return fmt.Errorf("reviewer_model must be provider/<model-id> with provider codex or one of providers, such as codex/gpt-6-luna or openrouter/%s", CompatibleDecisionsModel)
 		}
 	}
 	if len(c.EnabledModels) > 100 {
@@ -329,11 +350,8 @@ func (c Config) Validate() error {
 		if err := c.validateModel("subagents."+role, provider, model, entry.Reasoning); err != nil {
 			return err
 		}
-		if provider == "compatible" && c.CompatibleBaseURL == "" {
-			return fmt.Errorf("subagents.%s runs on the compatible provider; set compatible_base_url to its API endpoint", role)
-		}
 	}
-	if err := validateReasoning(c.Provider, c.CompatibleBaseURL, c.Reasoning); err != nil {
+	if err := c.validateReasoning(c.Provider, c.Reasoning); err != nil {
 		return err
 	}
 	switch c.Mode {
@@ -372,9 +390,6 @@ func (c Config) Validate() error {
 		if err := c.validateModel("memory.model", provider, model, c.Memory.Model.Reasoning); err != nil {
 			return err
 		}
-		if provider == "compatible" && c.CompatibleBaseURL == "" {
-			return errors.New("memory.model runs on the compatible provider; set compatible_base_url to its API endpoint")
-		}
 	}
 	if c.Memory.IndexBytes != 0 && (c.Memory.IndexBytes < MinMemoryIndexBytes || c.Memory.IndexBytes > MaxMemoryIndexBytes) {
 		return fmt.Errorf("memory.index_bytes must be between %d and %d, or 0 for the default", MinMemoryIndexBytes, MaxMemoryIndexBytes)
@@ -386,8 +401,8 @@ func (c Config) Validate() error {
 // Codex may leave the model ID out, for its own configured model.
 func (c Config) validateModel(field, provider, model, reasoning string) error {
 	id := JoinModel(provider, model)
-	if !contains(Providers, provider) {
-		return fmt.Errorf("%s %q must be provider/<model-id> with provider %s", field, id, strings.Join(Providers, ", "))
+	if !contains(c.ProviderIDs(), provider) {
+		return fmt.Errorf("%s %q must be provider/<model-id> with provider %s", field, id, strings.Join(c.ProviderIDs(), ", "))
 	}
 	if provider != "codex" && model == "" {
 		return fmt.Errorf("%s %q needs a model ID: %s/<model-id>", field, id, provider)
@@ -395,26 +410,73 @@ func (c Config) validateModel(field, provider, model, reasoning string) error {
 	if len(model) > 512 || model != strings.TrimSpace(model) || strings.IndexFunc(model, unicode.IsControl) >= 0 {
 		return fmt.Errorf("%s model IDs must not have surrounding whitespace or control characters", field)
 	}
-	if provider == "compatible" && IsDecisionsOnlyCompatibleModel(model) {
+	if c.IsNamed(provider) && IsDecisionsOnlyCompatibleModel(model) {
 		return fmt.Errorf("%s %q is decisions-only and cannot generate chat responses; set reviewer_model to %s to review actions with it", field, id, id)
 	}
-	if err := validateReasoning(provider, c.CompatibleBaseURL, reasoning); err != nil {
+	if err := c.validateReasoning(provider, reasoning); err != nil {
 		return fmt.Errorf("%s %q: %w", field, id, err)
 	}
 	return nil
 }
 
+// validateProviders checks the "providers" entries: each a distinct id that
+// no built-in provider has, an http(s) base_url, and an optional key variable.
+func (c Config) validateProviders() error {
+	if len(c.Providers) > 32 {
+		return errors.New("providers may contain at most 32 providers")
+	}
+	seen := make(map[string]bool, len(c.Providers))
+	for _, p := range c.Providers {
+		if !validProviderID(p.ID) {
+			return fmt.Errorf("providers id %q must be 1 to 64 lowercase letters, digits, '-' or '_', starting with a letter", p.ID)
+		}
+		if contains(BuiltinProviders, p.ID) {
+			return fmt.Errorf("providers id %q is a built-in provider", p.ID)
+		}
+		if seen[p.ID] {
+			return fmt.Errorf("providers contains %q twice", p.ID)
+		}
+		seen[p.ID] = true
+		u, err := url.Parse(p.BaseURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || p.BaseURL != strings.TrimSpace(p.BaseURL) {
+			return fmt.Errorf("providers %q needs a base_url such as https://openrouter.ai/api/v1", p.ID)
+		}
+		if p.APIKeyEnv != "" && !validEnvName(p.APIKeyEnv) {
+			return fmt.Errorf("providers %q api_key_env %q is not an environment variable name", p.ID, p.APIKeyEnv)
+		}
+	}
+	return nil
+}
+
+func validProviderID(id string) bool {
+	if id == "" || len(id) > 64 || id[0] < 'a' || id[0] > 'z' {
+		return false
+	}
+	return strings.IndexFunc(id, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_')
+	}) < 0
+}
+
+func validEnvName(name string) bool {
+	if len(name) > 256 || name[0] >= '0' && name[0] <= '9' {
+		return false
+	}
+	return strings.IndexFunc(name, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_')
+	}) < 0
+}
+
 // validateReasoning checks an effort for provider; empty is always valid.
-func validateReasoning(provider, baseURL, effort string) error {
+func (c Config) validateReasoning(provider, effort string) error {
 	if effort == "" {
 		return nil
 	}
-	if !SupportsReasoning(provider, baseURL) {
-		return errors.New("reasoning is configurable for Codex and OpenRouter-compatible sessions only")
+	if !c.SupportsReasoning(provider) {
+		return errors.New("reasoning is configurable for Codex and OpenRouter providers only")
 	}
 	// Codex advertises effort names per model as an open string. OpenRouter
 	// documents this shared set for its reasoning_effort request parameter.
-	if provider == "compatible" && !contains(OpenRouterReasoningEfforts(), effort) {
+	if provider != "codex" && !contains(OpenRouterReasoningEfforts(), effort) {
 		return errors.New("OpenRouter reasoning must be one of none, minimal, low, medium, high, xhigh, or max")
 	}
 	if len(effort) > 64 || strings.IndexFunc(effort, func(r rune) bool {
@@ -430,14 +492,18 @@ func IsDecisionsOnlyCompatibleModel(model string) bool {
 }
 
 // SupportsReasoning reports providers where JULIA can send a mapped effort
-// setting instead of silently ignoring it.
-func SupportsReasoning(provider, baseURL string) bool {
+// setting instead of silently ignoring it: Codex, and a named provider
+// served by OpenRouter.
+func (c Config) SupportsReasoning(provider string) bool {
 	if provider == "codex" {
 		return true
 	}
-	if provider != "compatible" {
-		return false
-	}
+	p, ok := c.Endpoint(provider)
+	return ok && IsOpenRouter(p.BaseURL)
+}
+
+// IsOpenRouter reports whether baseURL is an OpenRouter endpoint.
+func IsOpenRouter(baseURL string) bool {
 	u, err := url.Parse(baseURL)
 	if err != nil || u.Hostname() == "" {
 		return false
@@ -461,12 +527,14 @@ func contains(values []string, value string) bool {
 	return false
 }
 
-func (c Config) KeyEnv() string {
-	if c.APIKeyEnv != "" {
-		return c.APIKeyEnv
+// KeyEnv names the environment variable holding provider's API key. A named
+// provider without api_key_env has none and is called keyless.
+func (c Config) KeyEnv(provider string) string {
+	if p, ok := c.Endpoint(provider); ok {
+		return p.APIKeyEnv
 	}
-	switch c.Provider {
-	case "openai", "compatible":
+	switch provider {
+	case "openai":
 		return "OPENAI_API_KEY"
 	case "anthropic":
 		return "ANTHROPIC_API_KEY"

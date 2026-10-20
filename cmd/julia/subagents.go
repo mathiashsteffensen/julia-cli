@@ -63,7 +63,7 @@ func subagentInstructions(role agents.Role, memory string) string {
 // subagents setting assigns the role, else the delegating agent's own. An
 // assigned model starts at the effort its entry gives, else at the parent's
 // when it is the parent's model, else at the one the configuration gives that
-// model. cfg is the launch configuration, whose provider owns api_key_env.
+// model. cfg is the launch configuration.
 func subagentSettings(cfg, parent config.Config, role string) config.Config {
 	entry, ok := cfg.Subagents[role]
 	if !ok {
@@ -77,13 +77,6 @@ func subagentSettings(cfg, parent config.Config, role string) config.Config {
 			child.Reasoning = parent.Reasoning
 		} else {
 			child.Reasoning = cfg.ReasoningFor(child.Provider, child.Model)
-		}
-	}
-	// A key named for one provider must not reach another's endpoint.
-	if child.Provider != cfg.Provider {
-		child.APIKeyEnv = ""
-		if child.Provider == "compatible" {
-			child.APIKeyEnv = compatibleAPIKeyEnv(cfg)
 		}
 	}
 	return child

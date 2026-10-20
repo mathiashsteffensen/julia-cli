@@ -27,8 +27,11 @@ import (
 // API adapts independently supplied models to the same tools and event stream.
 // The model-facing abstraction is fantasy.LanguageModel; Backend is the UI-facing one.
 type API struct {
-	Model      fantasy.LanguageModel
+	Model fantasy.LanguageModel
+	// Provider is the backend kind: openai, anthropic, google, or compatible
+	// for a named OpenAI-compatible provider, whose id is Label.
 	Provider   string
+	Label      string
 	Reasoning  string
 	OpenRouter bool
 	MaxSteps   int
@@ -38,10 +41,12 @@ type API struct {
 	Checkpoint    func(*core.Session) error
 }
 
+// APIConfig configures an API backend. Provider is the backend kind; Name is
+// a named provider's configured id, which the backend reports as its name.
 type APIConfig struct {
-	Provider, Model, BaseURL, APIKey, Reasoning string
-	MaxSteps, ContextTokens                     int
-	Checkpoint                                  func(*core.Session) error
+	Provider, Name, Model, BaseURL, APIKey, Reasoning string
+	MaxSteps, ContextTokens                           int
+	Checkpoint                                        func(*core.Session) error
 }
 
 func NewAPI(ctx context.Context, c APIConfig) (*API, error) {
@@ -77,7 +82,7 @@ func NewAPI(ctx context.Context, c APIConfig) (*API, error) {
 		p, err = openai.New(opts...)
 	case "compatible":
 		if c.BaseURL == "" {
-			return nil, errors.New("compatible provider requires compatible_base_url")
+			return nil, errors.New("a named provider requires a base_url")
 		}
 		// The SDK reads OPENAI_API_KEY and OPENAI_ADMIN_KEY from the environment
 		// unless told otherwise, and fantasy passes no key at all when it is
@@ -96,10 +101,15 @@ func NewAPI(ctx context.Context, c APIConfig) (*API, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure model: %w", err)
 	}
-	return &API{Model: m, Provider: c.Provider, Reasoning: c.Reasoning, OpenRouter: config.SupportsReasoning(c.Provider, c.BaseURL) && c.Provider == "compatible", MaxSteps: c.MaxSteps, ContextTokens: c.ContextTokens, Checkpoint: c.Checkpoint}, nil
+	return &API{Model: m, Provider: c.Provider, Label: c.Name, Reasoning: c.Reasoning, OpenRouter: c.Provider == "compatible" && config.IsOpenRouter(c.BaseURL), MaxSteps: c.MaxSteps, ContextTokens: c.ContextTokens, Checkpoint: c.Checkpoint}, nil
 }
 
-func (a *API) Name() string { return a.Provider }
+func (a *API) Name() string {
+	if a.Label != "" {
+		return a.Label
+	}
+	return a.Provider
+}
 
 func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tools core.ToolExecutor, emit core.Emit) error {
 	if s.PendingTool != nil {

@@ -141,8 +141,9 @@ func TestShiftTabReportsCatalogFailureWithoutChangingSettings(t *testing.T) {
 
 func TestPickerListsEveryModelInOneList(t *testing.T) {
 	cfg := settingsConfig()
+	cfg.NamedProviders = map[string]bool{"openrouter": true}
 	cfg.EnabledModels = []core.ModelOption{
-		{Provider: "compatible", ID: "vendor/or-model-a", Name: "Compatible A", Description: "Saved model"},
+		{Provider: "openrouter", ID: "vendor/or-model-a", Name: "OpenRouter A", Description: "Saved model"},
 		{Provider: "codex", ID: "next", Name: "next", DefaultReasoning: "low"},
 	}
 	m := testModel(t, cfg)
@@ -151,7 +152,7 @@ func TestPickerListsEveryModelInOneList(t *testing.T) {
 	for _, choice := range m.pickerChoices() {
 		labels = append(labels, choice.label)
 	}
-	if want := []string{"compatible/vendor/or-model-a", "codex/next", "codex/current"}; !slices.Equal(labels, want) {
+	if want := []string{"openrouter/vendor/or-model-a", "codex/next", "codex/current"}; !slices.Equal(labels, want) {
 		t.Fatalf("picker lists %v, want %v", labels, want)
 	}
 	if option := modelOption(m.models, "codex", "next"); option == nil || len(option.ReasoningEfforts) != 2 || option.DefaultReasoning != "low" {
@@ -165,8 +166,8 @@ func TestPickerListsEveryModelInOneList(t *testing.T) {
 	m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.picker != nil || m.cfg.Session.Provider != "compatible" || m.cfg.Session.Model != "vendor/or-model-a" || m.cfg.Session.Reasoning != "" {
-		t.Fatal("Compatible selection did not update provider/model or clear Codex reasoning")
+	if m.picker != nil || m.cfg.Session.Provider != "openrouter" || m.cfg.Session.Model != "vendor/or-model-a" || m.cfg.Session.Reasoning != "" {
+		t.Fatal("OpenRouter selection did not update provider/model or clear Codex reasoning")
 	}
 	if m.input.Value() != "Keep this draft" {
 		t.Fatal("provider selection discarded the draft")
@@ -182,10 +183,10 @@ func TestPickerListsEveryModelInOneList(t *testing.T) {
 
 func TestCtrlNCyclesEnabledModels(t *testing.T) {
 	cfg := settingsConfig()
-	cfg.CompatibleReasoning = true
+	cfg.NamedProviders = map[string]bool{"openrouter": true}
 	cfg.EnabledModels = []core.ModelOption{
 		{Provider: "codex", ID: "current"},
-		{Provider: "compatible", ID: "vendor/a", DefaultReasoning: "high"},
+		{Provider: "openrouter", ID: "vendor/a", DefaultReasoning: "high"},
 		{Provider: "codex", ID: "next"},
 	}
 	m := testModel(t, cfg)
@@ -194,7 +195,7 @@ func TestCtrlNCyclesEnabledModels(t *testing.T) {
 		m.Update(tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
 		seen = append(seen, m.cfg.Session.Provider+"/"+m.cfg.Session.Model+"@"+m.cfg.Session.Reasoning)
 	}
-	if want := []string{"compatible/vendor/a@high", "codex/next@", "codex/current@", "compatible/vendor/a@high"}; !slices.Equal(seen, want) {
+	if want := []string{"openrouter/vendor/a@high", "codex/next@", "codex/current@", "openrouter/vendor/a@high"}; !slices.Equal(seen, want) {
 		t.Fatalf("ctrl+n cycled %v, want %v", seen, want)
 	}
 
@@ -205,24 +206,24 @@ func TestCtrlNCyclesEnabledModels(t *testing.T) {
 	}
 }
 
-func TestCompatibleModelStartsAtItsConfiguredReasoning(t *testing.T) {
+func TestNamedProviderModelStartsAtItsConfiguredReasoning(t *testing.T) {
 	cfg := settingsConfig()
-	cfg.CompatibleReasoning = true
-	cfg.EnabledModels = []core.ModelOption{{Provider: "compatible", ID: "vendor/a", Name: "vendor/a", DefaultReasoning: "high"}, {Provider: "compatible", ID: "vendor/b", Name: "vendor/b"}}
+	cfg.NamedProviders = map[string]bool{"openrouter": true}
+	cfg.EnabledModels = []core.ModelOption{{Provider: "openrouter", ID: "vendor/a", Name: "vendor/a", DefaultReasoning: "high"}, {Provider: "openrouter", ID: "vendor/b", Name: "vendor/b"}}
 	m := testModel(t, cfg)
-	if err := m.applySettings("compatible", "vendor/a", ""); err != nil {
+	if err := m.applySettings("openrouter", "vendor/a", ""); err != nil {
 		t.Fatal(err)
 	}
 	if m.cfg.Session.Reasoning != "high" {
 		t.Fatal("switching providers ignored the model's reasoning", m.cfg.Session.Reasoning)
 	}
-	if err := m.applySettings("compatible", "vendor/b", "high"); err != nil {
+	if err := m.applySettings("openrouter", "vendor/b", "high"); err != nil {
 		t.Fatal(err)
 	}
 	if m.cfg.Session.Reasoning != "" {
 		t.Fatal("an effort carried to a model without one", m.cfg.Session.Reasoning)
 	}
-	if err := m.applySettings("compatible", "vendor/a", ""); err != nil {
+	if err := m.applySettings("openrouter", "vendor/a", ""); err != nil {
 		t.Fatal(err)
 	}
 	if m.cfg.Session.Reasoning != "high" {
@@ -230,12 +231,12 @@ func TestCompatibleModelStartsAtItsConfiguredReasoning(t *testing.T) {
 	}
 }
 
-func TestCompatibleReasoningChoicesAreGenericAndUnverified(t *testing.T) {
+func TestOpenRouterReasoningChoicesAreGenericAndUnverified(t *testing.T) {
 	const modelID = "vendor/model"
 	cfg := settingsConfig()
-	cfg.Session.Provider, cfg.Session.Model, cfg.Session.Reasoning = "compatible", modelID, "high"
-	cfg.CompatibleReasoning = true
-	cfg.EnabledModels = []core.ModelOption{{Provider: "compatible", ID: modelID, Name: modelID}}
+	cfg.Session.Provider, cfg.Session.Model, cfg.Session.Reasoning = "openrouter", modelID, "high"
+	cfg.NamedProviders = map[string]bool{"openrouter": true}
+	cfg.EnabledModels = []core.ModelOption{{Provider: "openrouter", ID: modelID, Name: modelID}}
 	m := testModel(t, cfg)
 	fetchPicker(t, m, m.openPicker("reasoning"))
 
@@ -298,10 +299,10 @@ func TestProviderSwitchClearsVisibleHistoryAfterStartingNewSession(t *testing.T)
 	m.toolCount, m.inputTokens, m.outputTokens, m.lastDuration = 2, 10, 20, time.Minute
 	m.cfg.Session.Usage = core.SessionUsage{Total: core.TokenUsage{Input: 5, CacheRead: 6, Output: 7}, Context: 8}
 	m.live = core.SessionUsage{Total: core.TokenUsage{Input: 1}, Context: 9}
-	if err := m.applySettings("compatible", "vendor/model", ""); err != nil {
+	if err := m.applySettings("openrouter", "vendor/model", ""); err != nil {
 		t.Fatal(err)
 	}
-	if m.cfg.Session.ID != "new-session" || m.cfg.Session.Provider != "compatible" || len(m.cfg.Session.Messages) != 0 || len(m.entries) != 0 || m.toolCount != 0 || m.inputTokens != 0 || m.outputTokens != 0 || m.lastDuration != 0 {
+	if m.cfg.Session.ID != "new-session" || m.cfg.Session.Provider != "openrouter" || len(m.cfg.Session.Messages) != 0 || len(m.entries) != 0 || m.toolCount != 0 || m.inputTokens != 0 || m.outputTokens != 0 || m.lastDuration != 0 {
 		t.Fatal("provider switch did not isolate the new conversation")
 	}
 	if m.usage() != (core.SessionUsage{}) {

@@ -19,7 +19,7 @@ func usageConfig(fetch func(context.Context) (*core.WeeklyUsage, error)) Config 
 }
 
 func TestWeeklyUsageOnlyReadsForMainCodexProvider(t *testing.T) {
-	for _, provider := range []string{"openai", "anthropic", "google", "compatible", "codex"} {
+	for _, provider := range []string{"openai", "anthropic", "google", "openrouter", "codex"} {
 		calls := 0
 		cfg := usageConfig(func(context.Context) (*core.WeeklyUsage, error) {
 			calls++

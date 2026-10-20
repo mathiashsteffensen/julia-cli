@@ -989,15 +989,17 @@ func welcomePage(h int) []string {
 	return append(rows, menu...)
 }
 
-func showsReasoning(provider string, compatibleReasoning bool) bool {
-	return provider == "codex" || (provider == "compatible" && compatibleReasoning)
+// showsReasoning reports whether provider takes a reasoning effort: Codex, or
+// a named provider that supports one.
+func showsReasoning(provider string, named map[string]bool) bool {
+	return provider == "codex" || named[provider]
 }
 
-func reasoningDisplay(provider, effort string) string {
+func reasoningDisplay(provider, effort string, named map[string]bool) string {
 	if effort != "" {
 		return effort
 	}
-	if provider == "compatible" {
+	if _, ok := named[provider]; ok {
 		return "provider default"
 	}
 	return "inherited"
@@ -1029,13 +1031,13 @@ func (m *model) sidebar() string {
 	if modelName == "" {
 		modelName = "provider default"
 	}
-	reasoning = reasoningDisplay(provider, reasoning)
+	reasoning = reasoningDisplay(provider, reasoning, m.cfg.NamedProviders)
 	if directory != "" {
 		directory = filepath.Clean(directory)
 	}
 	connection := []string{label("CONNECTION"), cyanStyle.Render(ansi.Truncate(sanitize(provider), width, "…")), value(modelName)}
-	if showsReasoning(provider, m.cfg.CompatibleReasoning) {
-		if provider == "compatible" && reasoning == "provider default" {
+	if showsReasoning(provider, m.cfg.NamedProviders) {
+		if provider != "codex" && reasoning == "provider default" {
 			connection = append(connection, mutedStyle.Render("reasoning:"), mutedStyle.Render("provider default"))
 		} else {
 			connection = append(connection, mutedStyle.Render(ansi.Truncate("reasoning: "+sanitize(reasoning), width, "…")))
@@ -1183,8 +1185,8 @@ func (m *model) statusLine() string {
 			model = "provider default"
 		}
 		settings := model
-		if showsReasoning(m.cfg.Session.Provider, m.cfg.CompatibleReasoning) {
-			settings += " · " + reasoningDisplay(m.cfg.Session.Provider, m.cfg.Session.Reasoning)
+		if showsReasoning(m.cfg.Session.Provider, m.cfg.NamedProviders) {
+			settings += " · " + reasoningDisplay(m.cfg.Session.Provider, m.cfg.Session.Reasoning, m.cfg.NamedProviders)
 		}
 		if remaining := m.mainWidth - ansi.StringWidth(status); remaining > 3 {
 			suffix := violetStyle.Render(sanitize(settings))

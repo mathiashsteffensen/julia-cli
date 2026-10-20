@@ -218,9 +218,9 @@ func TestJevDenialReturnsToAgentAndSeesTheUsersAnswer(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := config.Default()
-	cfg.Provider, cfg.ReviewerModel = "compatible", "compatible/"+config.CompatibleDecisionsModel
-	cfg.CompatibleBaseURL, cfg.APIKeyEnv = server.URL+"/api/v1", "JEV_TEST_KEY"
-	t.Setenv(cfg.APIKeyEnv, "jev-secret")
+	cfg.Providers = []config.ProviderConfig{{ID: "openrouter", BaseURL: server.URL + "/api/v1", APIKeyEnv: "JEV_TEST_KEY"}}
+	cfg.Provider, cfg.ReviewerModel = "openrouter", "openrouter/"+config.CompatibleDecisionsModel
+	t.Setenv("JEV_TEST_KEY", "jev-secret")
 
 	networkCall := core.ToolCall{ID: "b0", Name: "Bash", Arguments: json.RawMessage(`{"command":"true","network":true}`)}
 	ask := func(context.Context, core.Question) (core.Answer, error) {

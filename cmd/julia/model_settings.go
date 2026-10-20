@@ -26,16 +26,16 @@ func newBackend(ctx context.Context, cfg config.Config, checkpoint func(*core.Se
 		}
 		return backend, approvalReviewer(cfg), nil
 	}
-	key := os.Getenv(cfg.KeyEnv())
-	if key == "" && (cfg.Provider != "compatible" || cfg.Enables("compatible")) {
-		return nil, nil, fmt.Errorf("set %s for the %s provider", cfg.KeyEnv(), cfg.Provider)
+	key, err := apiKey(cfg, cfg.Provider)
+	if err != nil {
+		return nil, nil, err
 	}
-	// Only the compatible provider has a configurable endpoint.
-	baseURL := ""
-	if cfg.Provider == "compatible" {
-		baseURL = cfg.CompatibleBaseURL
+	api := provider.APIConfig{Provider: cfg.Provider, Model: cfg.Model, APIKey: key, Reasoning: cfg.Reasoning, MaxSteps: cfg.MaxSteps, ContextTokens: cfg.ContextTokens, Checkpoint: checkpoint}
+	// A named provider is an OpenAI-compatible endpoint of its own.
+	if endpoint, ok := cfg.Endpoint(cfg.Provider); ok {
+		api.Provider, api.Name, api.BaseURL = "compatible", endpoint.ID, endpoint.BaseURL
 	}
-	backend, err := provider.NewAPI(ctx, provider.APIConfig{Provider: cfg.Provider, Model: cfg.Model, BaseURL: baseURL, APIKey: key, Reasoning: cfg.Reasoning, MaxSteps: cfg.MaxSteps, ContextTokens: cfg.ContextTokens, Checkpoint: checkpoint})
+	backend, err := provider.NewAPI(ctx, api)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -45,8 +45,8 @@ func newBackend(ctx context.Context, cfg config.Config, checkpoint func(*core.Se
 // approvalReviewer is the reviewer_model's reviewer, never the executing model.
 func approvalReviewer(cfg config.Config) core.Approver {
 	reviewer, model := cfg.Reviewer()
-	if reviewer == "compatible" {
-		return compatibleModelApprovalReviewer(cfg, model)
+	if reviewer != "codex" {
+		return decisionsApprovalReviewer(cfg, reviewer, model)
 	}
 	return codexApprovalReviewer(cfg.CodexBinary, model)
 }
@@ -63,32 +63,44 @@ func codexApprovalReviewer(binary, model string) core.Approver {
 	}
 }
 
-func compatibleModelApprovalReviewer(cfg config.Config, model string) core.Approver {
+// decisionsApprovalReviewer reviews through the Decisions API of the named
+// provider id.
+func decisionsApprovalReviewer(cfg config.Config, id, model string) core.Approver {
 	return func(ctx context.Context, approval core.Approval) (core.Decision, error) {
-		keyEnv := compatibleAPIKeyEnv(cfg)
-		key := os.Getenv(keyEnv)
-		if key == "" {
-			return core.Decision{}, fmt.Errorf("set %s for the compatible approval reviewer", keyEnv)
+		endpoint, ok := cfg.Endpoint(id)
+		if !ok {
+			return core.Decision{}, fmt.Errorf("reviewer provider %q is not configured", id)
+		}
+		key, err := apiKey(cfg, id)
+		if err != nil {
+			return core.Decision{}, err
 		}
 		return provider.ReviewDecisionAPI(ctx, provider.APIConfig{
 			Provider: "compatible",
+			Name:     id,
 			Model:    model,
-			BaseURL:  cfg.CompatibleBaseURL,
+			BaseURL:  endpoint.BaseURL,
 			APIKey:   key,
 		}, approval)
 	}
 }
 
-// compatibleAPIKeyEnv names the key for the compatible endpoint. api_key_env is
-// honored only when no other API provider owns it: Codex has no key of its own,
-// so there it describes the compatible endpoint, but under openai, anthropic or
-// google it belongs to that provider and must not be sent elsewhere.
-func compatibleAPIKeyEnv(cfg config.Config) string {
-	if cfg.APIKeyEnv != "" && (cfg.Provider == "compatible" || cfg.Provider == "codex") {
-		return cfg.APIKeyEnv
+// apiKey reads the API key of provider from its environment variable. Each
+// key belongs to one provider and is never sent to another's endpoint. A
+// named provider without api_key_env is keyless.
+func apiKey(cfg config.Config, provider string) (string, error) {
+	env := cfg.KeyEnv(provider)
+	if env == "" {
+		if cfg.IsNamed(provider) {
+			return "", nil
+		}
+		return "", fmt.Errorf("the %s provider has no API key", provider)
 	}
-	cfg.Provider, cfg.APIKeyEnv = "compatible", ""
-	return cfg.KeyEnv()
+	key := os.Getenv(env)
+	if key == "" {
+		return "", fmt.Errorf("set %s for the %s provider", env, provider)
+	}
+	return key, nil
 }
 
 // Save before publishing the new settings. Failed validation or persistence must

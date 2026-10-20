@@ -271,7 +271,7 @@ func TestDoctorContextSummary(t *testing.T) {
 		want           []string
 	}{
 		{name: "API provider shows the compaction point", provider: "anthropic", tokens: 256_000, want: []string{"Context   256k tokens · compacts at 217.6k"}},
-		{name: "custom window", provider: "compatible", tokens: 100_000, want: []string{"Context   100k tokens · compacts at 85k"}},
+		{name: "custom window", provider: "openrouter", tokens: 100_000, want: []string{"Context   100k tokens · compacts at 85k"}},
 		{name: "Codex compacts itself", provider: "codex", tokens: 256_000, want: []string{"Context   256k tokens · Codex compacts its own threads"}},
 		{name: "deprecated key is called out", provider: "openai", tokens: 256_000, legacy: 160_000, want: []string{
 			"Context   256k tokens · compacts at 217.6k",

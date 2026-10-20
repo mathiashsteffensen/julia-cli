@@ -42,7 +42,7 @@ julia memory [show NAME | forget NAME | confirm NAME | consolidate | path | work
 ```
 
 Other flags: `--model`, `--reasoning`, `--mode`, `--memory off|read|write`,
-`--compatible-base-url`, `--api-key-env`, `--timeout`, `--config`. Run `julia -h`
+`--timeout`, `--config`. Run `julia -h`
 for the full list.
 
 | Key | Action |
@@ -84,18 +84,34 @@ terminal (OSC 52) over SSH.
 | `openai` | Responses API | `OPENAI_API_KEY` |
 | `anthropic` | Messages API | `ANTHROPIC_API_KEY` |
 | `google` | Gemini API | `GEMINI_API_KEY` |
-| `compatible` | OpenAI-compatible chat completions (OpenRouter, Ollama, …) | `OPENAI_API_KEY` or `--api-key-env` |
+| your `providers` | OpenAI-compatible chat completions (OpenRouter, LM Studio, Ollama, …) | its `api_key_env`, or none |
 
 Models are named `provider/<model-id>`, in the config and in `--model`. A bare
 `codex` is the model your Codex is configured with; every other provider needs a
 model ID. Reasoning effort is only supported on Codex and OpenRouter. Endpoints
 must be HTTPS unless they are on loopback.
 
+OpenAI-compatible endpoints are named in the config's `providers`, and each `id`
+is then a provider of its own:
+
+```json
+{
+  "providers": [
+    {"id": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY"},
+    {"id": "local", "base_url": "http://localhost:1234/v1"}
+  ]
+}
+```
+
 ```sh
 julia --model anthropic/MODEL_ID
-julia --model compatible/vendor/MODEL_ID \
-  --compatible-base-url https://openrouter.ai/api/v1 --api-key-env OPENROUTER_API_KEY
+julia --model openrouter/vendor/MODEL_ID
+julia --model local/MODEL_ID
 ```
+
+An `id` is lowercase letters, digits, `-` or `_`, and cannot be a built-in
+provider's name. A provider's key is read only from its own `api_key_env` and is
+sent only to its own `base_url`; one without `api_key_env` is called keyless.
 
 ## Configuration
 
@@ -111,15 +127,16 @@ keys are only referenced by env var name.
   "max_steps": 256,
   "context_tokens": 256000,
   "timeout": "4h",
-  "compatible_base_url": "https://openrouter.ai/api/v1",
-  "api_key_env": "OPENROUTER_API_KEY",
-  "enabled_models": ["codex/gpt-6-astra", {"id": "compatible/vendor/model-b", "reasoning": "high"}],
+  "providers": [
+    {"id": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY"}
+  ],
+  "enabled_models": ["codex/gpt-6-astra", {"id": "openrouter/vendor/model-b", "reasoning": "high"}],
   "skill_paths": ["~/.codex/skills/coding-assistance-style/SKILL.md"],
   "workspace_instructions": ["AGENTS.md"],
   "browser": "/Applications/Chromium.app",
   "subagents": {
-    "scout": "compatible/vendor/fast-model",
-    "reviewer": {"id": "compatible/vendor/model-b", "reasoning": "high"},
+    "scout": "openrouter/vendor/fast-model",
+    "reviewer": {"id": "openrouter/vendor/model-b", "reasoning": "high"},
     "oracle": "codex/gpt-6-astra"
   },
   "memory": {"reflection": "on", "model": "codex/gpt-6-astra", "index_bytes": 16384}
@@ -133,7 +150,7 @@ keys are only referenced by env var name.
 - `workspace_instructions` names files at the workspace root, such as `AGENTS.md` or `CLAUDE.md`, whose contents join every turn as the repository's own context, labelled as such and without authority over the task. Omitted, nothing is read from a repository: a cloned project's files are not trusted by default. A missing file is skipped; a symlink or a file over 64 KiB is a warning.
 - The last reasoning effort you picked for each provider is remembered in `~/.local/state/julia/preferences.json`. It applies at launch unless the model has its own `reasoning`, and `--reasoning` beats both.
 - Every model call is timed, and `~/.local/state/julia/throughput.json` keeps each model's last week of calls. The model picker (`ctrl+p`) shows each model's output tokens per second over them, with how long ago it was last used once that is more than a week. A model's old calls are dropped only when it is used again, so an idle model keeps its figures.
-- `subagents` assigns a model to each [subagent role](#subagent-roles) by name, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`. A role without one runs on the delegating agent's model. An assigned model starts at its entry's effort, else at the parent's when it is the parent's model, else at the one `model` or `enabled_models` gives it. A compatible model needs `compatible_base_url` and that endpoint's key.
+- `subagents` assigns a model to each [subagent role](#subagent-roles) by name, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`. A role without one runs on the delegating agent's model. An assigned model starts at its entry's effort, else at the parent's when it is the parent's model, else at the one `model` or `enabled_models` gives it.
 - `memory` keeps notes between sessions (see [Memory](#memory)): `reflection` is `on` (the default) or `off`, `model` runs the reflection step on another model, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`, and `index_bytes` caps what the index of notes may take of the instructions (4096 to 65536; default 16 KiB). The reflection step runs at low effort unless `model` gives its own.
 - `browser` is the Chrome the Browser tool launches (an executable or `.app`); `JULIA_BROWSER` overrides it. Without either, JULIA looks for Chrome, Chromium, Chrome for Testing, Brave or Edge in `/Applications`, then in Playwright's and Puppeteer's caches. `npx playwright install chromium` provides one.
 
@@ -378,9 +395,9 @@ text is untrusted: the agent treats it as data, never as instructions.
 
 **Reviewer.** `reviewer_model` in the config picks it, as `provider/<model-id>`.
 Unset, it is `codex/gpt-6-luna`: Codex with no reasoning, running in a
-read-only, no-network process. `compatible/<model-id>`, such as
-`compatible/typesafe/jev-1.13`, reviews instead through `compatible_base_url`'s
-Decisions API. Approval then requires ≥50% task relevance and >70% on each harm
+read-only, no-network process. `<provider-id>/<model-id>` for one of your
+`providers`, such as `openrouter/typesafe/jev-1.13`, reviews instead through that
+provider's Decisions API. Approval then requires ≥50% task relevance and >70% on each harm
 check. The reviewer sees the proposed action and your messages, but nothing else
 from the agent. A denial goes back to the
 agent with the reason. After 3 denials in a row (or 20 in one turn), or when the

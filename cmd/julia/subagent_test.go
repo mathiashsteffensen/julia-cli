@@ -167,11 +167,10 @@ func (b *roleBackend) Run(ctx context.Context, s *core.Session, prompt core.Prom
 func TestRuntimeSubagentRolesRunOnTheirModels(t *testing.T) {
 	cfg := config.Default()
 	cfg.SkillPaths = []string{}
-	cfg.APIKeyEnv = "ROUTER_KEY"
-	cfg.CompatibleBaseURL = "https://openrouter.ai/api/v1"
-	cfg.EnabledModels = []config.ModelEntry{{ID: "compatible/vendor/scout-model", Reasoning: "xhigh"}}
+	cfg.Providers = []config.ProviderConfig{{ID: "openrouter", BaseURL: "https://openrouter.ai/api/v1", APIKeyEnv: "ROUTER_KEY"}}
+	cfg.EnabledModels = []config.ModelEntry{{ID: "openrouter/vendor/scout-model", Reasoning: "xhigh"}}
 	cfg.Subagents = map[string]config.ModelEntry{
-		"scout":    {ID: "compatible/vendor/scout-model"},
+		"scout":    {ID: "openrouter/vendor/scout-model"},
 		"reviewer": {ID: "codex/review-model", Reasoning: "low"},
 		"oracle":   {ID: "codex/parent-model"},
 	}
@@ -200,11 +199,12 @@ func TestRuntimeSubagentRolesRunOnTheirModels(t *testing.T) {
 		task, role, provider, model, reasoning, keyEnv string
 		tools                                          []string
 	}{
-		// The model's configured effort, and the key that belongs to the compatible endpoint.
-		{"map it", "scout", "compatible", "vendor/scout-model", "xhigh", "ROUTER_KEY", readOnly},
-		{"check it", "reviewer", "codex", "review-model", "low", "ROUTER_KEY", readOnly},
+		// The model's configured effort, and the key that belongs to the named provider.
+		{"map it", "scout", "openrouter", "vendor/scout-model", "xhigh", "ROUTER_KEY", readOnly},
+		// Codex has no key, and never takes the named provider's.
+		{"check it", "reviewer", "codex", "review-model", "low", "", readOnly},
 		// The parent's own model keeps the parent's effort.
-		{"judge it", "oracle", "codex", "parent-model", "medium", "ROUTER_KEY", readOnly},
+		{"judge it", "oracle", "codex", "parent-model", "medium", "", readOnly},
 	} {
 		child, ok := backend.children[tc.task]
 		if !ok {
@@ -212,7 +212,7 @@ func TestRuntimeSubagentRolesRunOnTheirModels(t *testing.T) {
 		}
 		modelID := config.JoinModel(tc.provider, tc.model)
 		settings, ok := made[modelID]
-		if !ok || settings.Reasoning != tc.reasoning || settings.APIKeyEnv != tc.keyEnv {
+		if !ok || settings.Reasoning != tc.reasoning || settings.KeyEnv(settings.Provider) != tc.keyEnv {
 			t.Errorf("%s: backend made with %+v, want %s at %s with key %s", tc.role, settings, modelID, tc.reasoning, tc.keyEnv)
 		}
 		if child.session.Provider != tc.provider || child.session.Model != tc.model || child.session.Reasoning != tc.reasoning {
@@ -242,16 +242,15 @@ func TestRuntimeSubagentThatCannotStartIsNeitherSavedNorAnnounced(t *testing.T) 
 	t.Setenv("JULIA_TEST_UNSET_KEY", "")
 	cfg := config.Default()
 	cfg.SkillPaths = []string{}
-	cfg.APIKeyEnv = "JULIA_TEST_UNSET_KEY"
-	cfg.CompatibleBaseURL = "https://openrouter.ai/api/v1"
-	cfg.Subagents = map[string]config.ModelEntry{"scout": {ID: "compatible/vendor/m"}}
+	cfg.Providers = []config.ProviderConfig{{ID: "openrouter", BaseURL: "https://openrouter.ai/api/v1", APIKeyEnv: "JULIA_TEST_UNSET_KEY"}}
+	cfg.Subagents = map[string]config.ModelEntry{"scout": {ID: "openrouter/vendor/m"}}
 	backend := &roleBackend{children: map[string]roleChild{}, tasks: `{"tasks":[{"role":"scout","task":"map it"},{"role":"worker","task":"build it"}]}`}
 	var mu sync.Mutex
 	saved := map[string]string{}
 	var statuses []string
 	runner := &runtimeBackend{backend: backend, cfg: cfg, roles: agents.Builtin(), timeout: 5 * time.Second, parent: context.Background(),
 		makeBackend: func(ctx context.Context, selected config.Config) (core.Backend, core.Approver, error) {
-			if selected.Provider == "compatible" {
+			if selected.Provider == "openrouter" {
 				return newBackend(ctx, selected, nil)
 			}
 			return backend, nil, nil
@@ -274,7 +273,7 @@ func TestRuntimeSubagentThatCannotStartIsNeitherSavedNorAnnounced(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(backend.result, `"role":"scout","output":"","error":"compatible/vendor/m: set JULIA_TEST_UNSET_KEY for the compatible provider"`) {
+	if !strings.Contains(backend.result, `"role":"scout","output":"","error":"openrouter/vendor/m: set JULIA_TEST_UNSET_KEY for the openrouter provider"`) {
 		t.Fatalf("the scout's failure is not explained: %s", backend.result)
 	}
 	if len(saved) != 1 || !slices.ContainsFunc(slices.Collect(maps.Values(saved)), func(title string) bool { return title == "Subagent worker: build it" }) {
@@ -314,34 +313,30 @@ func TestSubagentInstructions(t *testing.T) {
 
 func TestSubagentSettings(t *testing.T) {
 	cfg := config.Default()
-	cfg.Provider, cfg.Model, cfg.APIKeyEnv = "anthropic", "parent", "MY_ANTHROPIC_KEY"
-	cfg.CompatibleBaseURL = "https://openrouter.ai/api/v1"
-	cfg.EnabledModels = []config.ModelEntry{{ID: "compatible/vendor/m", Reasoning: "high"}}
+	cfg.Provider, cfg.Model = "anthropic", "parent"
+	cfg.Providers = []config.ProviderConfig{openRouter}
+	cfg.EnabledModels = []config.ModelEntry{{ID: "openrouter/vendor/m", Reasoning: "high"}}
 	cfg.Subagents = map[string]config.ModelEntry{
-		"scout":    {ID: "compatible/vendor/m"},
-		"reviewer": {ID: "compatible/vendor/m", Reasoning: "low"},
+		"scout":    {ID: "openrouter/vendor/m"},
+		"reviewer": {ID: "openrouter/vendor/m", Reasoning: "low"},
 		"oracle":   {ID: "anthropic/parent"},
 		"worker":   {ID: "openai/other"},
 	}
 	parent := cfg
 	parent.Reasoning = ""
 	for _, tc := range []struct{ role, provider, model, reasoning, keyEnv string }{
-		{"delegate", "anthropic", "parent", "", "MY_ANTHROPIC_KEY"},
-		// Anthropic's key never goes to the compatible endpoint or to OpenAI.
-		{"scout", "compatible", "vendor/m", "high", "OPENAI_API_KEY"},
-		{"reviewer", "compatible", "vendor/m", "low", "OPENAI_API_KEY"},
-		{"oracle", "anthropic", "parent", "", "MY_ANTHROPIC_KEY"},
-		{"worker", "openai", "other", "", ""},
+		{"delegate", "anthropic", "parent", "", "ANTHROPIC_API_KEY"},
+		// Each provider reads its own key: Anthropic's never goes to OpenRouter
+		// or OpenAI, nor OpenRouter's to a built-in provider.
+		{"scout", "openrouter", "vendor/m", "high", "OPENROUTER_API_KEY"},
+		{"reviewer", "openrouter", "vendor/m", "low", "OPENROUTER_API_KEY"},
+		{"oracle", "anthropic", "parent", "", "ANTHROPIC_API_KEY"},
+		{"worker", "openai", "other", "", "OPENAI_API_KEY"},
 	} {
 		got := subagentSettings(cfg, parent, tc.role)
-		if got.Provider != tc.provider || got.Model != tc.model || got.Reasoning != tc.reasoning || got.APIKeyEnv != tc.keyEnv {
-			t.Errorf("%s: %s/%s at %q with key %q, want %s/%s at %q with key %q", tc.role, got.Provider, got.Model, got.Reasoning, got.APIKeyEnv, tc.provider, tc.model, tc.reasoning, tc.keyEnv)
+		if got.Provider != tc.provider || got.Model != tc.model || got.Reasoning != tc.reasoning || got.KeyEnv(got.Provider) != tc.keyEnv {
+			t.Errorf("%s: %s/%s at %q with key %q, want %s/%s at %q with key %q", tc.role, got.Provider, got.Model, got.Reasoning, got.KeyEnv(got.Provider), tc.provider, tc.model, tc.reasoning, tc.keyEnv)
 		}
-	}
-	// Codex has no key of its own, so there api_key_env is the compatible endpoint's.
-	cfg.Provider = "codex"
-	if got := subagentSettings(cfg, cfg, "scout"); got.APIKeyEnv != "MY_ANTHROPIC_KEY" {
-		t.Errorf("under codex, the compatible key is %q", got.APIKeyEnv)
 	}
 }
 
@@ -375,15 +370,15 @@ func TestLoadRolesChecksAssignments(t *testing.T) {
 
 func TestRolesSummary(t *testing.T) {
 	cfg := config.Default()
-	cfg.CompatibleBaseURL = "https://openrouter.ai/api/v1"
-	cfg.EnabledModels = []config.ModelEntry{{ID: "compatible/vendor/b", Reasoning: "xhigh"}}
-	cfg.Subagents = map[string]config.ModelEntry{"scout": {ID: "compatible/vendor/m", Reasoning: "low"}, "reviewer": {ID: "compatible/vendor/b"}, "oracle": {ID: "openai/c"}}
+	cfg.Providers = []config.ProviderConfig{openRouter}
+	cfg.EnabledModels = []config.ModelEntry{{ID: "openrouter/vendor/b", Reasoning: "xhigh"}}
+	cfg.Subagents = map[string]config.ModelEntry{"scout": {ID: "openrouter/vendor/m", Reasoning: "low"}, "reviewer": {ID: "openrouter/vendor/b"}, "oracle": {ID: "openai/c"}}
 	roles := append(agents.Builtin(), agents.Role{Name: "auditor", Source: "/home/me/.config/julia/agents/auditor.md"})
 	got := strings.Join(rolesSummary(cfg, roles), "\n")
 	for _, want := range []string{
-		"Subagent  scout       compatible/vendor/m · reasoning low",
+		"Subagent  scout       openrouter/vendor/m · reasoning low",
 		// The effort enabled_models gives the model.
-		"Subagent  reviewer    compatible/vendor/b · reasoning xhigh",
+		"Subagent  reviewer    openrouter/vendor/b · reasoning xhigh",
 		"Subagent  oracle      openai/c\n",
 		"Subagent  worker      the delegating agent's model",
 		"Subagent  auditor     the delegating agent's model · /home/me/.config/julia/agents/auditor.md",

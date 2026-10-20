@@ -375,11 +375,11 @@ func TestSidebarNeverOverflowsItsColumn(t *testing.T) {
 		{Total: core.TokenUsage{Input: math.MaxInt / 4, CacheRead: math.MaxInt / 4, CacheWrite: math.MaxInt / 4, Output: math.MaxInt / 4}, Context: math.MaxInt},
 		{Total: core.TokenUsage{Input: -5, CacheRead: -5, CacheWrite: -5, Output: -5}, Context: -10},
 	}
-	for _, provider := range []string{"fake", "codex", "compatible", long} {
+	for _, provider := range []string{"fake", "codex", "openrouter", long} {
 		for i, usage := range usages {
 			for _, window := range []int{-1, 0, 1, 256_000, math.MaxInt} {
 				session := &core.Session{ID: long, Directory: "/" + long, Provider: provider, Model: long, Reasoning: long, Usage: usage}
-				m := testModel(t, Config{Session: session, Mode: long, ContextWindow: window, CompatibleReasoning: true, ToolDefinitions: []core.ToolDefinition{{Name: "Read"}, {Name: long}, {Name: "Bash"}}})
+				m := testModel(t, Config{Session: session, Mode: long, ContextWindow: window, NamedProviders: map[string]bool{"openrouter": true, long: true}, ToolDefinitions: []core.ToolDefinition{{Name: "Read"}, {Name: long}, {Name: "Bash"}}})
 				m.inputTokens, m.outputTokens = math.MaxInt, -1
 				for height := 1; height <= 70; height++ {
 					m.height = height + 3 // the sidebar fills every row below the header

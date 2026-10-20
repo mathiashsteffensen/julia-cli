@@ -68,7 +68,7 @@ func TestApplySessionSettingsPersistsSelectionAndPreservesCodexContinuation(t *t
 	}
 }
 func TestApplySessionSettingsValidationDoesNotPersist(t *testing.T) {
-	for _, tt := range []struct{ name, provider, model, effort string }{{"surrounding model whitespace", "codex", " model", "high"}, {"model control character", "codex", "model\n", "high"}, {"invalid effort", "codex", "model", "BAD effort"}, {"API effort unsupported", "compatible", "model", "high"}, {"API empty model", "compatible", "", ""}} {
+	for _, tt := range []struct{ name, provider, model, effort string }{{"surrounding model whitespace", "codex", " model", "high"}, {"model control character", "codex", "model\n", "high"}, {"invalid effort", "codex", "model", "BAD effort"}, {"API effort unsupported", "openai", "model", "high"}, {"API empty model", "openai", "", ""}, {"unconfigured named provider", "openrouter", "model", ""}} {
 		t.Run(tt.name, func(t *testing.T) {
 			current := settingsSession()
 			current.Provider = tt.provider
@@ -85,9 +85,9 @@ func TestIncompatibleModelSwitchStartsFreshAndPreservesPreviousSession(t *testin
 	for _, tt := range []struct {
 		name, fromProvider, toProvider, model, reasoning string
 	}{
-		{"OpenRouter model change", "compatible", "compatible", "new-model", ""},
-		{"switch to OpenRouter", "codex", "compatible", "openrouter/model", ""},
-		{"switch back to Codex", "compatible", "codex", "codex-model", "medium"},
+		{"OpenRouter model change", "openrouter", "openrouter", "new-model", ""},
+		{"switch to OpenRouter", "codex", "openrouter", "vendor/model", ""},
+		{"switch back to Codex", "openrouter", "codex", "codex-model", "medium"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			current := settingsSession()
@@ -95,7 +95,7 @@ func TestIncompatibleModelSwitchStartsFreshAndPreservesPreviousSession(t *testin
 			before := *current
 			store := &session.Store{Directory: t.TempDir()}
 			defer store.Close()
-			if err := applySessionSettings(config.Default(), current, tt.toProvider, tt.model, tt.reasoning, store.Save); err != nil {
+			if err := applySessionSettings(openRouterConfig(), current, tt.toProvider, tt.model, tt.reasoning, store.Save); err != nil {
 				t.Fatal(err)
 			}
 			if current.ID == before.ID || current.Provider != tt.toProvider || current.Model != tt.model || len(current.Messages) != 0 || len(current.State) != 0 || current.RemoteID != "" || current.PendingTool != nil {
@@ -122,20 +122,54 @@ func TestIncompatibleModelSwitchStartsFreshAndPreservesPreviousSession(t *testin
 	}
 }
 
-func TestCompatibleCatalogRequiresItsConfiguredAPIKey(t *testing.T) {
+// openRouter is the named provider tests configure for OpenRouter.
+var openRouter = config.ProviderConfig{ID: "openrouter", BaseURL: "https://openrouter.ai/api/v1", APIKeyEnv: "OPENROUTER_API_KEY"}
+
+// openRouterConfig is the default configuration with openRouter configured.
+func openRouterConfig() config.Config {
 	cfg := config.Default()
-	cfg.Provider, cfg.Model, cfg.CompatibleBaseURL = "compatible", "provider/model", "https://openrouter.ai/api/v1"
-	cfg.APIKeyEnv, cfg.EnabledModels = "OPENROUTER_API_KEY", []config.ModelEntry{{ID: "compatible/provider/model"}}
+	cfg.Providers = []config.ProviderConfig{openRouter}
+	return cfg
+}
+
+func TestNamedProviderReadsOnlyItsOwnAPIKey(t *testing.T) {
+	cfg := openRouterConfig()
+	cfg.Providers = append(cfg.Providers, config.ProviderConfig{ID: "local", BaseURL: "http://localhost:1234/v1"})
+	cfg.Provider, cfg.Model = "openrouter", "provider/model"
+	cfg.EnabledModels = []config.ModelEntry{{ID: "openrouter/provider/model"}}
+	// Another provider's key is never a stand-in for the named provider's.
 	t.Setenv("OPENROUTER_API_KEY", "")
-	if _, _, err := newBackend(context.Background(), cfg, nil); err == nil || !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
+	t.Setenv("OPENAI_API_KEY", "openai-key")
+	if _, _, err := newBackend(context.Background(), cfg, nil); err == nil || !strings.Contains(err.Error(), "set OPENROUTER_API_KEY for the openrouter provider") {
 		t.Fatal("OpenRouter startup did not report its missing key", err)
+	}
+	// Nor is a named provider's key a built-in provider's.
+	t.Setenv("OPENROUTER_API_KEY", "router-key")
+	t.Setenv("OPENAI_API_KEY", "")
+	cfg.Provider = "openai"
+	if _, _, err := newBackend(context.Background(), cfg, nil); err == nil || !strings.Contains(err.Error(), "set OPENAI_API_KEY for the openai provider") {
+		t.Fatal("OpenAI startup did not report its missing key", err)
+	}
+	if key, err := apiKey(cfg, "openrouter"); err != nil || key != "router-key" {
+		t.Fatal("the named provider's key", key, err)
+	}
+	// A provider without api_key_env is called keyless.
+	cfg.Provider, cfg.Model = "local", "qwen/coder"
+	backend, _, err := newBackend(context.Background(), cfg, nil)
+	if err != nil || backend.Name() != "local" {
+		t.Fatal("keyless provider did not start", backend, err)
+	}
+	if key, err := apiKey(cfg, "local"); err != nil || key != "" {
+		t.Fatal("a keyless provider got a key", key, err)
+	}
+	if _, err := apiKey(cfg, "codex"); err == nil {
+		t.Fatal("Codex has no API key to read")
 	}
 }
 
 func TestProviderSwitchStartsAtTheModelsConfiguredReasoning(t *testing.T) {
-	cfg := config.Default()
-	cfg.CompatibleBaseURL = "https://openrouter.ai/api/v1"
-	cfg.EnabledModels = []config.ModelEntry{{ID: "compatible/vendor/model", Reasoning: "xhigh"}, {ID: "compatible/vendor/plain"}}
+	cfg := openRouterConfig()
+	cfg.EnabledModels = []config.ModelEntry{{ID: "openrouter/vendor/model", Reasoning: "xhigh"}, {ID: "openrouter/vendor/plain"}}
 	for _, tt := range []struct{ name, model, passed, want string }{
 		{"configured effort survives the switch", "vendor/model", "xhigh", "xhigh"},
 		{"configured effort is used when none is passed", "vendor/model", "", "xhigh"},
@@ -143,10 +177,10 @@ func TestProviderSwitchStartsAtTheModelsConfiguredReasoning(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			current := settingsSession()
-			if err := applySessionSettings(cfg, current, "compatible", tt.model, tt.passed, nil); err != nil {
+			if err := applySessionSettings(cfg, current, "openrouter", tt.model, tt.passed, nil); err != nil {
 				t.Fatal(err)
 			}
-			if current.Provider != "compatible" || current.Reasoning != tt.want || !current.ReasoningSet {
+			if current.Provider != "openrouter" || current.Reasoning != tt.want || !current.ReasoningSet {
 				t.Fatalf("provider switch set reasoning %q, want %q", current.Reasoning, tt.want)
 			}
 		})
@@ -155,9 +189,9 @@ func TestProviderSwitchStartsAtTheModelsConfiguredReasoning(t *testing.T) {
 
 func TestUnchangedAPIModelKeepsContinuation(t *testing.T) {
 	current := settingsSession()
-	current.Provider, current.Model, current.Reasoning, current.ReasoningSet = "compatible", "openrouter/model", "", true
+	current.Provider, current.Model, current.Reasoning, current.ReasoningSet = "openrouter", "vendor/model", "", true
 	before := *current
-	if err := applySessionSettings(config.Default(), current, "compatible", current.Model, "", nil); err != nil {
+	if err := applySessionSettings(openRouterConfig(), current, "openrouter", current.Model, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(*current, before) {

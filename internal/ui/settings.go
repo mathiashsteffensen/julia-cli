@@ -194,7 +194,7 @@ func (m *model) reasoningSettings() bool {
 }
 
 func (m *model) reasoningSettingsFor(provider string) bool {
-	return m.cfg.Demo || provider == "codex" || (provider == "compatible" && m.cfg.CompatibleReasoning)
+	return m.cfg.Demo || showsReasoning(provider, m.cfg.NamedProviders)
 }
 
 func (m *model) closePicker() {
@@ -320,7 +320,7 @@ func (m *model) cycleReasoning() tea.Cmd {
 	if m.cfg.Demo && m.currentModelOption() == nil {
 		m.models = previewModelOptions(m.cfg.Session.Provider)
 	}
-	if m.cfg.Session.Provider == "compatible" && m.cfg.CompatibleReasoning {
+	if m.cfg.NamedProviders[m.cfg.Session.Provider] {
 		if err := m.cycleReasoningBy(1); err != nil {
 			m.notice = "Settings unchanged: " + oneLine(err.Error())
 		}
@@ -393,7 +393,7 @@ func (m *model) receiveReasoningCycle(msg reasoningCycleMsg) tea.Cmd {
 
 func (m *model) cycleReasoningBy(steps int) error {
 	var efforts []string
-	if m.cfg.Session.Provider == "compatible" && m.cfg.CompatibleReasoning {
+	if m.cfg.NamedProviders[m.cfg.Session.Provider] {
 		efforts = config.OpenRouterReasoningEfforts()
 	} else if option := m.currentModelOption(); option != nil {
 		efforts = option.ReasoningEfforts
@@ -443,7 +443,7 @@ func (m *model) pickerChoices() []settingChoice {
 			detail += " · model default: " + option.DefaultReasoning
 		}
 		choices = append(choices, settingChoice{value: "", label: "Default", detail: detail, active: m.cfg.Session.Reasoning == ""})
-		if m.cfg.Session.Provider == "compatible" && m.cfg.CompatibleReasoning {
+		if m.cfg.NamedProviders[m.cfg.Session.Provider] {
 			for _, effort := range config.OpenRouterReasoningEfforts() {
 				choices = append(choices, settingChoice{value: effort, label: effort, detail: "OpenRouter effort · model support unverified", active: effort == m.cfg.Session.Reasoning})
 			}
@@ -572,7 +572,7 @@ func (m *model) settingsCommand(prompt string) (bool, tea.Cmd) {
 		// provider/ID switches provider; an ID without a known provider
 		// prefix is a model of the current provider.
 		model = parts[1]
-		if prefix, id := config.SplitModel(parts[1]); slices.Contains(config.Providers, prefix) {
+		if prefix, id := config.SplitModel(parts[1]); slices.Contains(config.BuiltinProviders, prefix) || m.isNamed(prefix) {
 			provider, model = prefix, id
 		}
 	} else {
@@ -604,8 +604,8 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 	if option := modelOption(m.cfg.EnabledModels, provider, model); option != nil && option.DefaultReasoning != "" && (modelChanged || providerChanged) {
 		// An enabled model starts at the effort its entry gives.
 		reasoning = option.DefaultReasoning
-	} else if provider == "compatible" && (modelChanged || providerChanged) {
-		// Compatible model support is not in the catalog, so do not carry a
+	} else if m.isNamed(provider) && (modelChanged || providerChanged) {
+		// A named provider's model support is not in the catalog, so do not carry a
 		// potentially unsupported effort to a different model.
 		reasoning = ""
 	} else if provider == "codex" && (modelChanged || providerChanged) {
@@ -684,11 +684,15 @@ func (m *model) modelProviderLabel(provider string) string {
 	switch provider {
 	case "codex":
 		return "Codex"
-	case "compatible":
-		return "Compatible"
 	default:
 		return provider
 	}
+}
+
+// isNamed reports whether provider is one of the configured named providers.
+func (m *model) isNamed(provider string) bool {
+	_, ok := m.cfg.NamedProviders[provider]
+	return ok
 }
 
 func oneLine(value string) string { return strings.Join(strings.Fields(sanitize(value)), " ") }
