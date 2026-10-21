@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 	"julia/agents"
@@ -421,7 +422,40 @@ func run() error {
 	pending := runner.finish(ctx, func() {
 		fmt.Fprintln(os.Stderr, "julia: finishing the reflection on your last turn · Ctrl+C skips it")
 	})
-	return errors.Join(runErr, keepAfterTurns(pending, s, store))
+	keepErr := keepAfterTurns(pending, s, store)
+	if runErr == nil {
+		width, _, err := term.GetSize(os.Stdout.Fd())
+		if err != nil {
+			width = 80
+		}
+		lipgloss.Fprint(os.Stdout, ui.RenderGoodbye(s, resumeCommand(s), width))
+	}
+	return errors.Join(runErr, keepErr)
+}
+
+// resumeCommand is the command that reopens s from the shell the interface
+// was launched in, naming the workspace only when that shell is not in it.
+func resumeCommand(s *core.Session) string {
+	command := "julia --resume " + s.ID
+	if wd, err := os.Getwd(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(wd); err == nil {
+			wd = resolved
+		}
+		if wd == s.Directory {
+			return command
+		}
+	}
+	return command + " --dir " + shellQuote(s.Directory)
+}
+
+// shellQuote leaves a plain path as it is and single-quotes anything else.
+func shellQuote(s string) string {
+	if s != "" && strings.IndexFunc(s, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("/._-+:@", r))
+	}) < 0 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // Resolve launch settings after locking and rereading a resumed session. An
