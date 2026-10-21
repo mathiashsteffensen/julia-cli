@@ -104,11 +104,14 @@ type Session struct {
 	// user's words into this conversation so far. The model reasons from the
 	// whole conversation, so a page read in one turn can shape a note saved
 	// in the next; the mark lasts as long as the conversation does.
-	MemoryTaint []string     `json:"memory_taint,omitempty"`
-	Usage       SessionUsage `json:"usage"`
-	Messages    []Message    `json:"messages"`
-	CreatedAt   time.Time    `json:"created_at"`
-	UpdatedAt   time.Time    `json:"updated_at"`
+	MemoryTaint []string `json:"memory_taint,omitempty"`
+	// MemoryDelivered names, as scope/name, the notes a tool result has
+	// carried in this conversation, each of which is delivered once.
+	MemoryDelivered []string     `json:"memory_delivered,omitempty"`
+	Usage           SessionUsage `json:"usage"`
+	Messages        []Message    `json:"messages"`
+	CreatedAt       time.Time    `json:"created_at"`
+	UpdatedAt       time.Time    `json:"updated_at"`
 }
 
 // Event is the single provider-independent stream consumed by the UI and headless CLI.

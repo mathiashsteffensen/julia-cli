@@ -48,7 +48,7 @@ Prefer replacing an existing note, by its name and scope, to adding a near dupli
 
 A note's description is the whole lesson in one specific line, in the imperative when it is a rule, as later turns will see it. Its body gives **Why:** the incident, dated with the Date given, with the user's words or the evidence, and **How to apply:** when it kicks in. Anchor the note to its cues when it has them: paths (globs) it applies to, commands (regular expressions) it applies to, keywords of the requests it applies to; leave them empty for a note that always applies. A replacement carries the old note's cues over unless they are meant to change. Scope is workspace unless the note is about the user or the machine.
 
-Also name the existing notes the turn visibly used: helped when the transcript shows the agent apply one (a [Memory · name] line in a tool result, a Memory read, a note quoted from Relevant now) and the outcome bore it out; misled when the agent followed one and it proved stale or wrong. Leave both lists empty when the transcript does not show it.`
+Also judge the existing notes the turn bore on. Helped: the transcript shows the agent apply one (a [Memory · name] line in a tool result, a Memory read, a note quoted from Relevant now or Pinned, or work that plainly follows a note from the index, such as code shaped the way a note asks) and the outcome bore it out. Misled: the agent followed one and it proved stale or wrong. Ignored: the user had to correct or instruct the agent in something an existing note already said, even in more general words than theirs, as a note on writing for the next reader covers a complaint that one file is hard to follow. An ignored note still holds: name it rather than saving a narrower duplicate, and save a new note only for what it does not already say. When its description or cues are why it was missed, also replace it with a sharper description or cues. Leave the lists empty when the transcript does not show it.`
 
 // ReflectionSchema is the JSON schema of the reflection step's answer. Every
 // property is required, as strict structured output demands; an absent value
@@ -77,10 +77,11 @@ var ReflectionSchema = map[string]any{
 				"additionalProperties": false,
 			},
 		},
-		"helped": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "names of existing notes that visibly helped this turn"},
-		"misled": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "names of existing notes that misled this turn"},
+		"helped":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "names of existing notes that visibly helped this turn"},
+		"misled":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "names of existing notes that misled this turn"},
+		"ignored": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "names of existing notes whose lesson the user had to give again this turn"},
 	},
-	"required":             []string{"operations", "helped", "misled"},
+	"required":             []string{"operations", "helped", "misled", "ignored"},
 	"additionalProperties": false,
 }
 
@@ -103,6 +104,7 @@ type Reflection struct {
 	Operations []Operation `json:"operations"`
 	Helped     []string    `json:"helped"`
 	Misled     []string    `json:"misled"`
+	Ignored    []string    `json:"ignored"`
 }
 
 // ParseReflection reads the reflection step's answer, refusing anything but
@@ -243,7 +245,7 @@ type Applied struct {
 
 // Apply carries out a reflection's operations on the store for workspace,
 // each through the same validation a Memory tool call gets, and tallies the
-// notes it named as helping or misleading. A note saved from a tainted turn
+// notes it judged. A note saved from a tainted turn
 // is marked so. Every operation is attempted; a failed one is reported, not
 // fatal.
 func (s *Store) Apply(r Reflection, workspace, session string, tainted bool) []Applied {
@@ -286,12 +288,12 @@ func (s *Store) Apply(r Reflection, workspace, session string, tainted bool) []A
 		return out
 	}
 	for _, judged := range []struct {
-		names  []string
-		helped bool
-	}{{r.Helped, true}, {r.Misled, false}} {
+		names   []string
+		verdict string
+	}{{r.Helped, VerdictHelped}, {r.Misled, VerdictMisled}, {r.Ignored, VerdictIgnored}} {
 		for _, name := range judged.names {
 			if note, ok := recall.Find(name); ok {
-				_ = s.Tally(note.Scope, note.Name, judged.helped)
+				_ = s.Tally(note.Scope, note.Name, judged.verdict)
 			}
 		}
 	}

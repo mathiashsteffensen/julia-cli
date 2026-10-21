@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -664,7 +665,7 @@ func (m *model) submit() tea.Cmd {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **click** a link to open it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/review` reviews your uncommitted changes · `/review WHAT` reviews what you name · you decide each finding in a card\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **click** a link to open it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/review` reviews your uncommitted changes · `/review WHAT` reviews what you name · you decide each finding in a card\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- `/memory pin NAME` shows a note in full every turn · `/memory unpin NAME` undoes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
 		case "/ask", "/ask text":
 			if !m.cfg.Demo {
 				m.notice = "Unknown command. /help lists the essentials."
@@ -743,9 +744,13 @@ func (m *model) submit() tea.Cmd {
 }
 
 // memoryCommand answers /memory: alone it lists the notes this workspace
-// sees, with a name it shows that note, and "forget NAME" deletes it. The
+// sees, with a name it shows that note, "forget NAME" deletes it, and "pin
+// NAME" or "unpin NAME" pins it for every task or unpins it. The
 // Markdown the hook returns joins the conversation under its own heading, so
 // what JULIA remembers reads like any other reply; an error is a notice.
+// memoryActions are the words /memory takes before a note's name.
+var memoryActions = []string{"forget", "pin", "unpin"}
+
 func (m *model) memoryCommand(prompt string) bool {
 	parts := strings.Fields(prompt)
 	if parts[0] != "/memory" {
@@ -754,12 +759,12 @@ func (m *model) memoryCommand(prompt string) bool {
 	var action, name string
 	switch {
 	case len(parts) == 1:
-	case len(parts) == 2 && parts[1] != "forget":
+	case len(parts) == 2 && !slices.Contains(memoryActions, parts[1]):
 		action, name = "show", parts[1]
-	case len(parts) == 3 && parts[1] == "forget":
-		action, name = "forget", parts[2]
+	case len(parts) == 3 && slices.Contains(memoryActions, parts[1]):
+		action, name = parts[1], parts[2]
 	default:
-		m.notice = "Use /memory, /memory NAME or /memory forget NAME."
+		m.notice = "Use /memory, /memory NAME, /memory forget NAME or /memory pin|unpin NAME."
 		return true
 	}
 	if m.cfg.Memory == nil {

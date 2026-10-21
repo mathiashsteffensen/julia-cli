@@ -134,9 +134,21 @@ type reflectionOutcome struct {
 // would, and where no one can be asked it is refused. Each change becomes a
 // Memory card, marked as the reflection's, and a message of the transcript;
 // a failure is a warning, never an error of the turn, whose work is done.
+// Whatever happens is added to the activity log.
 func (r *runtimeBackend) reflection(ctx context.Context, in reflectionInput, started func(model string)) reflectionOutcome {
 	var out reflectionOutcome
-	warn := func(text string) { out.events = append(out.events, core.Event{Kind: "warning", Text: text}) }
+	logged := memory.Activity{Kind: memory.ActivityReflection, Session: in.session, Workspace: in.directory, Outcome: memory.ReflectionFailed}
+	var changes []memory.Activity
+	defer func() {
+		if !out.usage.IsZero() {
+			logged.Tokens = &out.usage
+		}
+		_ = r.memory.Log(append([]memory.Activity{logged}, changes...)...)
+	}()
+	warn := func(text string) {
+		logged.Error = text
+		out.events = append(out.events, core.Event{Kind: "warning", Text: text})
+	}
 	ctx, cancel := context.WithTimeout(ctx, reflectionTimeout)
 	defer cancel()
 	recall, err := r.memory.Recall(in.directory)
@@ -156,7 +168,9 @@ func (r *runtimeBackend) reflection(ctx context.Context, in reflectionInput, sta
 		}
 		completer, ok = made.(core.Completer)
 	}
+	logged.Model = model
 	if !ok {
+		logged.Error = "unavailable on " + model
 		out.events = append(out.events, core.Event{Kind: "status", Text: "Reflection is unavailable on " + model})
 		return out
 	}
@@ -167,6 +181,8 @@ func (r *runtimeBackend) reflection(ctx context.Context, in reflectionInput, sta
 	if err != nil {
 		if ctx.Err() == nil {
 			warn("Reflection failed: " + err.Error())
+		} else {
+			logged.Outcome = memory.ReflectionCancelled
 		}
 		return out
 	}
@@ -180,6 +196,7 @@ func (r *runtimeBackend) reflection(ctx context.Context, in reflectionInput, sta
 	if fresh, err := r.memory.Recall(in.directory); err == nil {
 		recall = fresh
 	}
+	logged.Outcome, logged.Helped, logged.Misled, logged.Ignored = memory.ReflectionUnchanged, reflection.Helped, reflection.Misled, reflection.Ignored
 	var calls []core.ToolCall
 	var results []core.Message
 	for i, a := range r.applyReflection(ctx, in, reflection, recall) {
@@ -189,9 +206,12 @@ func (r *runtimeBackend) reflection(ctx context.Context, in reflectionInput, sta
 		if a.Err == nil && a.Note == nil {
 			a.Err = errors.New("it was not applied")
 		}
+		change := memory.Activity{Kind: a.Operation.Action, Session: in.session, Workspace: in.directory, Note: a.Operation.Name, Scope: a.Operation.Scope, Source: memory.SourceReflection}
 		if a.Err != nil {
+			change.Error = a.Err.Error()
 			result.Content, result.IsError = "Reflection could not "+a.Operation.Action+" "+a.Operation.Name+": "+a.Err.Error(), true
 		} else {
+			logged.Outcome = memory.ReflectionChanged
 			result.Content = fmt.Sprintf("%s %s note %s", a.Verb, a.Note.Scope, a.Note.Name)
 			if a.Verb == "Forgot" {
 				result.Content += ": " + a.Note.Description
@@ -199,6 +219,7 @@ func (r *runtimeBackend) reflection(ctx context.Context, in reflectionInput, sta
 			calls = append(calls, call)
 			results = append(results, core.Message{Role: "tool", ToolCallID: call.ID, Content: result.Content})
 		}
+		changes = append(changes, change)
 		out.events = append(out.events, core.Event{Kind: "tool_start", Call: &call, Text: "reflection"}, core.Event{Kind: "tool_end", Call: &call, Result: &result})
 	}
 	// What the reflection changed stays in the conversation, so a resumed
@@ -374,7 +395,7 @@ func keepAfterTurns(pending map[string][]*afterTurn, s *core.Session, store *ses
 // way: a tally changes no lesson.
 func (r *runtimeBackend) applyReflection(ctx context.Context, in reflectionInput, reflection memory.Reflection, recall memory.Recall) []memory.Applied {
 	out := make([]memory.Applied, len(reflection.Operations))
-	approved := memory.Reflection{Helped: reflection.Helped, Misled: reflection.Misled}
+	approved := memory.Reflection{Helped: reflection.Helped, Misled: reflection.Misled, Ignored: reflection.Ignored}
 	var positions []int
 	for i, op := range reflection.Operations {
 		if err := r.approveReflection(ctx, in, op, recall); err != nil {
@@ -400,11 +421,11 @@ func (r *runtimeBackend) approveReflection(ctx context.Context, in reflectionInp
 	if r.cfg.Mode != "auto" {
 		return nil
 	}
-	// Forgetting or rewriting a global note, or one the user wrote, is
-	// weighty; adding a new note is not.
+	// Forgetting or rewriting a global note, or one the user wrote or
+	// pinned, is weighty; adding a new note is not.
 	weighty := false
 	for _, note := range append(append([]*memory.Note(nil), recall.Workspace...), recall.Global...) {
-		if note.Name == op.Name && note.Scope.String() == op.Scope && (note.Scope.Kind == memory.ScopeGlobal || note.Source == memory.SourceUser) {
+		if note.Name == op.Name && note.Scope.String() == op.Scope && (note.Scope.Kind == memory.ScopeGlobal || note.Source == memory.SourceUser || note.Pinned) {
 			weighty = true
 		}
 	}

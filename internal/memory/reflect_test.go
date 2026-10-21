@@ -20,6 +20,9 @@ func TestParseReflection(t *testing.T) {
 	if _, err := ParseReflection(`{"operations":[],"helped":[],"misled":[]}`); err != nil {
 		t.Fatal(err)
 	}
+	if r, err := ParseReflection(`{"operations":[],"helped":[],"misled":[],"ignored":["sir"]}`); err != nil || len(r.Ignored) != 1 {
+		t.Fatalf("ignored: %+v %v", r, err)
+	}
 	for name, text := range map[string]string{
 		"trailing":      good + " and more",
 		"unknown field": `{"operations":[],"helped":[],"misled":[],"note":"x"}`,
@@ -99,8 +102,9 @@ func TestApplyReflection(t *testing.T) {
 			{Action: "forget", Scope: ScopeWorkspace, Name: "old"},
 			{Action: "save", Scope: ScopeGlobal, Name: "Bad Name", Type: TypeUser, Description: "x"},
 		},
-		Helped: []string{"sir", "unknown"},
-		Misled: []string{"make-check"},
+		Helped:  []string{"sir", "unknown"},
+		Misled:  []string{"make-check"},
+		Ignored: []string{"sir"},
 	}, workspace, "8c1847d4a71d39a54d278801", true)
 	if len(applied) != 3 {
 		t.Fatalf("applied %d", len(applied))
@@ -121,7 +125,7 @@ func TestApplyReflection(t *testing.T) {
 	if _, ok := recall.Find("old"); ok {
 		t.Fatal("old note survives")
 	}
-	if note, _ := recall.Find("sir"); note.Helped != 1 {
+	if note, _ := recall.Find("sir"); note.Helped != 1 || note.Ignored != 1 {
 		t.Fatalf("helped not tallied: %+v", note)
 	}
 	if note, _ := recall.Find("make-check"); note.Misled != 1 {

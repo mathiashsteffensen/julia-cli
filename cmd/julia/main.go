@@ -654,12 +654,21 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 			// one in full on purpose taints the conversation, or a single such
 			// note with a common keyword would mark every session it reaches.
 			memoryIndex = recall.Section(r.cfg.Memory.IndexBytes, prompt.Text, r.memoryReadOnly)
+			relevant := recall.Relevant(prompt.Text)
 			if n := recall.Count(); n > 0 {
 				text := fmt.Sprintf("Recalled %d %s", n, map[bool]string{true: "note", false: "notes"}[n == 1])
-				if relevant := len(recall.Relevant(prompt.Text)); relevant > 0 {
-					text += fmt.Sprintf(" · %d relevant now", relevant)
+				if len(relevant) > 0 {
+					text += fmt.Sprintf(" · %d relevant now", len(relevant))
 				}
 				emit(core.Event{Kind: "status", Text: text})
+			}
+			// The consolidation pass sees every note to rewrite it, not to use it.
+			if !r.consolidating {
+				turn := memory.Activity{Kind: memory.ActivityTurn, Session: s.ID, Workspace: s.Directory, Notes: recall.Count(), Omitted: recall.Omitted(r.cfg.Memory.IndexBytes, prompt.Text)}
+				for _, note := range relevant {
+					turn.Relevant = append(turn.Relevant, note.Name)
+				}
+				_ = r.memory.Log(turn)
 			}
 		}
 	}
@@ -791,11 +800,16 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 			s.MemoryTaint = taint
 			emitMu.Unlock()
 		}
+		onDeliver := func(delivered []string) {
+			emitMu.Lock()
+			s.MemoryDelivered = delivered
+			emitMu.Unlock()
+		}
 		if r.consolidating {
 			// The pass rewrites notes and nothing else.
 			agentTools = onlyMemory{agentTools}
 		}
-		memoryTools = tools.WithMemory(agentTools, tools.MemoryOptions{Store: r.memory, Workspace: s.Directory, Session: s.ID, Mode: mode, WorkspaceMode: r.cfg.Mode, ReadOnly: r.memoryReadOnly, Unbounded: r.consolidating, Approve: approveMemory, Task: task.String, Tainted: s.MemoryTaint, OnTaint: onTaint})
+		memoryTools = tools.WithMemory(agentTools, tools.MemoryOptions{Store: r.memory, Workspace: s.Directory, Session: s.ID, Mode: mode, WorkspaceMode: r.cfg.Mode, ReadOnly: r.memoryReadOnly, Unbounded: r.consolidating, Approve: approveMemory, Task: task.String, Tainted: s.MemoryTaint, OnTaint: onTaint, Delivered: s.MemoryDelivered, OnDeliver: onDeliver})
 		agentTools = memoryTools
 	}
 	start := len(s.Messages)
@@ -811,7 +825,9 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		emitMu.Lock()
 		warnings, wentOn := append([]string(nil), turnWarnings...), recovered
 		emitMu.Unlock()
-		if start < len(s.Messages) && worthReflecting(s.Messages[start:], warnings, wentOn) {
+		if start >= len(s.Messages) || !worthReflecting(s.Messages[start:], warnings, wentOn) {
+			_ = r.memory.Log(memory.Activity{Kind: memory.ActivityReflection, Session: s.ID, Workspace: s.Directory, Outcome: memory.ReflectionSkipped})
+		} else {
 			in := reflectionInput{session: s.ID, directory: s.Directory, messages: slices.Clone(s.Messages[start:]), start: start, after: len(s.Messages), warnings: warnings, tainted: slices.Clone(s.MemoryTaint), task: task.String(), selected: selected, backend: backend}
 			// The reflection runs after the turn, unless its changes may
 			// need the user, who can be asked only while the turn lasts: in

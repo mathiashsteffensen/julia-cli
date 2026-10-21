@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -82,6 +83,12 @@ type MemoryOptions struct {
 	// OnTaint, when set, is told each time the taint grows, so the session
 	// carries it at every checkpoint, not only when the turn ends.
 	OnTaint func([]string)
+	// Delivered names, as scope/name, the notes a tool result has already
+	// carried in this conversation: each is delivered once per conversation,
+	// as the index shows its lesson every turn anyway. OnDeliver, when set,
+	// is told each time the list grows.
+	Delivered []string
+	OnDeliver func([]string)
 	// WorkspaceMode is the approval mode the workspace tools run in, which
 	// decides what a command can reach; empty is Mode. It differs only in
 	// the consolidation pass, whose notes are written freely while its
@@ -163,7 +170,11 @@ func WithMemory(base core.ToolExecutor, options MemoryOptions) *Memory {
 	if options.Mode == "" {
 		options.Mode = "auto"
 	}
-	return &Memory{base: base, options: options, tainted: slices.Clone(options.Tainted)}
+	delivered := map[string]bool{}
+	for _, key := range options.Delivered {
+		delivered[key] = true
+	}
+	return &Memory{base: base, options: options, tainted: slices.Clone(options.Tainted), delivered: delivered}
 }
 
 // Memory is the Memory tool wrapped around an executor; see WithMemory.
@@ -173,7 +184,8 @@ type Memory struct {
 	mu      sync.Mutex
 	// notes are the turn's notes with cues, read once and again after a
 	// save or forget; delivered marks the ones a tool result has carried
-	// this turn, so a note is delivered once, at its first cue.
+	// in this conversation, so a note is delivered once, at its first cue,
+	// and deliveries counts this turn's.
 	notes      []*memory.Note
 	loaded     bool
 	delivered  map[string]bool
@@ -292,21 +304,28 @@ func (e *Memory) Execute(ctx context.Context, call core.ToolCall) core.ToolResul
 	}
 	var content string
 	var err error
-	switch args.Action {
-	case "list":
+	switch {
+	case args.Action == "list":
 		content, err = e.list()
-	case "read":
+	case !slices.Contains(memoryActions, args.Action):
+		err = fmt.Errorf("action must be one of %s", strings.Join(memoryActions, ", "))
+	case args.Name == "":
+		// A model that puts the note's slug in the description and leaves
+		// the name out learns which field it missed.
+		err = fmt.Errorf("%s needs name, the note's name: %s; the description is the lesson in one line", args.Action, memory.NameRule)
+	case args.Action == "read":
 		content, err = e.read(args)
-	case "save":
+	case args.Action == "save":
 		content, err = e.save(ctx, call, args)
 		e.loaded = false
-	case "forget":
+	case args.Action == "forget":
 		content, err = e.forget(ctx, call, args)
 		e.loaded = false
-	default:
-		err = fmt.Errorf("action must be one of %s", strings.Join(memoryActions, ", "))
 	}
 	if err != nil {
+		if args.Action != "list" && slices.Contains(memoryActions, args.Action) {
+			e.record(memory.Activity{Kind: args.Action, Note: args.Name, Scope: args.Scope, Error: err.Error()})
+		}
 		return failure(err)
 	}
 	return core.ToolResult{Content: bounded(content)}
@@ -368,10 +387,15 @@ func (e *Memory) read(args memoryArgs) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := e.options.Store.Touch(note.Scope, note.Name); err != nil {
-		return "", err
+	// The consolidation pass reads every note, which says nothing about
+	// whether one is used.
+	if !e.options.Unbounded {
+		if err := e.options.Store.Touch(note.Scope, note.Name); err != nil {
+			return "", err
+		}
+		note.Reads++
 	}
-	note.Reads++
+	e.record(memory.Activity{Kind: memory.ActivityRead, Note: note.Name, Scope: note.Scope.String()})
 	if note.Tainted {
 		// What it says came from outside the user's words, and now so may
 		// anything saved after reading it. The consolidation pass reads
@@ -398,10 +422,13 @@ func describe(note *memory.Note) string {
 	for _, count := range []struct {
 		label string
 		n     int
-	}{{"read", note.Reads}, {"helped", note.Helped}, {"misled", note.Misled}} {
+	}{{"read", note.Reads}, {"helped", note.Helped}, {"misled", note.Misled}, {"ignored", note.Ignored}} {
 		if count.n > 0 {
 			header += fmt.Sprintf(" · %s %d", count.label, count.n)
 		}
+	}
+	if note.Pinned {
+		header += " · pinned by the user"
 	}
 	if note.Tainted {
 		header += " · unverified: saved in a conversation that read content from outside the user's words"
@@ -455,10 +482,10 @@ func (e *Memory) save(ctx context.Context, call core.ToolCall, args memoryArgs) 
 	existing, err := e.options.Store.Load(scope, note.Name)
 	if err == nil {
 		verb = "Replaced"
-		// Rewriting a global note, or one the user wrote, is weighty as
-		// forgetting it is: the old text is kept in the trash, but the
-		// user should see it go.
-		if weighty = scope.Kind == memory.ScopeGlobal || existing.Source == memory.SourceUser; weighty {
+		// Rewriting a global note, one the user wrote or one they pinned,
+		// is weighty as forgetting it is: the old text is kept in the
+		// trash, but the user should see it go.
+		if weighty = scope.Kind == memory.ScopeGlobal || existing.Source == memory.SourceUser || existing.Pinned; weighty {
 			reason = fmt.Sprintf("Replace the %s note %s, which says: %s?", scope, note.Name, existing.Description)
 		}
 	} else if len(e.readUnverified) > 0 {
@@ -473,6 +500,7 @@ func (e *Memory) save(ctx context.Context, call core.ToolCall, args memoryArgs) 
 		return "", err
 	}
 	e.saves++
+	e.record(memory.Activity{Kind: memory.ActivitySave, Note: note.Name, Scope: scope.String()})
 	// The card's title row already quotes the lesson; the result says only what happened to it.
 	return fmt.Sprintf("%s %s note %s", verb, scope, note.Name), nil
 }
@@ -489,9 +517,9 @@ func (e *Memory) forget(ctx context.Context, call core.ToolCall, args memoryArgs
 		return "", err
 	}
 	args.Scope = note.Scope.String()
-	// A global note applies everywhere and a note the user wrote is theirs:
-	// neither goes on the model's word alone.
-	weighty := note.Scope.Kind == memory.ScopeGlobal || note.Source == memory.SourceUser
+	// A global note applies everywhere and a note the user wrote or pinned
+	// is theirs: none goes on the model's word alone.
+	weighty := note.Scope.Kind == memory.ScopeGlobal || note.Source == memory.SourceUser || note.Pinned
 	if err := e.authorize(ctx, call, args, fmt.Sprintf("Forget the %s note %s?", note.Scope, note.Name), weighty); err != nil {
 		return "", err
 	}
@@ -499,7 +527,24 @@ func (e *Memory) forget(ctx context.Context, call core.ToolCall, args memoryArgs
 		return "", err
 	}
 	e.forgets++
+	e.record(memory.Activity{Kind: memory.ActivityForget, Note: note.Name, Scope: note.Scope.String()})
 	return fmt.Sprintf("Forgot %s note %s: %s", note.Scope, note.Name, note.Description), nil
+}
+
+// record adds what the tool did to the store's activity log, as this
+// session's in its workspace, the consolidation pass's marked so. The log is
+// a measurement, and its failure never fails the call.
+func (e *Memory) record(entries ...memory.Activity) {
+	for i := range entries {
+		entries[i].Session, entries[i].Workspace = e.options.Session, e.options.Workspace
+		switch {
+		case e.options.Unbounded:
+			entries[i].Source = memory.SourceConsolidation
+		case entries[i].Kind == memory.ActivitySave || entries[i].Kind == memory.ActivityForget:
+			entries[i].Source = memory.SourceAgent
+		}
+	}
+	_ = e.options.Store.Log(entries...)
 }
 
 // authorize puts a save or forget to the user in ask mode, and in auto mode
@@ -552,7 +597,7 @@ func (e *Memory) authorize(ctx context.Context, call core.ToolCall, args memoryA
 // the lesson is read at the moment it applies, which an index at the top of
 // the instructions cannot promise. A Bash command is matched against command
 // triggers, a file tool's path against path triggers; each note is delivered
-// once per turn. Terminal and Browser results are structured text the
+// once per conversation, as the index repeats its lesson every turn. Terminal and Browser results are structured text the
 // interface parses, so they carry nothing.
 func (e *Memory) deliver(call core.ToolCall, result *core.ToolResult) {
 	if result.IsError {
@@ -591,10 +636,8 @@ func (e *Memory) deliver(call core.ToolCall, result *core.ToolResult) {
 			}
 		}
 	}
-	if e.delivered == nil {
-		e.delivered = map[string]bool{}
-	}
 	var lines []string
+	var delivered []memory.Activity
 	for _, note := range e.notes {
 		key := note.Scope.String() + "/" + note.Name
 		if e.delivered[key] || e.deliveries >= maxMemoryDeliveriesPerTurn || !cue(note.Triggers) {
@@ -602,6 +645,7 @@ func (e *Memory) deliver(call core.ToolCall, result *core.ToolResult) {
 		}
 		e.delivered[key] = true
 		e.deliveries++
+		delivered = append(delivered, memory.Activity{Kind: memory.ActivityCue, Note: note.Name, Scope: note.Scope.String(), Tool: call.Name})
 		label := "[Memory · " + note.Name
 		if note.Tainted {
 			// Labelled as the index labels it; only a full read taints.
@@ -611,6 +655,11 @@ func (e *Memory) deliver(call core.ToolCall, result *core.ToolResult) {
 	}
 	if len(lines) == 0 {
 		return
+	}
+	e.record(delivered...)
+	if e.options.OnDeliver != nil {
+		keys := slices.Sorted(maps.Keys(e.delivered))
+		e.options.OnDeliver(keys)
 	}
 	suffix := "\n\n" + strings.Join(lines, "\n")
 	content := result.Content

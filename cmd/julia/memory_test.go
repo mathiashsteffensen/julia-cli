@@ -367,3 +367,103 @@ func TestMemoryMarkdownShowsLessonsAsWritten(t *testing.T) {
 		t.Fatalf("list:\n%s %v", list, err)
 	}
 }
+
+// Stats sums the activity log over the notes the workspace sees: what
+// reached turns, what was used, what reflection did, and which notes are
+// noisy, unused or gone.
+func TestMemoryStats(t *testing.T) {
+	store, dir := seedMemory(t)
+	if got, err := runMemory(t, dir, "stats"); err != nil || !strings.Contains(got, "Nothing recorded yet") {
+		t.Fatalf("empty log: %q %v", got, err)
+	}
+	// Cues on two of the notes, and a pinned one beside them.
+	workspace := memory.Scope{Kind: memory.ScopeWorkspace, Workspace: dir}
+	for _, note := range []*memory.Note{
+		{Name: "make-check", Description: "Run make check before reporting done", Type: memory.TypeFeedback, Scope: workspace, Triggers: memory.Triggers{Commands: []string{"^go test"}}},
+		{Name: "deploy", Description: "Deploy with make release", Type: memory.TypeProcedure, Scope: workspace, Triggers: memory.Triggers{Paths: []string{"deploy/**"}}},
+		{Name: "style", Description: "Write for the next reader", Type: memory.TypeFeedback, Scope: memory.Scope{Kind: memory.ScopeGlobal}},
+	} {
+		if err := store.Save(note); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Pin(memory.Scope{Kind: memory.ScopeGlobal}, "style", true); err != nil {
+		t.Fatal(err)
+	}
+	tokens := core.TokenUsage{Input: 12_000, Output: 800}
+	var entries []memory.Activity
+	for _, session := range []string{"a1", "a2", "a3"} {
+		entries = append(entries,
+			memory.Activity{Kind: memory.ActivityTurn, At: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), Session: session, Workspace: dir, Notes: 4, Omitted: []string{"deploy"}},
+			memory.Activity{Kind: memory.ActivityCue, Session: session, Workspace: dir, Note: "make-check", Scope: memory.ScopeWorkspace, Tool: "Bash"},
+		)
+	}
+	entries = append(entries,
+		memory.Activity{Kind: memory.ActivityTurn, Session: "elsewhere", Workspace: "/other", Notes: 1},
+		memory.Activity{Kind: memory.ActivitySave, Session: "a1", Workspace: dir, Note: "gone-now", Scope: memory.ScopeWorkspace, Source: memory.SourceAgent},
+		memory.Activity{Kind: memory.ActivitySave, Session: "a1", Workspace: dir, Scope: memory.ScopeWorkspace, Source: memory.SourceAgent, Error: "save needs name"},
+		memory.Activity{Kind: memory.ActivityReflection, Session: "a2", Workspace: dir, Outcome: memory.ReflectionUnchanged, Tokens: &tokens, Ignored: []string{"editor", "style"}},
+		memory.Activity{Kind: memory.ActivityReflection, Session: "a3", Workspace: dir, Outcome: memory.ReflectionSkipped},
+	)
+	if err := store.Log(entries...); err != nil {
+		t.Fatal(err)
+	}
+	// The notes were saved on 2026-10-16; a month on, the untouched ones are unused.
+	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	if err := memoryStats(store, dir, []string{"-days", "0"}, now, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"Memory over the whole log · this workspace (" + dir + ")",
+		"Turns       3 in 3 sessions · 4.0 notes in the index on average · 0 brought a note in full",
+		"Cues        3 in 3 of 3 sessions",
+		"Saves       1 by the agent",
+		"Failed      1 save",
+		"Reflection  1 ran · 1 changed nothing · 1 turn skipped · 12k tokens in, 800 out",
+		"Verdicts    0 helped · 0 misled · 2 ignored",
+		// The table counts the window, not a note's lifetime counters; a
+		// note the index had no room for was not in it.
+		"make-check         3      3      0      0       0       0        0  3 of 3  · noisy: its cues fire in most sessions; narrow them, or pin it if it bears on most work",
+		"global/editor      3      0      0      0       0       0        1  0 of 3  · index only · often ignored: pin it if it bears on most work",
+		"global/style       3      0      0      0       0       0        1  0 of 3  · pinned · often ignored though pinned",
+		"deploy             0      0      0      0       0       0        0  0 of 3  · cues never fired",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stats lack %q:\n%s", want, got)
+		}
+	}
+	// A note forgotten before it was ever used is not listed.
+	if strings.Contains(got, "gone-now") {
+		t.Errorf("an unused note that is gone is listed:\n%s", got)
+	}
+	// Within the window only, and every workspace with -all.
+	out.Reset()
+	if err := memoryStats(store, dir, []string{"-days", "7", "-all"}, now, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "Memory over the last 7 days · every workspace") || !strings.Contains(got, "Nothing recorded yet") {
+		t.Fatalf("windowed:\n%s", got)
+	}
+	if _, err := runMemory(t, dir, "stats", "extra"); err == nil {
+		t.Fatal("accepted a stray argument")
+	}
+}
+
+// pin and unpin mark a note for every turn, which the listing shows.
+func TestMemoryCommandPins(t *testing.T) {
+	_, dir := seedMemory(t)
+	if got, err := runMemory(t, dir, "pin", "editor"); err != nil || !strings.HasPrefix(got, "Pinned global note editor; every turn shows it in full: Prefers vim") {
+		t.Fatalf("pin: %q %v", got, err)
+	}
+	if got, _ := runMemory(t, dir); !strings.Contains(got, "Prefers vim  · pinned") {
+		t.Fatalf("listing:\n%s", got)
+	}
+	if got, _ := runMemory(t, dir, "pin", "editor"); !strings.Contains(got, "already pinned") {
+		t.Fatalf("pin again: %q", got)
+	}
+	if got, err := runMemory(t, dir, "unpin", "global/editor"); err != nil || !strings.HasPrefix(got, "Unpinned global note editor") {
+		t.Fatalf("unpin: %q %v", got, err)
+	}
+}

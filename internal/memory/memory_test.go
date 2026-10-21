@@ -418,23 +418,22 @@ func TestTallyAndTouchSurviveResave(t *testing.T) {
 	if err := s.Save(&Note{Name: "a", Description: "d", Type: TypeUser, Scope: scope}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Tally(scope, "a", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Tally(scope, "a", false); err != nil {
-		t.Fatal(err)
+	for _, verdict := range []string{VerdictHelped, VerdictMisled, VerdictIgnored} {
+		if err := s.Tally(scope, "a", verdict); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := s.Save(&Note{Name: "a", Description: "revised", Type: TypeUser, Scope: scope}); err != nil {
 		t.Fatal(err)
 	}
 	note, err := s.Load(scope, "a")
-	if err != nil || note.Helped != 1 || note.Misled != 1 {
+	if err != nil || note.Helped != 1 || note.Misled != 1 || note.Ignored != 1 {
 		t.Fatalf("counters %+v %v", note, err)
 	}
-	if !strings.Contains(string(note.Encode()), "helped: 1\nmisled: 1\n") {
+	if !strings.Contains(string(note.Encode()), "helped: 1\nmisled: 1\nignored: 1\n") {
 		t.Fatalf("encode:\n%s", note.Encode())
 	}
-	if err := s.Tally(scope, "missing", true); err == nil {
+	if err := s.Tally(scope, "missing", VerdictHelped); err == nil {
 		t.Fatal("tallied a missing note")
 	}
 }
@@ -589,7 +588,7 @@ func TestConcurrentUpdatesKeepEveryCount(t *testing.T) {
 		wg.Go(func() {
 			s := &Store{Directory: dir}
 			for range each {
-				if err := s.Tally(scope, "x", true); err != nil {
+				if err := s.Tally(scope, "x", VerdictHelped); err != nil {
 					t.Error(err)
 				}
 			}
@@ -696,5 +695,70 @@ func TestIndexBudgetFavoursRulesOverReferences(t *testing.T) {
 	readOnly := recall.Section(0, "", true)
 	if strings.Contains(readOnly, "saves or replaces one") || !strings.Contains(readOnly, "reads one in full (read) and lists them (list)") {
 		t.Fatal("read-only section offers saving")
+	}
+}
+
+// A pinned note is shown in full ahead of the rest of the index, every turn,
+// whatever the request; a save keeps the pin, which only Pin changes, and
+// pinning vouches for the note.
+func TestPinnedNotesLeadTheIndexInFull(t *testing.T) {
+	s, workspace := fixture(t)
+	global := Scope{Kind: ScopeGlobal}
+	ws := Scope{Kind: ScopeWorkspace, Workspace: workspace}
+	for _, note := range []*Note{
+		{Name: "reader-first", Description: "Write code for the next reader", Type: TypeFeedback, Body: "**How to apply:** space logical steps apart.", Scope: global, Tainted: true},
+		{Name: "make-check", Description: "Run make check", Type: TypeFeedback, Scope: ws, Triggers: Triggers{Keywords: []string{"tests"}}},
+	} {
+		if err := s.Save(note); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Pin(global, "reader-first", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(&Note{Name: "reader-first", Description: "Write code and docs for the next reader", Type: TypeFeedback, Body: "**How to apply:** space logical steps apart.", Scope: global}); err != nil {
+		t.Fatal(err)
+	}
+	note, err := s.Load(global, "reader-first")
+	if err != nil || !note.Pinned || note.Tainted || !strings.Contains(string(note.Encode()), "pinned: true\n") {
+		t.Fatalf("pin lost or unvouched: %+v %v", note, err)
+	}
+	recall, err := s.Recall(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := recall.Index(0, "run the tests")
+	pinned, relevant := strings.Index(index, "### Pinned"), strings.Index(index, "### Relevant now")
+	if pinned < 0 || relevant < pinned || !strings.Contains(index, "**reader-first** · feedback · global") || !strings.Contains(index, "space logical steps apart") {
+		t.Fatalf("index:\n%s", index)
+	}
+	if strings.Count(index, "reader-first") != 1 || len(recall.Relevant("reader-first")) != 0 {
+		t.Fatalf("a pinned note is shown twice:\n%s", index)
+	}
+	if omitted := recall.Omitted(0, ""); len(omitted) != 0 {
+		t.Fatalf("omitted %v", omitted)
+	}
+	// A small index still makes room for the pinned note first.
+	if omitted := recall.Omitted(len(recall.Index(0, ""))-20, ""); len(omitted) != 1 || omitted[0] != "make-check" {
+		t.Fatalf("small index omitted %v", omitted)
+	}
+	for i := range MaxPinned {
+		name := fmt.Sprintf("pin-%d", i)
+		if err := s.Save(&Note{Name: name, Description: "d", Type: TypeUser, Scope: global}); err != nil {
+			t.Fatal(err)
+		}
+		err := s.Pin(global, name, true)
+		if i < MaxPinned-1 && err != nil {
+			t.Fatal(err)
+		}
+		if i == MaxPinned-1 && err == nil {
+			t.Fatal("pinned past the limit")
+		}
+	}
+	if err := s.Pin(global, "reader-first", false); err != nil {
+		t.Fatal(err)
+	}
+	if note, _ := s.Load(global, "reader-first"); note.Pinned {
+		t.Fatal("unpin kept the pin")
 	}
 }

@@ -38,7 +38,7 @@ julia --resume SESSION_ID     # resume a specific session
 julia --prompt "fix the build" [--json]   # headless, one task
 julia --demo                  # offline UI preview
 julia sessions | login | doctor | config init
-julia memory [show NAME | forget NAME | confirm NAME | consolidate | path | workspaces]
+julia memory [show NAME | forget NAME | confirm NAME | pin NAME | unpin NAME | stats [-days N] [-all] | consolidate | path | workspaces]
 ```
 
 Other flags: `--model`, `--reasoning`, `--mode`, `--memory off|read|write`,
@@ -282,11 +282,17 @@ holds and how to apply it, kept under `~/.local/state/julia/memory` (respects
 and delete; `julia memory` lists them.
 
 Every turn ends its instructions with a Memory section: how to learn, then the
-index of its notes, each as its name, type, date and lesson, with the notes that
-name something in your request shown in full. A run without memory has no such
+index of its notes, each as its name, type, date and lesson, with the notes you
+pinned and the notes that name something in your request shown in full. Pin a
+note that bears on most of your work, such as how you want code written, with
+`julia memory pin NAME`: every turn then leads its Memory section with it, in
+full, as a standing preference to apply without being asked, rather than as one
+line among many. Only you pin, at most five notes per scope; pinning vouches for
+the note as `confirm` does. A run without memory has no such
 section and no tool. A note anchored to paths or commands is also repeated inside the
 result of a tool that touches them, as a `[Memory · name]` line, so the lesson
-arrives when it applies rather than when it happens to be noticed. The agent
+arrives when it applies rather than when it happens to be noticed; each note
+arrives this way once per conversation, as the index repeats it every turn. The agent
 saves with the `Memory` tool when you correct it or state a preference, when you
 confirm an approach, when it learns a fact about the project or the machine that
 the files do not record, or where something lives; it is told not to save what
@@ -297,7 +303,8 @@ denied, or a tool failed and the work went on), a reflection step, a separate
 tool-free model call over the turn at low effort unless `memory.model` gives its
 own, saves or revises what the agent missed, at most three notes, each shown as a
 Memory card marked `reflection` and kept in the transcript, and tallies which
-notes helped and which misled. In the TUI it runs after the turn, so the next
+notes helped, which misled, and which were ignored (you had to say again what a
+note already said). In the TUI it runs after the turn, so the next
 message can be typed at once: the status line says while it runs, Esc skips it,
 a message sent meanwhile waits for it, and quitting finishes it first (Ctrl+C
 skips). In auto mode after content from outside your words it runs within the
@@ -325,7 +332,7 @@ marked unverified: in the index, in `Memory read` and in `julia memory`. The mar
 conversation, and a note keeps its own through every rewrite until you clear it
 with `julia memory confirm` or write the note yourself; wherever an unverified
 note appears, it says so. Forgetting or rewriting a global note, or one you
-wrote, asks you too, except that the reflection after a turn cannot ask: it
+wrote or pinned, asks you too, except that the reflection after a turn cannot ask: it
 leaves such a change undone and says so on its card. A note cannot hold a credential, HTML comments and hidden
 characters are stripped from it, at most five notes are saved and three
 forgotten in one turn, and a forgotten or replaced version waits in a `.trash`
@@ -338,17 +345,38 @@ julia memory                 # the notes this workspace sees, then the global on
 julia memory show NAME       # one note as its file; global/NAME or workspace/NAME picks a scope
 julia memory forget NAME
 julia memory confirm NAME    # clear a note's unverified mark once you have read it and stand behind it
+julia memory pin NAME        # show a note in full in every turn; unpin NAME makes it one line of the index again
+julia memory stats           # how memory was used over the last 30 days here; -days N (0 for all), -all for every workspace
 julia memory consolidate     # a headless pass that merges, tightens and prunes with the Memory tool alone, marks kept
 julia memory path | workspaces
 ```
 
 The consolidation pass is offered no tool but Memory, and `--continue` passes
-over its session. `/memory`, `/memory NAME` and `/memory forget NAME` do the same
+over its session. `/memory`, `/memory NAME`, `/memory forget NAME` and `/memory pin|unpin NAME` do the same
 in the TUI, for the session's workspace. A
 note's frontmatter records who wrote it (`source`: agent, reflection or user),
 the session, when, how often it was read, and how often the reflection step
-found it helpful or misleading; consolidation reads those to decide what earns
+found it helpful, misleading or ignored; consolidation reads those to decide what earns
 its place.
+
+`julia memory stats` measures whether memory earns its keep. Each turn that sees
+the notes, each cue delivered, each read, save and forget (failures with their
+reason), and each reflection step (what it changed, or why it did not run, and
+the tokens it spent) is appended to `activity.jsonl` in the store, which names
+notes, tools and workspaces but never what a note says, and keeps the newer half
+once it passes 4 MiB. The stats sum it: turns, cues per session, reads, saves by
+who made them, the reflection's outcomes and cost, its verdicts, then one row per
+note: the turns whose index held it, then what reached the agent beyond that line
+(cues, full showings for a request that named it, reads), its verdicts, and how
+many of the sessions that could see it those reached. A note is marked `pinned`,
+`index only` when it has no cues (the index is its whole delivery, so its
+verdicts are what say whether it lands), `cues never fired` when a week-old
+note's cues never matched, `noisy` when its cues fire in most sessions, and
+`often ignored` when you keep repeating what it says. The reflection step counts
+a note as ignored even when your correction is narrower than the note, as a
+complaint that one file is hard to follow is covered by a note on writing for
+the next reader. The consolidation pass's reads are recorded as its own and
+count as neither use nor reads.
 
 ## Permissions and sandbox
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"julia/internal/core"
 	"julia/internal/memory"
@@ -570,5 +571,121 @@ func TestConsolidationKeepsMarksWithTheirText(t *testing.T) {
 	}
 	if note, _ := store.Load(ws, "merged"); !note.Tainted {
 		t.Fatal("a merge of an unverified note came out verified")
+	}
+}
+
+// A note is delivered once in a conversation: the index repeats its lesson
+// every turn, so a later turn's matching command carries nothing. Each
+// delivery joins the activity log.
+func TestMemoryDeliversOncePerConversation(t *testing.T) {
+	store := &memory.Store{Directory: t.TempDir()}
+	workspace := t.TempDir()
+	ws := memory.Scope{Kind: memory.ScopeWorkspace, Workspace: workspace}
+	if err := store.Save(&memory.Note{Name: "make-check", Description: "Run make check", Type: memory.TypeFeedback, Scope: ws, Triggers: memory.Triggers{Commands: []string{`^go test\b`}}}); err != nil {
+		t.Fatal(err)
+	}
+	var delivered []string
+	options := MemoryOptions{Store: store, Workspace: workspace, Session: "8c1847d4a71d39a54d278801", Mode: "auto", OnDeliver: func(keys []string) { delivered = keys }}
+	goTest := core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"go test ./..."}`)}
+	if got := WithMemory(stubTools{"ok"}, options).Execute(context.Background(), goTest).Content; !strings.HasSuffix(got, "[Memory · make-check] Run make check") {
+		t.Fatalf("first turn: %q", got)
+	}
+	if len(delivered) != 1 || delivered[0] != "workspace/make-check" {
+		t.Fatalf("delivered %v", delivered)
+	}
+	options.Delivered = delivered
+	if got := WithMemory(stubTools{"ok"}, options).Execute(context.Background(), goTest).Content; got != "ok" {
+		t.Fatalf("next turn delivered again: %q", got)
+	}
+	entries, _, err := store.Activity(time.Time{})
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("activity %+v %v", entries, err)
+	}
+	if e := entries[0]; e.Kind != memory.ActivityCue || e.Note != "make-check" || e.Scope != "workspace" || e.Tool != "Bash" || e.Session != options.Session || e.Workspace != workspace {
+		t.Fatalf("cue entry %+v", e)
+	}
+}
+
+// Reads, saves and forgets join the activity log, failures with their
+// reason; the consolidation pass's are marked as its and do not count as
+// reads of the note.
+func TestMemoryToolRecordsActivity(t *testing.T) {
+	wrapped, store, workspace := memoryFixture(t, "auto", nil)
+	if r := callMemory(wrapped, map[string]any{"action": "save", "name": "a", "description": "d", "type": "user"}); r.IsError {
+		t.Fatal(r.Content)
+	}
+	if r := callMemory(wrapped, map[string]any{"action": "read", "name": "a"}); r.IsError {
+		t.Fatal(r.Content)
+	}
+	// A model that put the slug in the description is told which field it missed.
+	if r := callMemory(wrapped, map[string]any{"action": "save", "description": "make-command-network", "type": "project"}); !r.IsError || !strings.Contains(r.Content, "save needs name") {
+		t.Fatalf("nameless save: %+v", r)
+	}
+	if r := callMemory(wrapped, map[string]any{"action": "forget", "name": "a"}); r.IsError {
+		t.Fatal(r.Content)
+	}
+	callMemory(wrapped, map[string]any{"action": "list"})
+	entries, _, err := store.Activity(time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range entries {
+		if e.Workspace != workspace || e.Session != "8c1847d4a71d39a54d278801" {
+			t.Fatalf("entry not attributed: %+v", e)
+		}
+		got = append(got, e.Kind+" "+e.Note+" "+e.Source+" "+map[bool]string{true: "failed", false: "ok"}[e.Error != ""])
+	}
+	if want := "save a agent ok|read a  ok|save  agent failed|forget a agent ok"; strings.Join(got, "|") != want {
+		t.Fatalf("activity\n got %s\nwant %s", strings.Join(got, "|"), want)
+	}
+
+	ws := memory.Scope{Kind: memory.ScopeWorkspace, Workspace: workspace}
+	if err := store.Save(&memory.Note{Name: "b", Description: "d", Type: memory.TypeUser, Scope: ws}); err != nil {
+		t.Fatal(err)
+	}
+	pass := WithMemory(stubTools{"x"}, MemoryOptions{Store: store, Workspace: workspace, Mode: "yolo", WorkspaceMode: "read-only", Unbounded: true})
+	if r := callMemory(pass, map[string]any{"action": "read", "name": "b"}); r.IsError {
+		t.Fatal(r.Content)
+	}
+	if note, _ := store.Load(ws, "b"); note.Reads != 0 {
+		t.Fatalf("the consolidation pass counted as a read: %d", note.Reads)
+	}
+	entries, _, _ = store.Activity(time.Time{})
+	if last := entries[len(entries)-1]; last.Kind != memory.ActivityRead || last.Source != memory.SourceConsolidation {
+		t.Fatalf("consolidation read %+v", last)
+	}
+}
+
+// A note the user pinned is theirs: in auto mode, rewriting or forgetting it
+// asks, as for a note they wrote, and the read says it is pinned.
+func TestMemoryPinnedNotesAreWeighty(t *testing.T) {
+	var asked []string
+	deny := func(_ context.Context, a core.Approval) (core.Decision, error) {
+		asked = append(asked, a.Reason)
+		return core.Decision{Reason: "keep it"}, nil
+	}
+	wrapped, store, workspace := memoryFixture(t, "auto", deny)
+	ws := memory.Scope{Kind: memory.ScopeWorkspace, Workspace: workspace}
+	if err := store.Save(&memory.Note{Name: "style", Description: "Write for the next reader", Type: memory.TypeFeedback, Scope: ws, Source: memory.SourceAgent}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Pin(ws, "style", true); err != nil {
+		t.Fatal(err)
+	}
+	if r := callMemory(wrapped, map[string]any{"action": "read", "name": "style"}); r.IsError || !strings.Contains(r.Content, "pinned by the user") {
+		t.Fatalf("read: %+v", r)
+	}
+	if r := callMemory(wrapped, map[string]any{"action": "save", "name": "style", "description": "Be terse", "type": "feedback"}); !r.IsError || !strings.Contains(r.Content, "approval denied") {
+		t.Fatalf("rewrite: %+v", r)
+	}
+	if r := callMemory(wrapped, map[string]any{"action": "forget", "name": "style"}); !r.IsError {
+		t.Fatalf("forget: %+v", r)
+	}
+	if len(asked) != 2 {
+		t.Fatalf("asked %d times: %v", len(asked), asked)
+	}
+	if note, _ := store.Load(ws, "style"); note.Description != "Write for the next reader" || !note.Pinned {
+		t.Fatalf("note changed: %+v", note)
 	}
 }

@@ -12,7 +12,7 @@ import (
 )
 
 // /memory is answered by the hook: alone it lists, a name shows that note and
-// "forget NAME" deletes it, and the Markdown that comes back joins the
+// "forget NAME" deletes it, "pin NAME" and "unpin NAME" pin and unpin it, and the Markdown that comes back joins the
 // conversation under its own heading, as a reply would.
 func TestMemoryCommandCallsHook(t *testing.T) {
 	var calls [][2]string
@@ -21,17 +21,17 @@ func TestMemoryCommandCallsHook(t *testing.T) {
 		return "**process-group-cancel** · feedback · workspace\n\nCancelling a task must signal the ordinary process group.", nil
 	}})
 	m.resize(100, 30)
-	for _, prompt := range []string{"/memory", "/memory process-group-cancel", "/memory forget process-group-cancel"} {
+	for _, prompt := range []string{"/memory", "/memory process-group-cancel", "/memory forget process-group-cancel", "/memory pin process-group-cancel", "/memory unpin process-group-cancel"} {
 		m.input.SetValue(prompt)
 		m.submit()
 		if m.input.Value() != "" {
 			t.Errorf("%s: composer kept %q", prompt, m.input.Value())
 		}
 	}
-	if want := [][2]string{{"", ""}, {"show", "process-group-cancel"}, {"forget", "process-group-cancel"}}; !slices.Equal(calls, want) {
+	if want := [][2]string{{"", ""}, {"show", "process-group-cancel"}, {"forget", "process-group-cancel"}, {"pin", "process-group-cancel"}, {"unpin", "process-group-cancel"}}; !slices.Equal(calls, want) {
 		t.Fatalf("hook saw %v, want %v", calls, want)
 	}
-	if len(m.entries) != 3 {
+	if len(m.entries) != 5 {
 		t.Fatalf("entries = %d, want one per command", len(m.entries))
 	}
 	for _, item := range m.entries {

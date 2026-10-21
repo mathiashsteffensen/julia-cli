@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -634,5 +635,59 @@ func TestAReflectionSeesNotesWrittenWhileItThought(t *testing.T) {
 	}
 	if note, _ := store.Load(scope, "make-check"); note.Description != "the user's own words" {
 		t.Fatal("rewrote a note the user wrote while the reflection thought")
+	}
+}
+
+// Every turn that sees the notes, and what its reflection did or why none
+// ran, joins the activity log that julia memory stats sums.
+func TestTurnsAndReflectionsAreRecorded(t *testing.T) {
+	answer := strings.Replace(reflectionAnswer, `"misled":[]`, `"misled":[],"ignored":[]`, 1)
+	backend := &reflectingBackend{reply: "ok", answer: answer, spent: core.TokenUsage{Input: 900, Output: 40}}
+	runner, store, s := reflectionRunner(t, backend, "auto")
+	for _, prompt := range []string{"Fix the build and always run make check first", "What do the tests cover?"} {
+		if err := runner.Run(context.Background(), s, core.Prompt{Text: prompt}, nil, func(core.Event) {}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backend.completeErr = errors.New("boom")
+	if err := runner.Run(context.Background(), s, core.Prompt{Text: "Never do that again"}, nil, func(core.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err := store.Activity(time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range entries {
+		if e.Session != s.ID || e.Workspace != s.Directory {
+			t.Fatalf("entry not attributed: %+v", e)
+		}
+		line := e.Kind
+		switch e.Kind {
+		case memory.ActivityTurn:
+			line += fmt.Sprintf(" %d %v", e.Notes, e.Relevant)
+		case memory.ActivityReflection:
+			line += " " + e.Outcome
+			if e.Tokens != nil {
+				line += fmt.Sprintf(" %d", e.Tokens.Output)
+			}
+			if e.Error != "" {
+				line += " " + e.Error
+			}
+		default:
+			line += " " + e.Note + " " + e.Source
+		}
+		got = append(got, line)
+	}
+	want := []string{
+		"turn 0 []", "reflection changed 40", "save make-check reflection",
+		"turn 1 [make-check]", "reflection skipped",
+		"turn 1 []", "reflection failed 40 Reflection failed: boom",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("activity\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if entries[1].Model != "fake/model-a" {
+		t.Fatalf("reflection model %q", entries[1].Model)
 	}
 }
