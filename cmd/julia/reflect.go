@@ -48,8 +48,8 @@ func reflectionSettings(cfg, parent config.Config) config.Config {
 // notes without asking (in ask mode the agent's own saves are approved one
 // by one, and a step after the turn would have nobody to ask), this is not
 // itself the consolidation pass, and the turn ended of its own accord.
-func (r *runtimeBackend) reflects(ctx context.Context, err error) bool {
-	return r.memory != nil && !r.memoryReadOnly && !r.consolidating && r.cfg.ReflectionEnabled() && (r.cfg.Mode == "auto" || r.cfg.Mode == "yolo") && err == nil && ctx.Err() == nil
+func (r *runtimeBackend) reflects(ctx context.Context, cfg config.Config, err error) bool {
+	return r.memory != nil && !r.memoryReadOnly && !r.consolidating && cfg.ReflectionEnabled() && (cfg.Mode == "auto" || cfg.Mode == "yolo") && err == nil && ctx.Err() == nil
 }
 
 // correctionCue finds the words a user corrects or instructs with, and
@@ -110,8 +110,10 @@ type reflectionInput struct {
 	warnings     []string
 	tainted      []string
 	task         string
-	selected     config.Config
-	backend      core.Backend
+	// selected is the configuration the turn ran on, with the session's
+	// model in it; the profile may have been switched since.
+	selected config.Config
+	backend  core.Backend
 	// canAsk says whether a change that needs the user's approval may be
 	// put to them: within the turn it may; after it, no one is asked.
 	canAsk bool
@@ -159,7 +161,7 @@ func (r *runtimeBackend) reflection(ctx context.Context, in reflectionInput, sta
 	completer, ok := in.backend.(core.Completer)
 	model := config.JoinModel(in.selected.Provider, in.selected.Model)
 	if r.makeBackend != nil {
-		settings := reflectionSettings(r.cfg, in.selected)
+		settings := reflectionSettings(in.selected, in.selected)
 		model = config.JoinModel(settings.Provider, settings.Model)
 		made, _, err := r.makeBackend(ctx, settings)
 		if err != nil {
@@ -418,7 +420,7 @@ func (r *runtimeBackend) applyReflection(ctx context.Context, in reflectionInput
 // turn, but put to the user after outside content and before rewriting or
 // forgetting a global note or one the user wrote.
 func (r *runtimeBackend) approveReflection(ctx context.Context, in reflectionInput, op memory.Operation, recall memory.Recall) error {
-	if r.cfg.Mode != "auto" {
+	if in.selected.Mode != "auto" {
 		return nil
 	}
 	// Forgetting or rewriting a global note, or one the user wrote or

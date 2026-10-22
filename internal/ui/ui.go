@@ -69,6 +69,13 @@ type Config struct {
 	// first and ctrl+n cycles.
 	EnabledModels []core.ModelOption
 	ApplySettings func(*core.Session, string, string, string) error
+	// Profile is the active configuration profile. Profiles lists the
+	// profiles /profile offers, and SwitchProfile makes one active: it moves
+	// the session to the profile's model, as ApplySettings does, and returns
+	// what else the profile changes in the interface.
+	Profile       string
+	Profiles      func() ([]Profile, error)
+	SwitchProfile func(*core.Session, string) (ProfileSettings, error)
 	WeeklyUsage   func(context.Context) (*core.WeeklyUsage, error)
 	// Throughput reports each model's recorded speed, keyed by provider/model,
 	// read when the picker opens.
@@ -189,6 +196,7 @@ type model struct {
 	thumbnails             map[int]core.Image // sent images, by the Kitty image ID that draws them
 	thumbnailOrder         []int              // those IDs, in the order they were registered
 	picker                 *settingsPicker
+	profiles               []Profile // what the profile picker lists, read when it opens
 	pickerSequence         uint64
 	fleet                  []*agent    // every subagent of the session, oldest first
 	fleetView              *fleetState // the fleet window, while open
@@ -657,6 +665,9 @@ func (m *model) submit() tea.Cmd {
 		if handled, cmd := m.settingsCommand(prompt); handled {
 			return cmd
 		}
+		if handled, cmd := m.profileCommand(prompt); handled {
+			return cmd
+		}
 		if m.memoryCommand(prompt) {
 			return nil
 		}
@@ -665,7 +676,7 @@ func (m *model) submit() tea.Cmd {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **click** a link to open it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/review` reviews your uncommitted changes · `/review WHAT` reviews what you name · you decide each finding in a card\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- `/memory pin NAME` shows a note in full every turn · `/memory unpin NAME` undoes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **click** a link to open it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/review` reviews your uncommitted changes · `/review WHAT` reviews what you name · you decide each finding in a card\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- `/memory pin NAME` shows a note in full every turn · `/memory unpin NAME` undoes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- `/profile` switches configuration profile · `/profile NAME` switches to one directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
 		case "/ask", "/ask text":
 			if !m.cfg.Demo {
 				m.notice = "Unknown command. /help lists the essentials."

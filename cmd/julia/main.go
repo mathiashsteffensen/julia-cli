@@ -54,10 +54,11 @@ func run() error {
 		return err
 	}
 	flags := flag.NewFlagSet("julia", flag.ContinueOnError)
-	var path, dir, prompt, modelFlag, reasoning, mode, resume, timeout, memoryFlag string
+	var path, profile, dir, prompt, modelFlag, reasoning, mode, resume, timeout, memoryFlag string
 	var cont, demo, jsonMode, showVersion bool
 	var snapshot int
 	flags.StringVar(&path, "config", configPath, "configuration file")
+	flags.StringVar(&profile, "profile", "", "configuration profile: config.<name>.json beside config.json, which is the default profile")
 	flags.StringVar(&dir, "dir", ".", "workspace directory")
 	flags.StringVar(&prompt, "prompt", "", "run one task without the TUI")
 	flags.StringVar(&modelFlag, "model", "", "provider/<model-id>: codex, openai, anthropic, google or the id of one of your providers (bare codex uses your Codex model)")
@@ -85,10 +86,31 @@ func run() error {
 		fmt.Println("julia", version)
 		return nil
 	}
-	cfg, err := config.Load(path)
+	configSet := false
+	flags.Visit(func(f *flag.Flag) { configSet = configSet || f.Name == "config" })
+	initializing := slices.Equal(flags.Args(), []string{"config", "init"})
+	var cfg config.Config
+	switch {
+	case profile != "" && configSet:
+		return errors.New("choose either --config or --profile")
+	case profile != "" && !config.ValidProfileName(profile):
+		return fmt.Errorf("--profile %q is not a profile name, which is %s", profile, config.ProfileRule)
+	case profile != "":
+		path = config.ProfilePath(filepath.Dir(configPath), profile)
+		if initializing {
+			// The profile is what config init creates.
+			cfg, err = config.Load(path)
+		} else {
+			cfg, err = config.LoadProfile(filepath.Dir(configPath), profile)
+		}
+	default:
+		cfg, err = config.Load(path)
+	}
 	if err != nil {
 		return err
 	}
+	// Profiles are the configuration files beside this one; see config.Profiles.
+	configDir := filepath.Dir(path)
 	// The "model" entry's reasoning belongs to that provider and model only.
 	backend, model := config.SplitModel(modelFlag)
 	if modelFlag != "" && (backend != cfg.Provider || model != cfg.Model) {
@@ -101,12 +123,8 @@ func run() error {
 			cfg.Reasoning = reasoning
 		}
 	})
-	if mode != "" {
-		cfg.Mode = mode
-	}
-	if timeout != "" {
-		cfg.Timeout = timeout
-	}
+	overrides := launchOverrides{mode: mode, timeout: timeout}
+	overrides.apply(&cfg)
 	// The model's own configured reasoning, else the last effort chosen for
 	// this provider, replaces the configured default; an explicit flag is
 	// itself a choice and becomes the new default.
@@ -236,7 +254,7 @@ func run() error {
 			return err
 		}
 		preview := baseUIConfig(s, cfg, demoTools)
-		preview.Demo = true
+		preview.Demo, preview.Profile = true, profileLabel(path)
 		return ui.Run(preview)
 	}
 	if err := store.Lock(s.ID); err != nil {
@@ -370,6 +388,7 @@ func run() error {
 		return children, nil
 	}
 	uiConfig.ApplySettings = func(current *core.Session, selectedProvider, selectedModel, reasoning string) error {
+		cfg, _ := runner.settings()
 		if selectedProvider != "codex" {
 			if _, err := apiKey(cfg, selectedProvider); err != nil {
 				return err
@@ -386,20 +405,34 @@ func run() error {
 		}
 		return nil
 	}
-	for _, entry := range cfg.EnabledModels {
-		provider, id := config.SplitModel(entry.ID)
-		uiConfig.EnabledModels = append(uiConfig.EnabledModels, core.ModelOption{Provider: provider, ID: id, Name: id, Description: "Enabled model", DefaultReasoning: entry.Reasoning})
+	settings := profileSettings(cfg)
+	uiConfig.EnabledModels, uiConfig.NamedProviders = settings.EnabledModels, settings.NamedProviders
+	// Switching profile replaces the runner's configuration between turns;
+	// the launch's --mode and --timeout hold in every profile.
+	uiConfig.Profile = profileLabel(path)
+	uiConfig.Profiles = func() ([]ui.Profile, error) { return profileChoices(configDir) }
+	uiConfig.SwitchProfile = func(current *core.Session, name string) (ui.ProfileSettings, error) {
+		prefs := ""
+		if preferencesErr == nil {
+			prefs = preferencesPath
+		}
+		next, err := loadSwitchedProfile(configDir, name, overrides, prefs)
+		if err != nil {
+			return ui.ProfileSettings{}, err
+		}
+		if err := applySessionSettings(next, current, next.Provider, next.Model, next.Reasoning, store.Save); err != nil {
+			return ui.ProfileSettings{}, err
+		}
+		runner.switchProfile(next)
+		return profileSettings(next), nil
 	}
-	uiConfig.NamedProviders = map[string]bool{}
-	for _, p := range cfg.Providers {
-		uiConfig.NamedProviders[p.ID] = cfg.SupportsReasoning(p.ID)
-	}
-	codexBinary := cfg.CodexBinary
-	if codex, ok := raw.(*provider.Codex); ok {
-		codexBinary = codex.Binary
+	// Codex is found through the active profile's codex_binary.
+	codexBinary := func() string {
+		cfg, _ := runner.settings()
+		return cfg.CodexBinary
 	}
 	uiConfig.Models = func(ctx context.Context) ([]core.ModelOption, error) {
-		binary, err := findCodex(codexBinary)
+		binary, err := findCodex(codexBinary())
 		if err != nil {
 			return nil, err
 		}
@@ -412,7 +445,7 @@ func run() error {
 		}
 	}
 	uiConfig.WeeklyUsage = func(ctx context.Context) (*core.WeeklyUsage, error) {
-		binary, err := findCodex(codexBinary)
+		binary, err := findCodex(codexBinary())
 		if err != nil {
 			return nil, err
 		}
@@ -511,15 +544,19 @@ func modelSettings(cfg config.Config) (model, reasoning string) {
 }
 
 type runtimeBackend struct {
-	headless        bool
-	checkpoint      func(*core.Session) error
-	backend         core.Backend
-	makeBackend     func(context.Context, config.Config) (core.Backend, core.Approver, error)
+	headless    bool
+	checkpoint  func(*core.Session) error
+	backend     core.Backend
+	makeBackend func(context.Context, config.Config) (core.Backend, core.Approver, error)
+	// cfg and timeout are the active profile's, read through settings:
+	// switching profile replaces them between turns, while a reflection on
+	// an earlier turn may still be running.
 	cfg             config.Config
+	timeout         time.Duration
+	profileMu       sync.Mutex
 	approve, review core.Approver
 	ask             core.Asker
 	triage          core.Triager
-	timeout         time.Duration
 	parent          context.Context
 	// searchKeyFile holds the Firecrawl key saved by WebSearch's first-use setup.
 	searchKeyFile string
@@ -550,6 +587,22 @@ type runtimeBackend struct {
 	// roles are the subagent roles a delegated task may name; children are run
 	// by makeBackend, so without it there are none.
 	roles []agents.Role
+}
+
+// settings are the configuration and task timeout a turn starts with.
+func (r *runtimeBackend) settings() (config.Config, time.Duration) {
+	r.profileMu.Lock()
+	defer r.profileMu.Unlock()
+	return r.cfg, r.timeout
+}
+
+// switchProfile makes cfg, a validated configuration, the one the next
+// turns run on.
+func (r *runtimeBackend) switchProfile(cfg config.Config) {
+	timeout, _ := time.ParseDuration(cfg.Timeout)
+	r.profileMu.Lock()
+	defer r.profileMu.Unlock()
+	r.cfg, r.timeout = cfg, timeout
 }
 
 // recordThroughput logs the speed of a timed model call under the session's
@@ -599,11 +652,13 @@ func (r *runtimeBackend) subagentRoles() []agents.Role {
 
 func (r *runtimeBackend) Name() string { return r.backend.Name() }
 func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.Prompt, _ core.ToolExecutor, emit core.Emit) error {
-	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	// The turn runs on the profile it started with.
+	cfg, timeout := r.settings()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	stop := context.AfterFunc(r.parent, cancel)
 	defer stop()
-	selected := r.cfg
+	selected := cfg
 	selected.Provider, selected.Model, selected.Reasoning = s.Provider, s.Model, s.Reasoning
 	backend, review := r.backend, r.review
 	if r.makeBackend != nil {
@@ -655,7 +710,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		return err
 	}
 	task := newTaskContext(s.Messages, prompt.Text)
-	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: r.cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: r.cfg.BrowserPath(), SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv), LinearToken: r.linearToken})
+	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: cfg.BrowserPath(), SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv), LinearToken: r.linearToken})
 	if err != nil {
 		return err
 	}
@@ -687,7 +742,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 			// An unverified note is labelled wherever it is shown; only reading
 			// one in full on purpose taints the conversation, or a single such
 			// note with a common keyword would mark every session it reaches.
-			memoryIndex = recall.Section(r.cfg.Memory.IndexBytes, prompt.Text, r.memoryReadOnly)
+			memoryIndex = recall.Section(cfg.Memory.IndexBytes, prompt.Text, r.memoryReadOnly)
 			relevant := recall.Relevant(prompt.Text)
 			if n := recall.Count(); n > 0 {
 				text := fmt.Sprintf("Recalled %d %s", n, map[bool]string{true: "note", false: "notes"}[n == 1])
@@ -698,7 +753,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 			}
 			// The consolidation pass sees every note to rewrite it, not to use it.
 			if !r.consolidating {
-				turn := memory.Activity{Kind: memory.ActivityTurn, Session: s.ID, Workspace: s.Directory, Notes: recall.Count(), Omitted: recall.Omitted(r.cfg.Memory.IndexBytes, prompt.Text)}
+				turn := memory.Activity{Kind: memory.ActivityTurn, Session: s.ID, Workspace: s.Directory, Notes: recall.Count(), Omitted: recall.Omitted(cfg.Memory.IndexBytes, prompt.Text)}
 				for _, note := range relevant {
 					turn.Relevant = append(turn.Relevant, note.Name)
 				}
@@ -707,10 +762,10 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		}
 	}
 	bundle, err := instructions.Build(instructions.Options{
-		Directory: s.Directory, Provider: s.Provider, Model: s.Model, Reasoning: selected.Reasoning, Mode: r.cfg.Mode,
-		Sandbox: executor.SandboxInfo(), Timeout: r.timeout.String(), Headless: r.headless,
-		SkillPaths: r.cfg.SkillPaths, CodexHome: os.Getenv("CODEX_HOME"),
-		BashEnvironment: bashEnvironment, WorkspaceInstructions: r.cfg.WorkspaceInstructions,
+		Directory: s.Directory, Provider: s.Provider, Model: s.Model, Reasoning: selected.Reasoning, Mode: cfg.Mode,
+		Sandbox: executor.SandboxInfo(), Timeout: timeout.String(), Headless: r.headless,
+		SkillPaths: cfg.SkillPaths, CodexHome: os.Getenv("CODEX_HOME"),
+		BashEnvironment: bashEnvironment, WorkspaceInstructions: cfg.WorkspaceInstructions,
 		Memory: memoryIndex,
 	})
 	if err != nil {
@@ -734,7 +789,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		// Snapshot trusted settings before the parent provider changes its session.
 		parentID, directory := s.ID, s.Directory
 		agentTools = tools.WithSubagents(executor, roles, func(childCtx context.Context, role agents.Role, task string, childTools core.ToolExecutor) (string, error) {
-			settings := subagentSettings(r.cfg, selected, role.Name)
+			settings := subagentSettings(cfg, selected, role.Name)
 			modelID := config.JoinModel(settings.Provider, settings.Model)
 			instructionText, err := bundle.For(settings.Provider, settings.Model, settings.Reasoning)
 			if err != nil {
@@ -819,7 +874,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 	if r.memory != nil {
 		mode := r.memoryMode
 		if mode == "" {
-			mode = r.cfg.Mode
+			mode = cfg.Mode
 		}
 		// Headless, nobody can approve: the tool then refuses with a reason
 		// that tells the model to report instead.
@@ -843,7 +898,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 			// The pass rewrites notes and nothing else.
 			agentTools = onlyMemory{agentTools}
 		}
-		memoryTools = tools.WithMemory(agentTools, tools.MemoryOptions{Store: r.memory, Workspace: s.Directory, Session: s.ID, Mode: mode, WorkspaceMode: r.cfg.Mode, ReadOnly: r.memoryReadOnly, Unbounded: r.consolidating, Approve: approveMemory, Task: task.String, Tainted: s.MemoryTaint, OnTaint: onTaint, Delivered: s.MemoryDelivered, OnDeliver: onDeliver})
+		memoryTools = tools.WithMemory(agentTools, tools.MemoryOptions{Store: r.memory, Workspace: s.Directory, Session: s.ID, Mode: mode, WorkspaceMode: cfg.Mode, ReadOnly: r.memoryReadOnly, Unbounded: r.consolidating, Approve: approveMemory, Task: task.String, Tainted: s.MemoryTaint, OnTaint: onTaint, Delivered: s.MemoryDelivered, OnDeliver: onDeliver})
 		agentTools = memoryTools
 	}
 	start := len(s.Messages)
@@ -855,7 +910,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		s.MemoryTaint = memoryTools.Tainted()
 		emitMu.Unlock()
 	}
-	if r.reflects(ctx, err) {
+	if r.reflects(ctx, cfg, err) {
 		emitMu.Lock()
 		warnings, wentOn := append([]string(nil), turnWarnings...), recovered
 		emitMu.Unlock()
@@ -866,7 +921,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 			// The reflection runs after the turn, unless its changes may
 			// need the user, who can be asked only while the turn lasts: in
 			// auto mode, after content from outside the user's words.
-			if r.followups != nil && !(r.cfg.Mode == "auto" && len(in.tainted) > 0) {
+			if r.followups != nil && !(cfg.Mode == "auto" && len(in.tainted) > 0) {
 				r.reflectLater(in)
 			} else {
 				in.canAsk = true
@@ -955,7 +1010,11 @@ func reviewerSummary(c config.Config) string {
 }
 
 func doctor(ctx context.Context, c config.Config, path string, roles []agents.Role, dir string) error {
-	fmt.Printf("JULIA %s\nConfig    %s\nProvider  %s\nMode      %s\n", version, path, c.Provider, c.Mode)
+	fmt.Printf("JULIA %s\nConfig    %s\n", version, path)
+	if names, err := config.Profiles(filepath.Dir(path)); err == nil {
+		fmt.Printf("Profile   %s · profiles: %s\n", safe(profileLabel(path)), strings.Join(names, ", "))
+	}
+	fmt.Printf("Provider  %s\nMode      %s\n", c.Provider, c.Mode)
 	model, reasoning := modelSettings(c)
 	fmt.Printf("Model     %s\nReasoning %s\n", safe(model), safe(reasoning))
 	for _, line := range contextSummary(c) {

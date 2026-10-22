@@ -1047,6 +1047,9 @@ func (m *model) sidebar() string {
 		directory = filepath.Clean(directory)
 	}
 	connection := []string{label("CONNECTION"), cyanStyle.Render(ansi.Truncate(sanitize(provider), width, "…")), value(modelName)}
+	if m.cfg.Profile != "" {
+		connection = append(connection, mutedStyle.Render(ansi.Truncate("profile: "+sanitize(m.cfg.Profile), width, "…")))
+	}
 	if showsReasoning(provider, m.cfg.NamedProviders) {
 		if provider != "codex" && reasoning == "provider default" {
 			connection = append(connection, mutedStyle.Render("reasoning:"), mutedStyle.Render("provider default"))

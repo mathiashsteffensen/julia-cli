@@ -37,12 +37,13 @@ julia --continue              # resume this workspace's latest session
 julia --resume SESSION_ID     # resume a specific session
 julia --prompt "fix the build" [--json]   # headless, one task
 julia --demo                  # offline UI preview
+julia --profile work          # run on ~/.config/julia/config.work.json
 julia sessions | login | doctor | config init
 julia memory [show NAME | forget NAME | confirm NAME | pin NAME | unpin NAME | stats [-days N] [-all] | consolidate | path | workspaces]
 ```
 
 Other flags: `--model`, `--reasoning`, `--mode`, `--memory off|read|write`,
-`--timeout`, `--config`. Run `julia -h`
+`--timeout`, `--config`, `--profile`. Run `julia -h`
 for the full list.
 
 | Key | Action |
@@ -52,6 +53,7 @@ for the full list.
 | Ctrl+P or `/model` | Model picker: every model in one list |
 | Ctrl+N | Switch to the next of your `enabled_models` |
 | Shift+Tab or `/reasoning` | Change reasoning effort |
+| `/profile` or `/profile NAME` | Switch configuration profile |
 | Ctrl+O | Expand/collapse tool output, full subagent tasks, and the arguments of Slack and Linear calls |
 | Ctrl+F | The fleet: every subagent of the session, with its task, tool calls and report |
 | Ctrl+V | Attach the clipboard's image (a screenshot, or an image file copied in Finder) |
@@ -163,6 +165,23 @@ keys are only referenced by env var name.
 - `subagents` assigns a model to each [subagent role](#subagent-roles) by name, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`. A role without one runs on the delegating agent's model. An assigned model starts at its entry's effort, else at the parent's when it is the parent's model, else at the one `model` or `enabled_models` gives it.
 - `memory` keeps notes between sessions (see [Memory](#memory)): `reflection` is `on` (the default) or `off`, `model` runs the reflection step on another model, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`, and `index_bytes` caps what the index of notes may take of the instructions (4096 to 65536; default 16 KiB). The reflection step runs at low effort unless `model` gives its own.
 - `browser` is the Chrome the Browser tool launches (an executable or `.app`); `JULIA_BROWSER` overrides it. Without either, JULIA looks for Chrome, Chromium, Chrome for Testing, Brave or Edge in `/Applications`, then in Playwright's and Puppeteer's caches. `npx playwright install chromium` provides one.
+
+### Profiles
+
+Each `config.<name>.json` beside `config.json` is a profile named `<name>`;
+`config.json` itself is the `default` profile. `julia --profile work` launches
+on `config.work.json`, and `julia --profile work config init` creates it.
+Profile names are letters, digits, `-` and `_`.
+
+In the TUI, `/profile` lists the profiles with each one's model and mode, and
+`/profile NAME` switches directly. The switch applies from the next turn: the
+session moves to the profile's `model`, as choosing it with `/model` would
+(a fresh conversation when the provider or an API model changes, the old one
+saved), and everything else in the profile — mode, providers,
+`enabled_models`, subagents, memory, timeout — replaces the old profile's.
+`--mode` and `--timeout` given at launch hold in every profile. Switching to
+the active profile reloads its file. A profile that does not load, or whose
+provider has no key, is refused and nothing changes.
 
 Sessions are stored in `~/.local/state/julia/sessions` with 0600 permissions.
 They contain transcripts and command output.

@@ -64,18 +64,11 @@ func (m *model) openPicker(kind string) tea.Cmd {
 	m.invalidateReasoningCycle()
 	m.closePicker()
 	m.rememberModel(m.cfg.Session.Provider, m.cfg.Session.Model)
-	search := textinput.New()
-	search.Prompt = "› "
-	search.Placeholder = "Search models by name or ID"
+	placeholder := "Search models by name or ID"
 	if kind == "reasoning" {
-		search.Placeholder = "Filter reasoning levels"
+		placeholder = "Filter reasoning levels"
 	}
-	search.SetStyles(searchStyles())
-	search.CharLimit = 256
-	search.SetVirtualCursor(true)
-	search.SetWidth(max(8, m.mainWidth-8))
-	search.Focus()
-	m.picker = &settingsPicker{kind: kind, search: search}
+	m.picker = &settingsPicker{kind: kind, search: m.pickerSearch(placeholder)}
 	m.input.Blur()
 	m.notice = ""
 	if m.cfg.Demo {
@@ -87,6 +80,19 @@ func (m *model) openPicker(kind string) tea.Cmd {
 		m.throughput = m.cfg.Throughput()
 	}
 	return m.loadPickerModels(true)
+}
+
+// pickerSearch is a picker's focused search field.
+func (m *model) pickerSearch(placeholder string) textinput.Model {
+	search := textinput.New()
+	search.Prompt = "› "
+	search.Placeholder = placeholder
+	search.SetStyles(searchStyles())
+	search.CharLimit = 256
+	search.SetVirtualCursor(true)
+	search.SetWidth(max(8, m.mainWidth-8))
+	search.Focus()
+	return search
 }
 
 // rememberModel keeps a model the session used in the picker, so a model
@@ -437,7 +443,12 @@ func (m *model) pickerChoices() []settingChoice {
 		return nil
 	}
 	var choices []settingChoice
-	if m.picker.kind == "reasoning" {
+	switch m.picker.kind {
+	case "profile":
+		for _, profile := range m.profiles {
+			choices = append(choices, settingChoice{value: profile.Name, label: profile.Name, detail: profile.Detail, active: profile.Name == m.cfg.Profile})
+		}
+	case "reasoning":
 		detail := "Use the provider/model default"
 		if option := m.currentModelOption(); option != nil && option.DefaultReasoning != "" {
 			detail += " · model default: " + option.DefaultReasoning
@@ -454,7 +465,7 @@ func (m *model) pickerChoices() []settingChoice {
 				}
 			}
 		}
-	} else {
+	default:
 		for _, option := range m.models {
 			detail := option.Description
 			if option.Name != "" && option.Name != option.ID {
@@ -523,6 +534,14 @@ func (m *model) updatePicker(msg tea.Msg) tea.Cmd {
 				return nil
 			}
 			choice := choices[min(m.picker.selected, len(choices)-1)]
+			if m.picker.kind == "profile" {
+				if err := m.switchProfile(choice.value); err != nil {
+					m.picker.err = oneLine(err.Error())
+					return nil
+				}
+				m.closePicker()
+				return m.input.Focus()
+			}
 			provider, model, reasoning := m.cfg.Session.Provider, m.cfg.Session.Model, m.cfg.Session.Reasoning
 			if m.picker.kind == "model" {
 				provider, model = config.SplitModel(choice.value)
@@ -724,6 +743,9 @@ func (m *model) pickerView() string {
 		}
 		title, subtitle = "REASONING EFFORT", "For "+name+" · applies to the next turn"
 	}
+	if p.kind == "profile" {
+		title, subtitle = "CHOOSE A PROFILE", "From config.<name>.json · each brings its own model · applies to the next turn"
+	}
 	heading := violetStyle.Bold(true).Render(title)
 	var lines []string
 	if p.loading {
@@ -761,8 +783,11 @@ func (m *model) pickerView() string {
 		start := max(0, selected-slots+1)
 		if len(choices) == 0 {
 			empty := "No matching models. Esc to use /model ID."
-			if p.kind == "reasoning" {
+			switch p.kind {
+			case "reasoning":
 				empty = "No matching levels. Esc to use /reasoning LEVEL."
+			case "profile":
+				empty = "No matching profiles. Esc to use /profile NAME."
 			}
 			lines = append(lines, mutedStyle.Render(ansi.Truncate(empty, width, "…")))
 		}
