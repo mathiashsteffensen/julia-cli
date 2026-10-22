@@ -418,16 +418,16 @@ func (r *runtimeBackend) applyReflection(ctx context.Context, in reflectionInput
 // approveReflection decides one operation of the reflection step as the
 // Memory tool decides its own: free in yolo mode and in an untainted auto
 // turn, but put to the user after outside content and before rewriting or
-// forgetting a global note or one the user wrote.
+// forgetting a weighty note (see memory.Note.Weighty).
 func (r *runtimeBackend) approveReflection(ctx context.Context, in reflectionInput, op memory.Operation, recall memory.Recall) error {
 	if in.selected.Mode != "auto" {
 		return nil
 	}
-	// Forgetting or rewriting a global note, or one the user wrote or
-	// pinned, is weighty; adding a new note is not.
+	// Forgetting or rewriting a weighty note is the user's call; adding a
+	// new note is not.
 	weighty := false
 	for _, note := range append(append([]*memory.Note(nil), recall.Workspace...), recall.Global...) {
-		if note.Name == op.Name && note.Scope.String() == op.Scope && (note.Scope.Kind == memory.ScopeGlobal || note.Source == memory.SourceUser || note.Pinned) {
+		if note.Name == op.Name && note.Scope.String() == op.Scope && note.Weighty(in.session) {
 			weighty = true
 		}
 	}

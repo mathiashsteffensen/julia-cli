@@ -518,12 +518,12 @@ func parseEvalSession(out []byte) evalSession {
 }
 
 // refusedSaves counts the Memory changes, the agent's or the reflection
-// step's, that the run refused.
+// step's, that the run refused for want of the user's approval.
 func (s evalSession) refusedSaves() int {
 	n := 0
 	for _, e := range s.events {
 		if e.Kind == "tool_end" && e.Call != nil && e.Call.Name == "Memory" && e.Result != nil {
-			if e.Result.IsError || strings.Contains(e.Result.Content, "could not") || strings.Contains(e.Result.Content, "approval") {
+			if strings.Contains(e.Result.Content, "approval") {
 				n++
 			}
 		}

@@ -333,7 +333,7 @@ they learn goes in their reports.
 
 | Type | For |
 | --- | --- |
-| `feedback` | How you want work done: a correction you gave, or an approach you confirmed, with why |
+| `feedback` | How you want work done: a correction, preference, convention or rule you gave, or an approach you confirmed, with why |
 | `procedure` | How a recurring task is done here when the files do not spell it out |
 | `user` | Who you are: role, expertise, standing preferences (global) |
 | `project` | A fact about the workspace, or the machine, that its files do not record |
@@ -351,8 +351,10 @@ needs your approval in auto mode, is refused where no one can approve, and is
 marked unverified: in the index, in `Memory read` and in `julia memory`. The mark lasts as long as the
 conversation, and a note keeps its own through every rewrite until you clear it
 with `julia memory confirm` or write the note yourself; wherever an unverified
-note appears, it says so. Forgetting or rewriting a global note, or one you
-wrote or pinned, asks you too, except that the reflection after a turn cannot ask: it
+note appears, it says so. Forgetting or rewriting a global note, one you
+wrote or pinned, or a `feedback` or `user` note an earlier session saved from
+your words, asks you too: files older than a rule you gave do not overturn it,
+and headless such a change is refused. The reflection after a turn cannot ask: it
 leaves such a change undone and says so on its card. A note cannot hold a credential, HTML comments and hidden
 characters are stripped from it, at most five notes are saved and three
 forgotten in one turn, and a forgotten or replaced version waits in a `.trash`

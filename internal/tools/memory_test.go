@@ -720,3 +720,69 @@ func TestMemoryPinnedNotesAreWeighty(t *testing.T) {
 		t.Fatalf("note changed: %+v", note)
 	}
 }
+
+func TestMemoryLessonsFromEarlierSessionsAreTheUsers(t *testing.T) {
+	const earlier = "0123456789abcdef01234567"
+	for name, tc := range map[string]struct {
+		note    memory.Note
+		session string
+		free    bool
+	}{
+		"feedback from an earlier session":  {memory.Note{Type: memory.TypeFeedback, Session: earlier}, "", false},
+		"user note from an earlier session": {memory.Note{Type: memory.TypeUser, Session: earlier}, "", false},
+		"feedback of unknown session":       {memory.Note{Type: memory.TypeFeedback}, "", false},
+		"feedback from this session":        {memory.Note{Type: memory.TypeFeedback}, "this", true},
+		"project fact from earlier":         {memory.Note{Type: memory.TypeProject, Session: earlier}, "", true},
+		"procedure from earlier":            {memory.Note{Type: memory.TypeProcedure, Session: earlier}, "", true},
+	} {
+		wrapped, store, workspace := memoryFixture(t, "auto", nil)
+		session := "8c1847d4a71d39a54d278801"
+		note := tc.note
+		if tc.session == "this" {
+			note.Session = session
+		}
+		note.Name, note.Description, note.Scope, note.Source = "owner-line", "Markdown files you create start with Owner: platform-team", memory.Scope{Kind: memory.ScopeWorkspace, Workspace: workspace}, memory.SourceAgent
+		if err := store.Save(&note); err != nil {
+			t.Fatal(err)
+		}
+		replace := callMemory(wrapped, map[string]any{"action": "save", "name": "owner-line", "description": "Do not assume an owner line; README.md has none", "type": note.Type})
+		if tc.free {
+			if replace.IsError {
+				t.Errorf("%s: replace refused: %s", name, replace.Content)
+			}
+			continue
+		}
+		if !replace.IsError || !strings.Contains(replace.Content, "records what the user asked for in an earlier session") {
+			t.Errorf("%s: replace headless: %+v", name, replace)
+		}
+		if forget := callMemory(wrapped, map[string]any{"action": "forget", "name": "owner-line"}); !forget.IsError || !strings.Contains(forget.Content, "say so to the user") {
+			t.Errorf("%s: forget headless: %+v", name, forget)
+		}
+		if kept, err := store.Load(note.Scope, "owner-line"); err != nil || kept.Description != note.Description {
+			t.Errorf("%s: lesson changed: %+v %v", name, kept, err)
+		}
+	}
+}
+
+func TestMemoryReplacingAnEarlierLessonAsksInAutoMode(t *testing.T) {
+	var reasons []string
+	approve := func(_ context.Context, a core.Approval) (core.Decision, error) {
+		reasons = append(reasons, a.Reason)
+		return core.Decision{Allow: true}, nil
+	}
+	wrapped, store, workspace := memoryFixture(t, "auto", approve)
+	scope := memory.Scope{Kind: memory.ScopeWorkspace, Workspace: workspace}
+	if err := store.Save(&memory.Note{Name: "owner-line", Description: "Markdown files you create start with Owner: platform-team", Type: memory.TypeFeedback, Scope: scope, Source: memory.SourceAgent, Session: "0123456789abcdef01234567"}); err != nil {
+		t.Fatal(err)
+	}
+	if r := callMemory(wrapped, map[string]any{"action": "save", "name": "owner-line", "description": "Markdown files you create start with Owner: data-team", "type": "feedback"}); r.IsError {
+		t.Fatal(r.Content)
+	}
+	if len(reasons) != 1 || reasons[0] != "Replace the workspace note owner-line, which records what you asked for in an earlier session: Markdown files you create start with Owner: platform-team?" {
+		t.Fatalf("approvals %q", reasons)
+	}
+	// Saved by this session now, the lesson is this session's to refine.
+	if r := callMemory(wrapped, map[string]any{"action": "save", "name": "owner-line", "description": "Markdown and text files you create start with Owner: data-team", "type": "feedback"}); r.IsError || len(reasons) != 1 {
+		t.Fatalf("refining this session's lesson: %+v %q", r, reasons)
+	}
+}

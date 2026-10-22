@@ -542,15 +542,19 @@ func (e *Memory) save(ctx context.Context, call core.ToolCall, args memoryArgs) 
 	if err := note.Validate(); err != nil {
 		return "", err
 	}
-	verb, reason, weighty := "Saved", fmt.Sprintf("Keep this %s note for later sessions?", scope), false
+	verb, reason, weighty, lesson := "Saved", fmt.Sprintf("Keep this %s note for later sessions?", scope), false, false
 	existing, err := e.options.Store.Load(scope, note.Name)
 	if err == nil {
 		verb = "Replaced"
-		// Rewriting a global note, one the user wrote or one they pinned,
-		// is weighty as forgetting it is: the old text is kept in the
-		// trash, but the user should see it go.
-		if weighty = scope.Kind == memory.ScopeGlobal || existing.Source == memory.SourceUser || existing.Pinned; weighty {
+		// Rewriting a weighty note (see memory.Note.Weighty) is weighty as
+		// forgetting it is: the old text is kept in the trash, but the user
+		// should see it go.
+		lesson = existing.UserLesson(e.options.Session)
+		if weighty = existing.Weighty(e.options.Session); weighty {
 			reason = fmt.Sprintf("Replace the %s note %s, which says: %s?", scope, note.Name, existing.Description)
+			if lesson {
+				reason = fmt.Sprintf("Replace the %s note %s, which records what you asked for in an earlier session: %s?", scope, note.Name, existing.Description)
+			}
 		}
 	} else if len(e.readUnverified) > 0 {
 		// A new note in the consolidation pass may merge the unverified
@@ -558,7 +562,7 @@ func (e *Memory) save(ctx context.Context, call core.ToolCall, args memoryArgs) 
 		note.Tainted = true
 	}
 	if err := e.authorize(ctx, call, args, reason, weighty); err != nil {
-		return "", err
+		return "", e.lessonRefused(err, lesson)
 	}
 	if err := e.options.Store.Save(note); err != nil {
 		return "", err
@@ -581,11 +585,11 @@ func (e *Memory) forget(ctx context.Context, call core.ToolCall, args memoryArgs
 		return "", err
 	}
 	args.Scope = note.Scope.String()
-	// A global note applies everywhere and a note the user wrote or pinned
-	// is theirs: none goes on the model's word alone.
-	weighty := note.Scope.Kind == memory.ScopeGlobal || note.Source == memory.SourceUser || note.Pinned
-	if err := e.authorize(ctx, call, args, fmt.Sprintf("Forget the %s note %s?", note.Scope, note.Name), weighty); err != nil {
-		return "", err
+	// A global note applies everywhere, a note the user wrote or pinned is
+	// theirs, and a lesson they gave earlier is their word: none goes on
+	// the model's word alone.
+	if err := e.authorize(ctx, call, args, fmt.Sprintf("Forget the %s note %s?", note.Scope, note.Name), note.Weighty(e.options.Session)); err != nil {
+		return "", e.lessonRefused(err, note.UserLesson(e.options.Session))
 	}
 	if err := e.options.Store.Forget(note.Scope, note.Name); err != nil {
 		return "", err
@@ -593,6 +597,16 @@ func (e *Memory) forget(ctx context.Context, call core.ToolCall, args memoryArgs
 	e.forgets++
 	e.record(memory.Activity{Kind: memory.ActivityForget, Note: note.Name, Scope: note.Scope.String()})
 	return fmt.Sprintf("Forgot %s note %s: %s", note.Scope, note.Name, note.Description), nil
+}
+
+// lessonRefused explains a refused change to a lesson the user gave in an
+// earlier session, where no one could approve it, so the agent neither
+// retries under another name nor saves a note beside it that says otherwise.
+func (e *Memory) lessonRefused(err error, lesson bool) error {
+	if !lesson || e.options.Approve != nil {
+		return err
+	}
+	return fmt.Errorf("%w. The note records what the user asked for in an earlier session: files or work older than the rule do not contradict it, and a later session does not overturn it on its own evidence, by replacing it or by saving a note that says otherwise. If it seems wrong, say so to the user", err)
 }
 
 // record adds what the tool did to the store's activity log, as this

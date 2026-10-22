@@ -691,3 +691,18 @@ func TestTurnsAndReflectionsAreRecorded(t *testing.T) {
 		t.Fatalf("reflection model %q", entries[1].Model)
 	}
 }
+
+func TestReflectionKeepsALessonFromAnEarlierSession(t *testing.T) {
+	backend := &reflectingBackend{reply: "ok", answer: `{"operations":[{"action":"save","scope":"workspace","name":"owner-line","type":"project","description":"Do not assume an owner line; README.md has none","body":"","paths":[],"commands":[],"keywords":[],"evidence":"README.md has no owner line"}],"helped":[],"misled":[]}`}
+	runner, store, s := reflectionRunner(t, backend, "auto")
+	scope := memory.Scope{Kind: memory.ScopeWorkspace, Workspace: s.Directory}
+	if err := store.Save(&memory.Note{Name: "owner-line", Description: "Markdown files you create start with Owner: platform-team", Type: memory.TypeFeedback, Scope: scope, Source: memory.SourceAgent, Session: "0123456789abcdef01234567"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Run(context.Background(), s, core.Prompt{Text: "Why did you put an owner line in README.md?"}, nil, func(core.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if note, err := store.Load(scope, "owner-line"); err != nil || note.Type != memory.TypeFeedback {
+		t.Fatalf("rewrote an earlier lesson without asking: %+v %v", note, err)
+	}
+}
