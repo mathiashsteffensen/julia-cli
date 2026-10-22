@@ -116,21 +116,6 @@ func TestResizeKeepsLiveReaderAtTheLatestOutput(t *testing.T) {
 	}
 }
 
-func TestBusySubmissionRetainsDraft(t *testing.T) {
-	m := testModel(t, Config{})
-	m.busy = true
-	m.input.SetValue("Please check one more thing")
-	if cmd := m.submit(); cmd != nil {
-		t.Fatal("started a second task")
-	}
-	if m.input.Value() != "Please check one more thing" {
-		t.Fatal("draft was lost")
-	}
-	if !strings.Contains(m.notice, "Draft kept") {
-		t.Fatal("missing busy feedback")
-	}
-}
-
 type cancellingBackend struct {
 	started chan struct{}
 	stopped chan struct{}

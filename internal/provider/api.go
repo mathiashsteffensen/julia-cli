@@ -203,6 +203,36 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 	// keepImages is how many tool images the history keeps; none once the
 	// model has rejected one.
 	keepImages := keptToolImages
+	// task is what a compaction keeps verbatim: the prompt, and every message
+	// the user steered the turn with since.
+	task := core.Prompt{Text: prompt.Text, Images: prompt.Images}
+	// steer puts the messages the user sent mid-turn before the model, as one
+	// user message after the step that just ended, and reports whether any were waiting.
+	steer := func() (bool, error) {
+		if prompt.Steering == nil {
+			return false, nil
+		}
+		taken := prompt.Steering.Take()
+		if len(taken) == 0 {
+			return false, nil
+		}
+		joined := core.JoinPrompts(taken)
+		message := fantasy.NewUserMessage(joined.Text, fileParts(joined.Images)...)
+		history = append(history, message)
+		contextTokens += estimateTokens(message)
+		task = core.JoinPrompts([]core.Prompt{task, joined})
+		files = fileParts(task.Images)
+		for _, p := range taken {
+			s.Messages = append(s.Messages, core.Message{Role: "user", Content: p.Text, Images: p.Images})
+		}
+		if err := a.save(s, history); err != nil {
+			return true, err
+		}
+		for _, p := range taken {
+			emit(core.Event{Kind: "steer", Text: p.Text})
+		}
+		return true, nil
+	}
 	for step := 0; step < limit; step++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -210,13 +240,13 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 		// A compacted history is only a summary and the task: nothing left to summarize.
 		if contextTokens >= nextCompaction && len(history) > 2 {
 			emit(core.Event{Kind: "status", Text: "Compacting context; preserving the full local transcript"})
-			summary, spent, err := a.compact(ctx, history, prompt.Text)
+			summary, spent, err := a.compact(ctx, history, task.Text)
 			compacted := 0
 			if err == nil {
 				// The task is retained verbatim, and so are the images it refers to.
-				task := &summary[len(summary)-1]
+				kept := &summary[len(summary)-1]
 				for _, file := range files {
-					task.Content = append(task.Content, file)
+					kept.Content = append(kept.Content, file)
 				}
 				history = summary
 				contextTokens = estimateTokens(history) + instructionTokens
@@ -313,13 +343,21 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 		case fantasy.FinishReasonContentFilter, fantasy.FinishReasonError:
 			return fmt.Errorf("provider stopped: %s", completed.FinishReason)
 		}
-		if len(completed.Content.ToolCalls()) == 0 {
-			if completed.FinishReason != fantasy.FinishReasonStop {
-				return fmt.Errorf("provider ended without a confirmed completion: %q", completed.FinishReason)
-			}
+		finished := len(completed.Content.ToolCalls()) == 0
+		if finished && completed.FinishReason != fantasy.FinishReasonStop {
+			return fmt.Errorf("provider ended without a confirmed completion: %q", completed.FinishReason)
+		}
+		steered, err := steer()
+		if err != nil {
+			return err
+		}
+		// A message the user sent while the model answered is answered too.
+		if finished && !steered {
 			return nil
 		}
-		emit(core.Event{Kind: "text", Text: "\n\n"})
+		if !steered {
+			emit(core.Event{Kind: "text", Text: "\n\n"})
+		}
 	}
 	return fmt.Errorf("reached %d steps; session saved, send a follow-up to continue", limit)
 }

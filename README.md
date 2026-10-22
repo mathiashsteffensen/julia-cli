@@ -49,6 +49,9 @@ for the full list.
 | Key | Action |
 | --- | --- |
 | Enter / Alt+Enter | Send / new line |
+| Enter while JULIA works | Queue the message; it is sent when the turn settles (a turn that fails or is interrupted puts it back in the composer) |
+| Ctrl+S or the steer button | Steer: hand the queued message, or the draft, to the turn under way, which reads it after its current step |
+| ↑ in an empty composer | Take the last queued message back to edit |
 | Esc | Cancel the running task |
 | Ctrl+P or `/model` | Model picker: every model in one list |
 | Ctrl+N | Switch to the next of your `enabled_models` |

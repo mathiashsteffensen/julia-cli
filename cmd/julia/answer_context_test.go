@@ -255,3 +255,31 @@ func TestJevDenialReturnsToAgentAndSeesTheUsersAnswer(t *testing.T) {
 		t.Fatalf("Jev review tasks: %q", tasks)
 	}
 }
+
+func TestSteeredMessageReachesTheNextApproval(t *testing.T) {
+	backend := &questionBackend{run: func(ctx context.Context, _ *core.Session, prompt core.Prompt, executor core.ToolExecutor) error {
+		executor.Execute(ctx, core.ToolCall{ID: "w0", Name: "Write", Arguments: json.RawMessage(writeCall)})
+		// The backend takes the message the user steered with at its next step.
+		if taken := prompt.Steering.Take(); len(taken) != 1 {
+			t.Errorf("took %+v", taken)
+		}
+		executor.Execute(ctx, core.ToolCall{ID: "w1", Name: "Write", Arguments: json.RawMessage(writeCall)})
+		return nil
+	}}
+	runner, s, approvals := askModeRunner(t, backend, nil, false)
+	inbox := core.NewInbox()
+	inbox.Send(core.Prompt{Text: "write notes.txt too"})
+	if err := runner.Run(context.Background(), s, core.Prompt{Text: "task", Steering: inbox}, nil, func(core.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals.tasks) != 2 {
+		t.Fatalf("expected two approvals, got %d", len(approvals.tasks))
+	}
+	if entries := taskEntries(t, approvals.tasks[0]); len(entries) != 1 {
+		t.Fatalf("first approval saw %+v", entries)
+	}
+	entries := taskEntries(t, approvals.tasks[1])
+	if len(entries) != 2 || entries[0].UserMessage != "task" || entries[1].UserMessage != "write notes.txt too" {
+		t.Fatalf("second approval saw %+v", entries)
+	}
+}

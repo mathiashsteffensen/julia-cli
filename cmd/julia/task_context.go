@@ -77,6 +77,30 @@ func (t *taskContext) addUser(text string) {
 	}
 }
 
+// steered records a message the user sent while the turn ran and returns
+// the updated context.
+func (t *taskContext) steered(text string) string {
+	t.mu.Lock()
+	t.addUser(text)
+	t.mu.Unlock()
+	return t.String()
+}
+
+// steeredTask is a turn's Steering that records each message the backend
+// takes as the user's own.
+type steeredTask struct {
+	core.Steering
+	record func(string)
+}
+
+func (s steeredTask) Take() []core.Prompt {
+	taken := s.Steering.Take()
+	for _, p := range taken {
+		s.record(p.Text)
+	}
+	return taken
+}
+
 func (t *taskContext) String() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()

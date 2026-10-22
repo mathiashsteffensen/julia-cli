@@ -47,6 +47,7 @@ type codexFixture struct {
 	requests            []map[string]json.RawMessage
 	toolResult          map[string]json.RawMessage
 	turn                func(*codexFixture)
+	steer               func(*codexFixture, json.RawMessage) // answers turn/steer
 	signedOut           bool
 	configReasoning     string
 	threadModelOverride string
@@ -114,6 +115,11 @@ func (f *codexFixture) start(context.Context, string, string) (*codexClient, err
 			if f.turn != nil {
 				f.turn(f)
 			}
+		case "turn/steer":
+			if f.steer == nil {
+				return 0, errors.New("unexpected turn/steer")
+			}
+			f.steer(f, request["id"])
 		case "":
 			f.toolResult = request
 		}

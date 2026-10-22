@@ -93,6 +93,7 @@ func (m *model) resize(width, height int) {
 	// Measure the fixed controls so spacing and title changes cannot push the
 	// composer or shortcuts off screen. The header always occupies three rows.
 	m.bodyHeight = max(1, m.height-3-lipgloss.Height(m.bottomView()))
+	m.queueRows = len(m.queueStrip())
 	m.viewport.SetWidth(m.mainWidth)
 	if m.question == nil {
 		// An open question keeps its own height until relayoutQuestion resizes it,
@@ -749,6 +750,13 @@ func (m *model) composerStyle() lipgloss.Style {
 }
 
 func (m *model) bottomView() string {
+	rows, _ := m.bottomLayout()
+	return strings.Join(rows, "\n")
+}
+
+// bottomLayout is the rows below the conversation, and the index among them
+// of the queue strip's first row, -1 when nothing is queued.
+func (m *model) bottomLayout() ([]string, int) {
 	style := m.composerStyle()
 	innerWidth := max(1, m.mainWidth-style.GetHorizontalFrameSize())
 	// Each part of the title sets the panel background itself: a style reset
@@ -764,7 +772,10 @@ func (m *model) bottomView() string {
 		composerInput = m.picker.search.View() + "\n"
 	}
 	if m.busy {
-		composerTitle = label.Render("DRAFT") + note.Render(" · retained while JULIA works")
+		composerTitle = label.Render("MESSAGE") + note.Render(" · Enter queues it until JULIA settles")
+		if m.mainWidth < 52 {
+			composerTitle = label.Render("MESSAGE") + note.Render(" · Enter queues")
+		}
 	}
 	if m.fleetView != nil {
 		composerTitle = label.Render("DRAFT") + note.Render(" · kept while you inspect the fleet")
@@ -793,12 +804,17 @@ func (m *model) bottomView() string {
 	if m.height >= 28 {
 		rows = append(rows, "")
 	}
+	queueAt := -1
+	if strip := m.queueStrip(); len(strip) > 0 {
+		queueAt = len(rows)
+		rows = append(rows, strip...)
+	}
 	rows = append(rows, composer)
 	if m.height >= 36 {
 		rows = append(rows, "")
 	}
 	rows = append(rows, m.footer(), "")
-	return strings.Join(rows, "\n")
+	return rows, queueAt
 }
 
 // heroGap is the number of cells between the hero's letters.
@@ -1273,8 +1289,12 @@ func (m *model) footer() string {
 		}
 		return mutedStyle.Render(text)
 	}
+	send := "send"
+	if m.busy {
+		send = "queue"
+	}
 	if m.width < 62 {
-		return coralStyle.Render("enter") + mutedStyle.Render(" send · ") + violetStyle.Render("ctrl+p") + mutedStyle.Render(" models · ") + violetStyle.Render("/help")
+		return coralStyle.Render("enter") + mutedStyle.Render(" "+send+" · ") + violetStyle.Render("ctrl+p") + mutedStyle.Render(" models · ") + violetStyle.Render("/help")
 	}
 	// Shortcuts join in order of usefulness while they fit beside the sidebar,
 	// then show in their usual order.
@@ -1284,13 +1304,13 @@ func (m *model) footer() string {
 		extras, priority = []string{"ctrl+f fleet", "ctrl+o tools", "ctrl+p models", "drag copy", "ctrl+v image"}, []int{0, 2, 1, 3, 4}
 	}
 	shown := make([]bool, len(extras))
-	used := ansi.StringWidth("enter send  alt+enter newline  esc interrupt  /help")
+	used := ansi.StringWidth("enter " + send + "  alt+enter newline  esc interrupt  /help")
 	for _, i := range priority {
 		if used+2+len(extras[i]) <= m.mainWidth {
 			used, shown[i] = used+2+len(extras[i]), true
 		}
 	}
-	left := coralStyle.Render("enter ") + mutedStyle.Render("send") + violetStyle.Render("  alt+enter ") + mutedStyle.Render("newline") + violetStyle.Render("  esc ") + mutedStyle.Render("interrupt") + violetStyle.Render("  /help")
+	left := coralStyle.Render("enter ") + mutedStyle.Render(send) + violetStyle.Render("  alt+enter ") + mutedStyle.Render("newline") + violetStyle.Render("  esc ") + mutedStyle.Render("interrupt") + violetStyle.Render("  /help")
 	for i, extra := range extras {
 		if shown[i] {
 			key, name, _ := strings.Cut(extra, " ")

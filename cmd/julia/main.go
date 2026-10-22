@@ -901,6 +901,11 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		memoryTools = tools.WithMemory(agentTools, tools.MemoryOptions{Store: r.memory, Workspace: s.Directory, Session: s.ID, Mode: mode, WorkspaceMode: cfg.Mode, ReadOnly: r.memoryReadOnly, Unbounded: r.consolidating, Approve: approveMemory, Task: task.String, Tainted: s.MemoryTaint, OnTaint: onTaint, Delivered: s.MemoryDelivered, OnDeliver: onDeliver})
 		agentTools = memoryTools
 	}
+	if prompt.Steering != nil {
+		// What the user sends mid-turn is theirs, as the prompt is: later
+		// approvals this turn are judged with it in view.
+		prompt.Steering = steeredTask{Steering: prompt.Steering, record: func(text string) { executor.SetTask(task.steered(text)) }}
+	}
 	start := len(s.Messages)
 	err = backend.Run(ctx, s, prompt, agentTools, emit)
 	if memoryTools != nil {

@@ -74,7 +74,7 @@ func TestBottomControlsSurviveSpacingBreakpoints(t *testing.T) {
 						// Activate after resize: the longer title must not change
 						// the reserved height or wrap out of the narrow composer.
 						m.busy, m.status = true, "Working"
-						title = "DRAFT"
+						title = "MESSAGE"
 					case "model search":
 						m.openPicker("model")
 						m.picker.search.SetValue("probe")

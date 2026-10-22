@@ -351,8 +351,8 @@ func TestQuestionKeepsTheComposerDraftAndFocus(t *testing.T) {
 	if m.input.Value() != "draft for later" || !m.input.Focused() {
 		t.Fatal("composer draft or focus lost after answering")
 	}
-	if !strings.Contains(ansi.Strip(m.View().Content), "DRAFT") {
-		t.Fatal("composer should be labelled as a kept draft")
+	if !strings.Contains(ansi.Strip(m.View().Content), "Enter queues") {
+		t.Fatal("composer should say a message sent now waits for the task")
 	}
 }
 

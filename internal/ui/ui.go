@@ -179,7 +179,10 @@ type model struct {
 	deferredQuestion       *QuestionRequest
 	followup               *Followup // work under way after the last turn ended
 	followupListening      bool
-	turnStart              int // where the turn under way begins in entries; -1 when none
+	turnStart              int             // where the turn under way begins in entries; -1 when none
+	queued                 []queuedMessage // messages sent while the turn runs, oldest first
+	inbox                  *core.Inbox     // the turn under way's steering; nil when none runs
+	queueRows              int             // rows of the queue strip the current layout was measured with
 	stream                 chan streamMsg
 	cancel                 context.CancelFunc
 	lifetime               context.Context
@@ -331,8 +334,8 @@ func waitStream(stream <-chan streamMsg, ctx context.Context) tea.Cmd {
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
-	if m.input.Height() != m.composerRows {
-		// The draft grew or shrank a row: give the transcript the difference.
+	if m.input.Height() != m.composerRows || len(m.queueStrip()) != m.queueRows {
+		// The draft or the queue grew or shrank a row: give the transcript the difference.
 		m.resize(m.width, m.height)
 	}
 	return next, cmd
@@ -475,7 +478,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.quitting {
 				return m, m.quit()
 			}
-			return m, tea.Batch(m.waitApproval(), m.waitQuestion(), m.refreshWeeklyUsage(true))
+			return m, tea.Batch(m.waitApproval(), m.waitQuestion(), m.refreshWeeklyUsage(true), m.settleQueue(msg.err))
 		}
 		if msg.event != nil {
 			return m, tea.Batch(m.applyEvent(*msg.event), waitStream(m.stream, m.lifetime))
@@ -552,10 +555,22 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+v" {
 			return m, m.pasteImage(true)
 		}
+		if msg.String() == "ctrl+s" && m.busy {
+			// A draft in the composer steers along with what is queued.
+			cmd := m.submit()
+			m.steer()
+			return m, cmd
+		}
+		if msg.String() == "up" && m.editQueued() {
+			return m, nil
+		}
 		if msg.String() == "enter" {
 			return m, m.submit()
 		}
 	case tea.MouseClickMsg:
+		if m.pending == nil && msg.Button == tea.MouseLeft && m.clickSteer(msg.X, msg.Y) {
+			return m, nil
+		}
 		if m.question != nil && m.pending == nil {
 			return m, m.clickQuestion(msg)
 		}
@@ -649,7 +664,12 @@ func (m *model) submit() tea.Cmd {
 		return cmd // copying never waits for the task
 	}
 	if m.busy {
-		m.notice = "Draft kept. Send when the task finishes, or Esc to interrupt."
+		if strings.HasPrefix(prompt, "/") {
+			m.notice = "Commands wait until the task finishes. Draft kept."
+			return nil
+		}
+		m.queue(m.takeImages(prompt))
+		m.input.Reset()
 		return nil
 	}
 	if text, ok := reviewRequest(prompt); ok {
@@ -676,7 +696,7 @@ func (m *model) submit() tea.Cmd {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **click** a link to open it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/review` reviews your uncommitted changes · `/review WHAT` reviews what you name · you decide each finding in a card\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- `/memory pin NAME` shows a note in full every turn · `/memory unpin NAME` undoes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- `/profile` switches configuration profile · `/profile NAME` switches to one directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, you can prepare your next message. Your draft stays in the composer until you send it."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **click** a link to open it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/review` reviews your uncommitted changes · `/review WHAT` reviews what you name · you decide each finding in a card\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- `/memory pin NAME` shows a note in full every turn · `/memory unpin NAME` undoes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- `/profile` switches configuration profile · `/profile NAME` switches to one directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, **Enter** queues your message: it is sent when JULIA settles, or at once with **Ctrl+S** or the steer button, which hands it to the task under way. **↑** in an empty composer takes a queued message back to edit."})
 		case "/ask", "/ask text":
 			if !m.cfg.Demo {
 				m.notice = "Unknown command. /help lists the essentials."
@@ -718,9 +738,16 @@ func (m *model) submit() tea.Cmd {
 		m.notice = "Offline preview. Restart without --demo to begin a real session."
 		return nil
 	}
-	m.invalidateReasoningCycle()
 	request := m.takeImages(prompt)
 	m.input.Reset()
+	return m.send(request)
+}
+
+// send starts a turn with request.
+func (m *model) send(request core.Prompt) tea.Cmd {
+	m.invalidateReasoningCycle()
+	m.inbox = core.NewInbox()
+	request.Steering = m.inbox
 	m.notice = ""
 	m.busy = true
 	m.status = "Thinking"
@@ -856,6 +883,8 @@ func (m *model) applyEvent(event core.Event) tea.Cmd {
 		m.status = "Working"
 	case "status":
 		m.status = event.Text
+	case "steer":
+		cmd = m.receiveSteer()
 	case "warning":
 		m.entries = append(m.entries, entry{role: "warning", text: event.Text})
 	case "tool_start":

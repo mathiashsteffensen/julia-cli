@@ -59,9 +59,13 @@ func (i Image) DataURL() string {
 
 // Prompt is one message the user sends: its text and any attached images. The
 // text names each image by an [Image #N] token, numbered in the order of Images.
+// Steering, when set, carries the messages the user sends while the turn this
+// prompt starts is under way; a backend that cannot take them mid-turn leaves
+// them for the next turn.
 type Prompt struct {
-	Text   string
-	Images []Image
+	Text     string
+	Images   []Image
+	Steering Steering
 }
 
 // ModelOption describes a provider-advertised model and its reasoning controls.
@@ -115,8 +119,9 @@ type Session struct {
 }
 
 // Event is the single provider-independent stream consumed by the UI and headless CLI.
-// Kinds: status, text, tool_start, tool_end, usage, warning, subagent_start,
-// subagent_end.
+// Kinds: status, text, tool_start, tool_end, usage, warning, steer,
+// subagent_start, subagent_end. A steer event reports a message the user sent
+// mid-turn that the model now has, in Text; see Steering.
 //
 // A subagent's events reach the stream too, each carrying the Subagent it came
 // from, so the delegating agent's own events are the ones without. A

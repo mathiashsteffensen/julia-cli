@@ -57,6 +57,15 @@ func codexContentItems(result core.ToolResult) []any {
 
 // withoutImageData copies messages for a text transcript: each image keeps its
 // type and size, so the record shows one was attached, but not its data.
+// codexUserInput is a user message as Codex takes it: the text, then each image.
+func codexUserInput(text string, images []core.Image) []any {
+	input := []any{map[string]any{"type": "text", "text": text}}
+	for _, image := range images {
+		input = append(input, map[string]any{"type": "image", "url": image.DataURL()})
+	}
+	return input
+}
+
 func withoutImageData(messages []core.Message) []core.Message {
 	copied := slices.Clone(messages)
 	for i, message := range copied {
@@ -392,11 +401,7 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 			}
 		}
 	}
-	input := []any{map[string]any{"type": "text", "text": turnPrompt}}
-	for _, image := range prompt.Images {
-		input = append(input, map[string]any{"type": "image", "url": image.DataURL()})
-	}
-	turnParams := map[string]any{"threadId": session.RemoteID, "input": input, "environments": []any{}, "approvalPolicy": approvalPolicy, "sandboxPolicy": policy, "serviceTier": codexServiceTier, "serviceTierForTurn": codexServiceTier}
+	turnParams := map[string]any{"threadId": session.RemoteID, "input": codexUserInput(turnPrompt, prompt.Images), "environments": []any{}, "approvalPolicy": approvalPolicy, "sandboxPolicy": policy, "serviceTier": codexServiceTier, "serviceTierForTurn": codexServiceTier}
 	// Omission inherits the previous turn's effort, so send the resolved default
 	// explicitly even when the user's saved preference is the empty sentinel.
 	turnParams["effort"] = reasoning
@@ -457,10 +462,48 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 		}
 	}
 	defer flush()
+	// Messages the user sends mid-turn join the turn under way. Once Codex
+	// refuses one, as it does when the turn is ending, the rest wait for the
+	// next turn: taking them again would only be refused again.
+	var steering <-chan struct{}
+	if !review && prompt.Steering != nil {
+		steering = prompt.Steering.Ready()
+	}
+	steer := func() error {
+		taken := prompt.Steering.Take()
+		if len(taken) == 0 {
+			return nil
+		}
+		joined := core.JoinPrompts(taken)
+		steerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if _, err := client.call(steerCtx, "turn/steer", map[string]any{"threadId": session.RemoteID, "input": codexUserInput(joined.Text, joined.Images), "expectedTurnId": turn.Turn.ID}); err != nil {
+			prompt.Steering.Return(taken)
+			steering = nil
+			return ctx.Err()
+		}
+		flush()
+		for _, p := range taken {
+			session.Messages = append(session.Messages, core.Message{Role: "user", Content: p.Text, Images: p.Images})
+		}
+		if err := checkpoint(); err != nil {
+			return fmt.Errorf("save steered message: %w", err)
+		}
+		for _, p := range taken {
+			emit(core.Event{Kind: "steer", Text: p.Text})
+		}
+		return nil
+	}
 	for {
-		message, err := client.next(ctx)
+		message, woken, err := client.nextOr(ctx, steering)
 		if err != nil {
 			return fmt.Errorf("Codex stream: %w", err)
+		}
+		if woken {
+			if err = steer(); err != nil {
+				return err
+			}
+			continue
 		}
 		if message.Method == "" {
 			continue
@@ -979,15 +1022,32 @@ func (c *codexClient) read(ctx context.Context) (codexRPCMessage, error) {
 	}
 }
 func (c *codexClient) next(ctx context.Context) (codexRPCMessage, error) {
+	message, _, err := c.nextOr(ctx, nil)
+	return message, err
+}
+
+// nextOr is next that also returns, with woken set, when wake is signalled
+// before a message arrives.
+func (c *codexClient) nextOr(ctx context.Context, wake <-chan struct{}) (codexRPCMessage, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return codexRPCMessage{}, err
+		return codexRPCMessage{}, false, err
 	}
 	if len(c.queued) > 0 {
 		message := c.queued[0]
 		c.queued = c.queued[1:]
-		return message, nil
+		return message, false, nil
 	}
-	return c.read(ctx)
+	select {
+	case <-ctx.Done():
+		return codexRPCMessage{}, false, ctx.Err()
+	case <-wake:
+		return codexRPCMessage{}, true, nil
+	case result, ok := <-c.incoming:
+		if !ok {
+			return codexRPCMessage{}, false, io.EOF
+		}
+		return result.Message, false, result.Err
+	}
 }
 func (c *codexClient) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	c.counter++
