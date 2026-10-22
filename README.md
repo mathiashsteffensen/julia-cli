@@ -345,7 +345,8 @@ read content from outside your words (WebFetch, WebSearch, Browser, Slack,
 Linear, a subagent's report, Bash with network or outside the sandbox, a
 networked terminal, a repository's agent instructions such as `AGENTS.md`,
 `CLAUDE*.md` or `.cursor/` rules, however it was read, or an unverified note read
-in full), every change to the notes in it, the agent's or the reflection step's,
+in full; a command that only looks for such a file and finds none, as agents
+often do before they start, reads nothing), every change to the notes in it, the agent's or the reflection step's,
 needs your approval in auto mode, is refused where no one can approve, and is
 marked unverified: in the index, in `Memory read` and in `julia memory`. The mark lasts as long as the
 conversation, and a note keeps its own through every rewrite until you clear it

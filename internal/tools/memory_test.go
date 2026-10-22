@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -481,16 +483,39 @@ func (errorTools) Execute(context.Context, core.ToolCall) core.ToolResult {
 
 func TestMemoryInstructionFilesByAnyRoute(t *testing.T) {
 	store := &memory.Store{Directory: t.TempDir()}
+	// workspace holds instructions for agents; bare holds none, and lies
+	// under a .claude directory as a worktree there would.
+	workspace := t.TempDir()
+	for _, name := range []string{"AGENTS.md", ".cursor/rules/x.mdc", "docs/AGENTS.md"} {
+		path := filepath.Join(workspace, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bare := filepath.Join(t.TempDir(), ".claude", "worktrees", "w")
+	if err := os.MkdirAll(bare, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for name, call := range map[string]struct {
-		tool, args, result string
+		tool, args, result, workspace string
 	}{
-		"lower case":   {"Read", `{"path":"agents.md"}`, "x"},
-		"grep glob":    {"Grep", `{"pattern":"x","glob":"AGENTS.md"}`, "x"},
-		"grep matches": {"Grep", `{"pattern":"SECRET"}`, "internal/a.go:3:SECRET\nAGENTS.md:12:SECRET handling"},
-		"bash cat":     {"Bash", `{"command":"cat AGENTS.md | head"}`, "x"},
-		"bash quoted":  {"Bash", `{"command":"sed -n 1,20p './.cursor/rules/x.mdc'"}`, "x"},
+		"lower case":         {"Read", `{"path":"agents.md"}`, "x", bare},
+		"grep glob":          {"Grep", `{"pattern":"x","glob":"AGENTS.md"}`, "x", bare},
+		"grep matches":       {"Grep", `{"pattern":"SECRET"}`, "internal/a.go:3:SECRET\nAGENTS.md:12:SECRET handling", bare},
+		"bash cat":           {"Bash", `{"command":"cat AGENTS.md | head"}`, "x", workspace},
+		"bash quoted":        {"Bash", `{"command":"sed -n 1,20p './.cursor/rules/x.mdc'"}`, "x", workspace},
+		"bash glob":          {"Bash", `{"command":"head docs/*.md */AGENTS.md"}`, "x", workspace},
+		"bash find exec":     {"Bash", `{"command":"find . -name AGENTS.md -exec cat {} +"}`, "x", bare},
+		"bash xargs":         {"Bash", `{"command":"find . -name AGENTS.md | xargs cat"}`, "x", bare},
+		"bash substitution":  {"Bash", `{"command":"cat $(find . -name AGENTS.md)"}`, "x", bare},
+		"bash elsewhere":     {"Bash", `{"command":"cd sub && cat AGENTS.md"}`, "x", bare},
+		"bash search output": {"Bash", `{"command":"grep -rn token --include=AGENTS.md ."}`, "./sub/AGENTS.md:3:token rules", bare},
+		"bash probe found":   {"Bash", `{"command":"for f in AGENTS.md CONTRIBUTING.md; do [ -f \"$f\" ] && cat \"$f\"; done"}`, "x", workspace},
 	} {
-		m := WithMemory(stubTools{call.result}, MemoryOptions{Store: store, Workspace: t.TempDir(), Mode: "auto"})
+		m := WithMemory(stubTools{call.result}, MemoryOptions{Store: store, Workspace: call.workspace, Mode: "auto"})
 		m.Execute(context.Background(), core.ToolCall{Name: call.tool, Arguments: json.RawMessage(call.args)})
 		if len(m.Tainted()) != 1 {
 			t.Errorf("%s: not tainted", name)
@@ -499,10 +524,16 @@ func TestMemoryInstructionFilesByAnyRoute(t *testing.T) {
 	for name, call := range map[string]struct {
 		tool, args, result string
 	}{
-		"grep elsewhere": {"Grep", `{"pattern":"x"}`, "internal/agents/a.go:3:x\ndocs/guide.md:1:x"},
-		"bash ordinary":  {"Bash", `{"command":"go test ./internal/agents/..."}`, "ok"},
+		"grep elsewhere":  {"Grep", `{"pattern":"x"}`, "internal/agents/a.go:3:x\ndocs/guide.md:1:x"},
+		"bash ordinary":   {"Bash", `{"command":"go test ./internal/agents/..."}`, "ok"},
+		"bash probe":      {"Bash", `{"command":"pwd; ls -la; find .. -name AGENTS.md -o -name CONTRIBUTING.md"}`, bare + "\ntotal 0\n.claude:\nREADME.md"},
+		"bash test file":  {"Bash", `{"command":"for f in AGENTS.md CONTRIBUTING.md; do [ -f \"$f\" ] && cat \"$f\"; done"}`, ""},
+		"bash braced var": {"Bash", `{"command":"for f in AGENTS.md CLAUDE.md; do test -f \"${f}\" && cat \"${f}\"; done"}`, ""},
+		"bash missing":    {"Bash", `{"command":"cat AGENTS.md"}`, "cat: AGENTS.md: No such file or directory"},
+		"bash glob none":  {"Bash", `{"command":"ls */AGENTS.md"}`, "ls: */AGENTS.md: No such file or directory"},
+		"bash absolute":   {"Bash", `{"command":"ls ` + bare + `/README.md"}`, bare + "/README.md"},
 	} {
-		m := WithMemory(stubTools{call.result}, MemoryOptions{Store: store, Workspace: t.TempDir(), Mode: "auto"})
+		m := WithMemory(stubTools{call.result}, MemoryOptions{Store: store, Workspace: bare, Mode: "auto"})
 		m.Execute(context.Background(), core.ToolCall{Name: call.tool, Arguments: json.RawMessage(call.args)})
 		if got := m.Tainted(); len(got) != 0 {
 			t.Errorf("%s: tainted %v", name, got)

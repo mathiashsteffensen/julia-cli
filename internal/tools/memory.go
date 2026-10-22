@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -127,9 +128,10 @@ func agentInstructions(path string) bool {
 }
 
 // readsAgentInstructions reports whether a call read a repository's
-// instructions for agents: by the path or glob it names, by a word of the
-// command it runs, or, for a search, by a file its matches came from.
-func readsAgentInstructions(call core.ToolCall, result core.ToolResult) (string, bool) {
+// instructions for agents in workspace: by the path or glob it names, by a
+// command that could have read one (see bashReadsAgentInstructions), or, for
+// a search, by a file its matches came from.
+func readsAgentInstructions(call core.ToolCall, result core.ToolResult, workspace string) (string, bool) {
 	var args struct {
 		Path, Glob, Command string
 	}
@@ -140,11 +142,7 @@ func readsAgentInstructions(call core.ToolCall, result core.ToolResult) (string,
 		}
 	}
 	if call.Name == "Bash" {
-		for _, word := range strings.Fields(args.Command) {
-			if word = strings.Trim(word, `"';|&<>()`); word != "" && agentInstructions(word) {
-				return word, true
-			}
-		}
+		return bashReadsAgentInstructions(args.Command, result.Content, workspace)
 	}
 	if call.Name == "Grep" && !result.IsError {
 		// Each match is path:line:text; the path says where it came from.
@@ -152,6 +150,72 @@ func readsAgentInstructions(call core.ToolCall, result core.ToolResult) (string,
 			if path, _, ok := strings.Cut(line, ":"); ok && agentInstructions(path) {
 				return path, true
 			}
+		}
+	}
+	return "", false
+}
+
+// bashIndirect matches what lets a command read files other than those it
+// names: running a command on what a search finds, substituting one
+// command's output into another, reading names from input, or moving to
+// another directory, where a name no longer resolves against the workspace.
+var bashIndirect = regexp.MustCompile(`-exec|-ok|\bxargs\b|\$\(|` + "`" + `|\b(cd|pushd|read|eval|source)\b`)
+
+// bashReadsAgentInstructions reports whether a Bash command could have read
+// a repository's instructions for agents. Naming one is not enough, since
+// agents routinely look for AGENTS.md before they start, and a search that
+// finds nothing has read nothing. It could when its output quotes one, as a
+// search's matches do, whatever it named; and when it names one, if that
+// file exists in the workspace, a glob it names matches one, or it reads
+// indirectly (see bashIndirect). Paths inside the workspace are judged
+// relative to it, so a workspace that itself lies under a directory such as
+// .claude does not count.
+func bashReadsAgentInstructions(command, output, workspace string) (string, bool) {
+	relative := func(word string) string {
+		word = strings.Trim(word, `"';|&<>()`)
+		if strings.HasPrefix(word, "-") {
+			// An option's value: --include=AGENTS.md.
+			_, word, _ = strings.Cut(word, "=")
+		}
+		if workspace != "" && filepath.IsAbs(word) {
+			if rel, err := filepath.Rel(workspace, word); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return rel
+			}
+		}
+		return word
+	}
+	// A search's matches are path:line:text; a listing's bare paths, or a
+	// recursive listing's "dir:" headers, show no file's text.
+	for _, word := range strings.Fields(output) {
+		if path, text, ok := strings.Cut(relative(word), ":"); ok && path != "" && text != "" && agentInstructions(path) {
+			return path, true
+		}
+	}
+	var named []string
+	for _, word := range strings.Fields(command) {
+		if word = relative(word); word != "" && agentInstructions(word) {
+			named = append(named, word)
+		}
+	}
+	if len(named) == 0 {
+		return "", false
+	}
+	if workspace == "" || bashIndirect.MatchString(command) {
+		return named[0], true
+	}
+	for _, word := range named {
+		if !filepath.IsAbs(word) {
+			word = filepath.Join(workspace, word)
+		}
+		if strings.Contains(word, "**") {
+			return named[0], true
+		}
+		if strings.ContainsAny(word, "*?[") {
+			if matches, _ := filepath.Glob(word); len(matches) > 0 {
+				return named[0], true
+			}
+		} else if _, err := os.Lstat(word); err == nil {
+			return named[0], true
 		}
 	}
 	return "", false
@@ -242,7 +306,7 @@ func (e *Memory) observe(call core.ToolCall, result core.ToolResult) {
 		}
 	}
 	if source == "" {
-		if path, ok := readsAgentInstructions(call, result); ok {
+		if path, ok := readsAgentInstructions(call, result, e.options.Workspace); ok {
 			source = call.Name + " " + path
 		}
 	}
