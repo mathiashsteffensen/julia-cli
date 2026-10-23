@@ -85,6 +85,13 @@ to every provider, Codex included. Ctrl+V falls back to an ordinary text paste
 when the clipboard holds no image. On Linux it needs `wl-paste` or `xclip`. In Ghostty, sent
 images are drawn inline as thumbnails; other terminals show a caption instead.
 
+When JULIA settles while its terminal is in the background (a turn ends with
+nothing queued after it, or an approval, question or review card is waiting on
+you), it sends a desktop notification and rings the bell. Ghostty, iTerm2,
+WezTerm and kitty show the notification; other terminals, Terminal.app among
+them, only hear the bell. A focused terminal is left alone. In tmux, set
+`allow-passthrough on` and `focus-events on`.
+
 JULIA handles selection itself, because mouse reporting is on and rows carry
 borders and the sidebar. Copies go to the system clipboard, or through the
 terminal (OSC 52) over SSH.

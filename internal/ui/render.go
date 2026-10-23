@@ -730,6 +730,7 @@ func (m *model) View() tea.View {
 	v.ForegroundColor = cream
 	v.WindowTitle = "JULIA — personal agent"
 	v.MouseMode = tea.MouseModeCellMotion
+	v.ReportFocus = true // for notify, which speaks only while the terminal is in the background
 	return v
 }
 

@@ -178,6 +178,8 @@ type model struct {
 	deferredApproval       *ApprovalRequest
 	deferredQuestion       *QuestionRequest
 	followup               *Followup // work under way after the last turn ended
+	blurred                bool      // the terminal is in the background, as its last focus report said
+	tmux                   bool      // JULIA runs inside tmux, so notifications are passed through to the terminal
 	followupListening      bool
 	turnStart              int             // where the turn under way begins in entries; -1 when none
 	queued                 []queuedMessage // messages sent while the turn runs, oldest first
@@ -352,6 +354,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.receiveReasoningCycle(msg)
 	case tea.EnvMsg:
 		m.wordmarkEnabled = supportsWordmark(msg)
+		m.tmux = msg.Getenv("TMUX") != ""
 		return m, tea.Batch(m.requestWordmark(), m.requestCellSize())
 	case tea.ColorProfileMsg:
 		m.wordmarkTrueColor = msg.Profile == colorprofile.TrueColor
@@ -406,6 +409,12 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selection = nil
 		}
 		return m, nil
+	case tea.FocusMsg:
+		m.blurred = false
+		return m, nil
+	case tea.BlurMsg:
+		m.blurred = true
+		return m, nil
 	case tickMsg:
 		m.now = time.Time(msg)
 		return m, tea.Batch(nextTick(), m.refreshWeeklyUsage(false))
@@ -424,7 +433,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pending = &msg.request
 		m.refresh(true)
-		return m, nil
+		return m, m.notifyApproval(msg.request.Approval)
 	case followupMsg:
 		m.followupListening = false
 		m.receiveFollowup(msg.followup)
@@ -478,7 +487,8 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.quitting {
 				return m, m.quit()
 			}
-			return m, tea.Batch(m.waitApproval(), m.waitQuestion(), m.refreshWeeklyUsage(true), m.settleQueue(msg.err))
+			settled := m.notifySettled(msg.err)
+			return m, tea.Batch(m.waitApproval(), m.waitQuestion(), m.refreshWeeklyUsage(true), m.settleQueue(msg.err), settled)
 		}
 		if msg.event != nil {
 			return m, tea.Batch(m.applyEvent(*msg.event), waitStream(m.stream, m.lifetime))

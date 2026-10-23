@@ -145,7 +145,10 @@ func (m *model) openQuestion(request QuestionRequest, demo bool) tea.Cmd {
 	}
 	m.relayoutQuestion()
 	m.viewport.GotoBottom()
-	return cmd
+	if demo {
+		return cmd
+	}
+	return tea.Batch(cmd, m.notifyQuestion(request))
 }
 
 // closeQuestion removes the card and promotes whatever was waiting behind it.
@@ -170,7 +173,7 @@ func (m *model) promoteInteraction() tea.Cmd {
 		m.deferredApproval = nil
 		m.pending = request
 		m.refresh(true)
-		return nil
+		return m.notifyApproval(request.Approval)
 	}
 	if request := m.deferredQuestion; request != nil {
 		m.deferredQuestion = nil
