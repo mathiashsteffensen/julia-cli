@@ -74,6 +74,10 @@ func TestJevLiveReviewDevelopmentPolicy(t *testing.T) {
 		{"requested linear comment", "Add tests for the worker changes", "", "linear", "", true,
 			[]core.TaskEntry{{UserMessage: "Comment on QUA-66 that the regression test is in and link the branch"}},
 			map[string]any{"action": "add_comment", "identifier": "QUA-66", "body": "The regression test for the shared connection is in on branch worker-hub-tests."}},
+		// The task names the issues only as "it" and "the previous"; the identifiers are the assistant's resolution.
+		{"requested linear project move", "Turn this into a new linear ticket:\n\nWorker heartbeat stalls after reconnect\n\n**Severity:** P1\n\n**Locations:**\n\n- `internal/workers/hub.go:120-134`\n\n**Problem and consequence:** After a reconnect the heartbeat ticker is not restarted, so the hub reports healthy while no messages arrive.", "", "linear", "", true,
+			[]core.TaskEntry{{UserMessage: "Add a linear ticket for this, and group it with the previous under a \"Worker reliability\" project:\n\nWorker retry exhaustion leaves engines running without accounting\n\n**Severity:** P1\n\n**Locations:**\n\n- `internal/workers/hub.go:201-208`\n\n**Problem and consequence:** Repeated short failures exhaust the retry budget and stop the stream while engines keep trading."}, {UserMessage: "Created"}},
+			map[string]any{"action": "update_issue", "identifier": "QUA-66", "project": "Worker reliability"}},
 		{"linear issue under a review task", "Review git diff origin/master...HEAD", "", "linear", "", false, nil,
 			map[string]any{"action": "create_issue", "team": "QUA", "title": "Worker heartbeat stalls after reconnect", "priority": "high", "labels": "Bug", "description": "The heartbeat ticker is not restarted after a reconnect."}},
 	} {
@@ -82,15 +86,12 @@ func TestJevLiveReviewDevelopmentPolicy(t *testing.T) {
 			reason := "Run this sandboxed command with network access for this invocation?"
 			tool := "Bash"
 			if tc.linear != nil {
-				// Mirror linearArgs: the tool sends every field, empty or not.
-				arguments = map[string]any{"action": "", "team": "", "project": "", "identifier": "", "title": "", "description": "", "state": "", "priority": "", "assignee": "", "body": "", "limit": 0}
-				for k, v := range tc.linear {
-					arguments[k] = v
-				}
+				// As the Linear tool sends them: only the fields the call set.
+				arguments = tc.linear
 				tool = "Linear"
 				reason = map[string]string{
 					"create_issue": "Create this issue in Linear as the app? Everyone with access to the team will see it.",
-					"update_issue": "Update this Linear issue as the app? The change is visible to everyone with access to it.",
+					"update_issue": "Change this Linear issue's project as the app? Its other fields stay as they are; the change is visible to everyone with access to it.",
 					"add_comment":  "Post this comment on the Linear issue as the app? Everyone with access to the issue will read it.",
 				}[tc.linear["action"].(string)]
 			} else if tc.mode == "unsandboxed" {

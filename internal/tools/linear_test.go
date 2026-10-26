@@ -225,6 +225,10 @@ func TestLinearWritesResolveNamesAndAreReviewed(t *testing.T) {
 	if !strings.Contains(update.query, "issueUpdate") || update.variables["id"] != "I14" || string(input) != `{"assigneeId":null,"priority":4,"stateId":"S3"}` {
 		t.Fatalf("update call %+v input %s", update, input)
 	}
+	// The approval names what changes and carries only the fields the call set.
+	if want := `{"action":"update_issue","identifier":"QUA-14","state":"done","priority":"low","assignee":"none"}`; string(reviewed[1].Call.Arguments) != want || !strings.HasPrefix(reviewed[1].Reason, "Change this Linear issue's state, priority and assignee as the app?") {
+		t.Fatalf("update review %s: %s", reviewed[1].Call.Arguments, reviewed[1].Reason)
+	}
 	r = invoke(e, "Linear", map[string]any{"action": "add_comment", "identifier": "QUA-14", "body": "Done, sir."})
 	if r.IsError || r.Content != "Commented on QUA-14: https://linear.app/q/issue/QUA-14#comment-1" {
 		t.Fatalf("comment: %+v", r)

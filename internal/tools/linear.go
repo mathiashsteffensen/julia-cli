@@ -119,22 +119,26 @@ func linearDefinition() core.ToolDefinition {
 	}
 }
 
+// linearArgs is the tool call as the model sent it. Fields are omitted when
+// empty so the approval the reviewer and the user see names only what the
+// call sets: an update that moves an issue into a project would otherwise
+// read as one that also blanks its title, description, state and assignee.
 type linearArgs struct {
 	Action        string `json:"action"`
-	Team          string `json:"team"`
-	Project       string `json:"project"`
-	Identifier    string `json:"identifier"`
-	Title         string `json:"title"`
-	Description   string `json:"description"`
-	State         string `json:"state"`
-	Priority      string `json:"priority"`
-	Assignee      string `json:"assignee"`
-	Body          string `json:"body"`
+	Team          string `json:"team,omitempty"`
+	Project       string `json:"project,omitempty"`
+	Identifier    string `json:"identifier,omitempty"`
+	Title         string `json:"title,omitempty"`
+	Description   string `json:"description,omitempty"`
+	State         string `json:"state,omitempty"`
+	Priority      string `json:"priority,omitempty"`
+	Assignee      string `json:"assignee,omitempty"`
+	Body          string `json:"body,omitempty"`
 	Labels        string `json:"labels,omitempty"`
 	ReplaceLabels bool   `json:"replace_labels,omitempty"`
 	Name          string `json:"name,omitempty"`
 	Color         string `json:"color,omitempty"`
-	Limit         int    `json:"limit"`
+	Limit         int    `json:"limit,omitempty"`
 }
 
 // Linear's GraphQL types, as much of them as the tool reads.
@@ -502,7 +506,7 @@ func (e *Executor) linearUpdateIssue(ctx context.Context, call core.ToolCall, a 
 	if _, err := linearLabelNames(a.Labels); err != nil {
 		return "", err
 	}
-	if err := e.authorizeLinear(ctx, call, a, "Update this Linear issue as the app? The change is visible to everyone with access to it."); err != nil {
+	if err := e.authorizeLinear(ctx, call, a, linearUpdateReason(a)); err != nil {
 		return "", err
 	}
 	issue, err := e.linearIssue(ctx, a.Identifier, `id identifier team { id key } labels { nodes { id name } }`)
@@ -761,6 +765,25 @@ func linearLabelNames(names string) ([]string, error) {
 		return nil, errors.New("labels must be a comma-separated list of label names")
 	}
 	return out, nil
+}
+
+// linearUpdateReason names the fields an update changes, so the approval
+// reads as the move or relabelling it is rather than a rewrite of the issue.
+func linearUpdateReason(a linearArgs) string {
+	var fields []string
+	for _, f := range []struct{ name, value string }{{"title", a.Title}, {"description", a.Description}, {"state", a.State}, {"priority", a.Priority}, {"assignee", a.Assignee}, {"project", a.Project}} {
+		if f.value != "" {
+			fields = append(fields, f.name)
+		}
+	}
+	if a.Labels != "" || a.ReplaceLabels {
+		fields = append(fields, "labels")
+	}
+	list := fields[len(fields)-1]
+	if len(fields) > 1 {
+		list = strings.Join(fields[:len(fields)-1], ", ") + " and " + list
+	}
+	return fmt.Sprintf("Change this Linear issue's %s as the app? Its other fields stay as they are; the change is visible to everyone with access to it.", list)
 }
 
 // authorizeLinear puts a change others in the workspace will see to whoever
