@@ -87,6 +87,10 @@ type Config struct {
 	Memory        func(action, name string) (string, error)
 	Version       string // shown in the sidebar masthead
 	ContextWindow int    // tokens the context gauge is measured against; <= 0 means core.DefaultContextWindow
+	// ContextWindowFor is the window of the session's model, by provider and
+	// model ID, where models have windows of their own. Nil, or a result of
+	// zero or less, measures against ContextWindow.
+	ContextWindowFor func(provider, model string) int
 	// Hangup ends the interface when the terminal is gone, as a closed
 	// window's SIGHUP says, after the running task has stopped and cleaned
 	// up: its terminals and browser killed, not orphaned.

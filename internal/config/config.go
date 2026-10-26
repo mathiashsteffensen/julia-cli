@@ -21,21 +21,25 @@ import (
 
 const CompatibleDecisionsModel = "typesafe/jev-1.13"
 
-// MinContextTokens is the smallest accepted context_tokens. The system prompt
-// and tool schemas alone use several thousand tokens and compaction fires at 85%
-// of the window, so anything smaller would compact on nearly every turn.
+// MinContextTokens is the smallest accepted context_tokens, and the smallest
+// context_window a model entry may give. The system prompt and tool schemas
+// alone use several thousand tokens and compaction fires at 85% of the window,
+// so anything smaller would compact on nearly every turn.
 const MinContextTokens = 32000
 
 type Config struct {
 	SkillPaths []string `json:"skill_paths,omitempty"`
-	// Provider, Model and ModelReasoning come from the "model" entry:
-	// provider/<model-id>, or an object with that id and the reasoning effort
-	// the model starts with. A bare "codex" is Codex's own configured model.
-	Provider       string `json:"-"`
-	Model          string `json:"-"`
-	ModelReasoning string `json:"-"`
+	// Provider, Model, ModelReasoning and ModelContextWindow come from the
+	// "model" entry: provider/<model-id>, or an object with that id, the
+	// reasoning effort the model starts with and its context window. A bare
+	// "codex" is Codex's own configured model.
+	Provider           string `json:"-"`
+	Model              string `json:"-"`
+	ModelReasoning     string `json:"-"`
+	ModelContextWindow int    `json:"-"`
 	// EnabledModels are the models the picker lists and ctrl+n cycles, each
-	// provider/<model-id> or an object with that id and a reasoning effort.
+	// provider/<model-id> or an object with that id, a reasoning effort and a
+	// context window.
 	EnabledModels []ModelEntry `json:"enabled_models,omitempty"`
 	// Providers are named OpenAI-compatible endpoints. Each id is a provider
 	// a model ID may name, as <id>/<model-id>.
@@ -49,8 +53,8 @@ type Config struct {
 	CodexBinary string `json:"codex_binary,omitempty"`
 	Reasoning   string `json:"reasoning,omitempty"`
 	MaxSteps    int    `json:"max_steps"`
-	// ContextTokens is the context window assumed for every model; compaction
-	// triggers at a fraction of it.
+	// ContextTokens is the context window assumed for every model without a
+	// context_window of its own; compaction triggers at a fraction of it.
 	ContextTokens int `json:"context_tokens"`
 	// ContextBytes is deprecated and ignored: compaction is driven by
 	// ContextTokens. The field stays only because configs are decoded with
@@ -172,11 +176,14 @@ func (c Config) Reviewer() (provider, model string) {
 }
 
 // ModelEntry is a model in the configuration: provider/<model-id> in JSON, or
-// {"id": "provider/<model-id>", "reasoning": "high"} to give it a starting
-// reasoning effort.
+// {"id": "provider/<model-id>", "reasoning": "high", "context_window": 400000}
+// to give it a starting reasoning effort and a context window of its own.
 type ModelEntry struct {
 	ID        string `json:"id"`
 	Reasoning string `json:"reasoning,omitempty"`
+	// ContextWindow is the model's context size in tokens; zero means the
+	// configuration's context_tokens.
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 func (m *ModelEntry) UnmarshalJSON(data []byte) error {
@@ -190,7 +197,7 @@ func (m *ModelEntry) UnmarshalJSON(data []byte) error {
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&e); err != nil {
-		return fmt.Errorf(`a model is "provider/<model-id>" or {"id": "provider/<model-id>", "reasoning": "<effort>"}: %w`, err)
+		return fmt.Errorf(`a model is "provider/<model-id>" or {"id": "provider/<model-id>", "reasoning": "<effort>", "context_window": <tokens>}: %w`, err)
 	}
 	if e.ID == "" {
 		return errors.New(`a model object needs an "id"`)
@@ -200,15 +207,15 @@ func (m *ModelEntry) UnmarshalJSON(data []byte) error {
 }
 
 func (m ModelEntry) MarshalJSON() ([]byte, error) {
-	if m.Reasoning == "" {
+	if m.Reasoning == "" && m.ContextWindow == 0 {
 		return json.Marshal(m.ID)
 	}
 	type entry ModelEntry
 	return json.Marshal(entry(m))
 }
 
-// UnmarshalJSON reads "model" as a ModelEntry into Provider, Model and
-// ModelReasoning.
+// UnmarshalJSON reads "model" as a ModelEntry into Provider, Model,
+// ModelReasoning and ModelContextWindow.
 // Unknown keys are refused here too: Load's DisallowUnknownFields does not
 // reach a custom unmarshaler.
 func (c *Config) UnmarshalJSON(data []byte) error {
@@ -224,18 +231,24 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 	if file.Model != nil {
 		c.Provider, c.Model = SplitModel(file.Model.ID)
-		c.ModelReasoning = file.Model.Reasoning
+		c.ModelReasoning, c.ModelContextWindow = file.Model.Reasoning, file.Model.ContextWindow
 	}
 	return nil
 }
 
 func (c Config) MarshalJSON() ([]byte, error) {
 	type fields Config
+	model := c.modelEntry()
 	file := struct {
 		fields
 		Model *ModelEntry `json:"model,omitempty"`
-	}{fields: fields(c), Model: &ModelEntry{ID: JoinModel(c.Provider, c.Model), Reasoning: c.ModelReasoning}}
+	}{fields: fields(c), Model: &model}
 	return json.Marshal(file)
+}
+
+// modelEntry is the "model" entry as configured.
+func (c Config) modelEntry() ModelEntry {
+	return ModelEntry{ID: JoinModel(c.Provider, c.Model), Reasoning: c.ModelReasoning, ContextWindow: c.ModelContextWindow}
 }
 
 // ReasoningFor is the reasoning effort configured for a provider's model: the
@@ -252,6 +265,22 @@ func (c Config) ReasoningFor(provider, model string) string {
 		}
 	}
 	return ""
+}
+
+// ContextWindowFor is the context window, in tokens, of a provider's model:
+// the "model" entry's, else its enabled_models entry's, else context_tokens,
+// which every model without a context_window of its own is assumed to have.
+func (c Config) ContextWindowFor(provider, model string) int {
+	if provider == c.Provider && model == c.Model && c.ModelContextWindow > 0 {
+		return c.ModelContextWindow
+	}
+	id := JoinModel(provider, model)
+	for _, entry := range c.EnabledModels {
+		if entry.ID == id && entry.ContextWindow > 0 {
+			return entry.ContextWindow
+		}
+	}
+	return c.ContextTokens
 }
 
 // BrowserEnv names the environment variable that overrides Config.Browser.
@@ -312,7 +341,7 @@ func (c Config) Validate() error {
 			return errors.New("skill_paths must not contain empty paths")
 		}
 	}
-	if err := c.validateModel("model", c.Provider, c.Model, c.ModelReasoning); err != nil {
+	if err := c.validateModel("model", c.modelEntry()); err != nil {
 		return err
 	}
 	if c.ReviewerModel != "" {
@@ -326,11 +355,10 @@ func (c Config) Validate() error {
 	}
 	seenModels := make(map[string]bool, len(c.EnabledModels))
 	for _, entry := range c.EnabledModels {
-		provider, model := SplitModel(entry.ID)
-		if err := c.validateModel("enabled_models", provider, model, entry.Reasoning); err != nil {
+		if err := c.validateModel("enabled_models", entry); err != nil {
 			return err
 		}
-		if model == "" {
+		if _, model := SplitModel(entry.ID); model == "" {
 			return fmt.Errorf("enabled_models %q needs a model ID: provider/<model-id>", entry.ID)
 		}
 		if seenModels[entry.ID] {
@@ -346,8 +374,7 @@ func (c Config) Validate() error {
 		if !agents.ValidName(role) {
 			return fmt.Errorf("subagents %q is not a role name, which is %s", role, agents.NameRule)
 		}
-		provider, model := SplitModel(entry.ID)
-		if err := c.validateModel("subagents."+role, provider, model, entry.Reasoning); err != nil {
+		if err := c.validateModel("subagents."+role, entry); err != nil {
 			return err
 		}
 	}
@@ -386,8 +413,7 @@ func (c Config) Validate() error {
 		return fmt.Errorf("memory.reflection must be on or off, not %q", c.Memory.Reflection)
 	}
 	if c.Memory.Model != nil {
-		provider, model := SplitModel(c.Memory.Model.ID)
-		if err := c.validateModel("memory.model", provider, model, c.Memory.Model.Reasoning); err != nil {
+		if err := c.validateModel("memory.model", *c.Memory.Model); err != nil {
 			return err
 		}
 	}
@@ -397,10 +423,12 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// validateModel checks one provider/<model-id> entry of the named field. Only
-// Codex may leave the model ID out, for its own configured model.
-func (c Config) validateModel(field, provider, model, reasoning string) error {
-	id := JoinModel(provider, model)
+// validateModel checks one model entry of the named field: provider/<model-id>,
+// its reasoning effort and its context window. Only Codex may leave the model
+// ID out, for its own configured model.
+func (c Config) validateModel(field string, entry ModelEntry) error {
+	id, reasoning := entry.ID, entry.Reasoning
+	provider, model := SplitModel(id)
 	if !contains(c.ProviderIDs(), provider) {
 		return fmt.Errorf("%s %q must be provider/<model-id> with provider %s", field, id, strings.Join(c.ProviderIDs(), ", "))
 	}
@@ -415,6 +443,9 @@ func (c Config) validateModel(field, provider, model, reasoning string) error {
 	}
 	if err := c.validateReasoning(provider, reasoning); err != nil {
 		return fmt.Errorf("%s %q: %w", field, id, err)
+	}
+	if entry.ContextWindow != 0 && entry.ContextWindow < MinContextTokens {
+		return fmt.Errorf("%s %q: context_window must be at least %d, or left out to assume context_tokens", field, id, MinContextTokens)
 	}
 	return nil
 }

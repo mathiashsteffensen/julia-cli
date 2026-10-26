@@ -241,6 +241,24 @@ func TestAPIBackendReceivesConfiguredContextWindow(t *testing.T) {
 			t.Fatalf("API backend context window = %+v, want %d", backend, tokens)
 		}
 	}
+	// A model with a context_window of its own is budgeted against it, whether
+	// the window comes from its enabled_models entry or from the model entry.
+	cfg := reviewerFactoryConfig(t, "openai", "")
+	cfg.EnabledModels = []config.ModelEntry{{ID: "openai/other", ContextWindow: 300_000}, {ID: "openai/" + cfg.Model, ContextWindow: 400_000}}
+	backend, _, err := newBackend(context.Background(), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if api := backend.(*provider.API); api.ContextTokens != 400_000 {
+		t.Fatalf("enabled_models context_window not applied: %d", api.ContextTokens)
+	}
+	cfg.ModelContextWindow = 1_000_000
+	if backend, _, err = newBackend(context.Background(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+	if api := backend.(*provider.API); api.ContextTokens != 1_000_000 {
+		t.Fatalf("model context_window not applied: %d", api.ContextTokens)
+	}
 }
 
 func TestTokenSummary(t *testing.T) {
@@ -265,13 +283,15 @@ func TestTokenSummary(t *testing.T) {
 
 func TestDoctorContextSummary(t *testing.T) {
 	for _, tt := range []struct {
-		name           string
-		provider       string
-		tokens, legacy int
-		want           []string
+		name                        string
+		provider                    string
+		tokens, legacy, modelWindow int
+		want                        []string
 	}{
 		{name: "API provider shows the compaction point", provider: "anthropic", tokens: 256_000, want: []string{"Context   256k tokens · compacts at 217.6k"}},
 		{name: "custom window", provider: "openrouter", tokens: 100_000, want: []string{"Context   100k tokens · compacts at 85k"}},
+		{name: "the model's own window", provider: "anthropic", tokens: 256_000, modelWindow: 1_000_000, want: []string{"Context   1M tokens · the model's own context_window · compacts at 850k"}},
+		{name: "the model's own window with Codex", provider: "codex", tokens: 256_000, modelWindow: 400_000, want: []string{"Context   400k tokens · the model's own context_window · Codex compacts its own threads"}},
 		{name: "Codex compacts itself", provider: "codex", tokens: 256_000, want: []string{"Context   256k tokens · Codex compacts its own threads"}},
 		{name: "deprecated key is called out", provider: "openai", tokens: 256_000, legacy: 160_000, want: []string{
 			"Context   256k tokens · compacts at 217.6k",
@@ -285,6 +305,7 @@ func TestDoctorContextSummary(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := config.Default()
 			cfg.Provider, cfg.ContextTokens, cfg.ContextBytes = tt.provider, tt.tokens, tt.legacy
+			cfg.Model, cfg.ModelContextWindow = "configured-model", tt.modelWindow
 			got := contextSummary(cfg)
 			if strings.Join(got, "\n") != strings.Join(tt.want, "\n") {
 				t.Fatalf("got %q, want %q", got, tt.want)

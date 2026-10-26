@@ -152,7 +152,7 @@ keys are only referenced by env var name.
   "providers": [
     {"id": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY"}
   ],
-  "enabled_models": ["codex/gpt-6-astra", {"id": "openrouter/vendor/model-b", "reasoning": "high"}],
+  "enabled_models": ["codex/gpt-6-astra", {"id": "openrouter/vendor/model-b", "reasoning": "high", "context_window": 1000000}],
   "skill_paths": ["~/.codex/skills/coding-assistance-style/SKILL.md"],
   "workspace_instructions": ["AGENTS.md"],
   "browser": "/Applications/Chromium.app",
@@ -166,8 +166,8 @@ keys are only referenced by env var name.
 ```
 
 - `enabled_models` come first in the model picker, ahead of the rest of Codex's catalog, and Ctrl+N cycles through them.
-- `model` and each `enabled_models` entry are `provider/<model-id>`, or `{"id": "provider/<model-id>", "reasoning": "<effort>"}` for a model that starts at that effort when you launch with it or switch to it.
-- `context_tokens` is the assumed window for every model. API providers compact the history at 85%.
+- `model` and each `enabled_models` entry are `provider/<model-id>`, or `{"id": "provider/<model-id>", "reasoning": "<effort>", "context_window": <tokens>}` for a model that starts at that effort when you launch with it or switch to it, and has a context window of its own. Both keys are optional.
+- `context_tokens` is the assumed window for every model without a `context_window` of its own. API providers compact the history at 85% of the model's window, and the sidebar's context gauge measures against it.
 - `skill_paths` are extra instruction files added to every turn. If you omit it, JULIA loads `coding-assistance-style/SKILL.md` from `$CODEX_HOME/skills` or `~/.agents/skills`. `[]` disables skills.
 - `workspace_instructions` names files at the workspace root, such as `AGENTS.md` or `CLAUDE.md`, whose contents join every turn as the repository's own context, labelled as such and without authority over the task. Omitted, nothing is read from a repository: a cloned project's files are not trusted by default. A missing file is skipped; a symlink or a file over 64 KiB is a warning.
 - The last reasoning effort you picked for each provider is remembered in `~/.local/state/julia/preferences.json`. It applies at launch unless the model has its own `reasoning`, and `--reasoning` beats both.

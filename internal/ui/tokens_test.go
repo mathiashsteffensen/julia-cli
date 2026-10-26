@@ -159,6 +159,37 @@ func TestContextWindowIsConfigurable(t *testing.T) {
 	}
 }
 
+// The gauge follows the session's model: a model with a window of its own is
+// measured against it, and one without falls back to the configured window.
+func TestContextWindowFollowsTheSessionModel(t *testing.T) {
+	windows := map[string]int{"openrouter/vendor/large": 1_000_000, "codex/gpt-6-astra": 400_000}
+	session := &core.Session{ID: "w", Provider: "openrouter", Model: "vendor/large", Usage: core.SessionUsage{Context: 100_000}}
+	m := testModel(t, Config{Session: session, ContextWindow: 200_000, ContextWindowFor: func(provider, model string) int {
+		return windows[provider+"/"+model]
+	}})
+	m.resize(128, 40)
+	for _, tc := range []struct {
+		provider, model string
+		want            string
+	}{
+		{"openrouter", "vendor/large", "10% · 100k / 1M"},
+		{"codex", "gpt-6-astra", "25% · 100k / 400k"},
+		{"openrouter", "vendor/plain", "50% · 100k / 200k"},
+	} {
+		session.Provider, session.Model = tc.provider, tc.model
+		if rows := sidebarText(m); !hasRow(rows, tc.want) {
+			t.Errorf("%s/%s: want %q in\n%s", tc.provider, tc.model, tc.want, strings.Join(rows, "\n"))
+		}
+	}
+	if got := m.contextWindow(); got != 200_000 {
+		t.Fatalf("a model without a window of its own must use the configured one, got %d", got)
+	}
+	m.cfg.ContextWindow = 0
+	if got := m.contextWindow(); got != core.DefaultContextWindow {
+		t.Fatalf("without any configured window the default applies, got %d", got)
+	}
+}
+
 // usageBackend records usage into the session before emitting it, as the real
 // providers do, so the session it returns already holds every event of the run.
 type usageBackend struct{ events []core.Event }

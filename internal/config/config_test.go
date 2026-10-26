@@ -572,3 +572,83 @@ func TestNamedProviders(t *testing.T) {
 		t.Fatalf("accepted the compatible provider: %v", err)
 	}
 }
+
+func TestModelContextWindow(t *testing.T) {
+	data := `{` + openRouterProvider + `,
+		"context_tokens": 200000,
+		"model":{"id":"openrouter/vendor/large","context_window":1000000},
+		"enabled_models":["openrouter/vendor/plain",{"id":"openrouter/vendor/large","reasoning":"high","context_window":400000},{"id":"codex/gpt-6-astra","context_window":272000}],
+		"subagents":{"scout":{"id":"openrouter/vendor/plain","context_window":128000}},
+		"memory":{"model":{"id":"codex/gpt-6-astra","context_window":64000}}}`
+	cfg, err := Load(writeConfig(t, data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider != "openrouter" || cfg.Model != "vendor/large" || cfg.ModelContextWindow != 1_000_000 {
+		t.Fatalf("model object not loaded: %q %q %d", cfg.Provider, cfg.Model, cfg.ModelContextWindow)
+	}
+	want := []ModelEntry{{ID: "openrouter/vendor/plain"}, {ID: "openrouter/vendor/large", Reasoning: "high", ContextWindow: 400_000}, {ID: "codex/gpt-6-astra", ContextWindow: 272_000}}
+	for i := range want {
+		if cfg.EnabledModels[i] != want[i] {
+			t.Fatalf("enabled_models[%d] = %#v, want %#v", i, cfg.EnabledModels[i], want[i])
+		}
+	}
+	if cfg.Subagents["scout"].ContextWindow != 128_000 || cfg.Memory.Model.ContextWindow != 64_000 {
+		t.Fatalf("subagent or memory model lost its window: %#v %#v", cfg.Subagents, cfg.Memory.Model)
+	}
+	for _, tc := range []struct {
+		provider, model string
+		want            int
+	}{
+		{"openrouter", "vendor/large", 1_000_000}, // the model entry beats its enabled_models entry
+		{"openrouter", "vendor/plain", 200_000},   // an entry without one assumes context_tokens
+		{"codex", "gpt-6-astra", 272_000},
+		{"openrouter", "gpt-6-astra", 200_000}, // a window never leaks to another provider
+		{"anthropic", "unknown", 200_000},
+	} {
+		if got := cfg.ContextWindowFor(tc.provider, tc.model); got != tc.want {
+			t.Errorf("ContextWindowFor(%s, %s) = %d, want %d", tc.provider, tc.model, got, tc.want)
+		}
+	}
+	if got := Default().ContextWindowFor("codex", ""); got != core.DefaultContextWindow {
+		t.Fatalf("the default window changed: %d", got)
+	}
+
+	// Windows round-trip, and an entry with only a window is written as an object.
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var again Config
+	if err := json.Unmarshal(encoded, &again); err != nil || again.ModelContextWindow != 1_000_000 || again.EnabledModels[2].ContextWindow != 272_000 || again.EnabledModels[0] != want[0] {
+		t.Fatalf("round trip lost windows: %s %v", encoded, err)
+	}
+	if !strings.Contains(string(encoded), `{"id":"codex/gpt-6-astra","context_window":272000}`) || !strings.Contains(string(encoded), `"openrouter/vendor/plain"`) {
+		t.Fatalf("windows not written as configured: %s", encoded)
+	}
+}
+
+func TestModelContextWindowMinimum(t *testing.T) {
+	for _, data := range []string{
+		`{"model":{"id":"codex/m","context_window":31999}}`,
+		`{"model":{"id":"codex/m","context_window":-1}}`,
+		`{"enabled_models":[{"id":"codex/m","context_window":1000}]}`,
+		`{"subagents":{"scout":{"id":"codex/m","context_window":1000}}}`,
+		`{"memory":{"model":{"id":"codex/m","context_window":1000}}}`,
+		`{"model":{"id":"codex/m","context_window":"256k"}}`,
+		`{"model":{"id":"codex/m","context_tokens":256000}}`,
+	} {
+		if _, err := Load(writeConfig(t, data)); err == nil {
+			t.Errorf("accepted %s", data)
+		}
+	}
+	for _, data := range []string{
+		`{"model":{"id":"codex/m","context_window":32000}}`,
+		`{"model":{"id":"codex/m","context_window":0}}`,
+		`{"enabled_models":[{"id":"codex/m","context_window":2000000}]}`,
+	} {
+		if _, err := Load(writeConfig(t, data)); err != nil {
+			t.Errorf("rejected %s: %v", data, err)
+		}
+	}
+}

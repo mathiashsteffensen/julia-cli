@@ -28,9 +28,15 @@ func (m *model) usage() core.SessionUsage {
 	return u
 }
 
-// contextWindow is the budget the context gauge is measured against. Every model
-// is assumed to have the same window, so this is configuration, not a model fact.
+// contextWindow is the budget the context gauge is measured against: the
+// session's model's own window when the configuration gives it one, else the
+// window every other model is assumed to have.
 func (m *model) contextWindow() int {
+	if m.cfg.ContextWindowFor != nil && m.cfg.Session != nil {
+		if window := m.cfg.ContextWindowFor(m.cfg.Session.Provider, m.cfg.Session.Model); window > 0 {
+			return window
+		}
+	}
 	if m.cfg.ContextWindow > 0 {
 		return m.cfg.ContextWindow
 	}

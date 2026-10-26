@@ -30,7 +30,7 @@ func newBackend(ctx context.Context, cfg config.Config, checkpoint func(*core.Se
 	if err != nil {
 		return nil, nil, err
 	}
-	api := provider.APIConfig{Provider: cfg.Provider, Model: cfg.Model, APIKey: key, Reasoning: cfg.Reasoning, MaxSteps: cfg.MaxSteps, ContextTokens: cfg.ContextTokens, Checkpoint: checkpoint}
+	api := provider.APIConfig{Provider: cfg.Provider, Model: cfg.Model, APIKey: key, Reasoning: cfg.Reasoning, MaxSteps: cfg.MaxSteps, ContextTokens: cfg.ContextWindowFor(cfg.Provider, cfg.Model), Checkpoint: checkpoint}
 	// A named provider is an OpenAI-compatible endpoint of its own.
 	if endpoint, ok := cfg.Endpoint(cfg.Provider); ok {
 		api.Provider, api.Name, api.BaseURL = "compatible", endpoint.ID, endpoint.BaseURL

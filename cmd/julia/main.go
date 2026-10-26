@@ -387,6 +387,12 @@ func run() error {
 		}
 		return children, nil
 	}
+	// The gauge follows the session's model: a model with a context_window of
+	// its own is measured against it, in whichever profile is active.
+	uiConfig.ContextWindowFor = func(provider, model string) int {
+		cfg, _ := runner.settings()
+		return cfg.ContextWindowFor(provider, model)
+	}
 	uiConfig.ApplySettings = func(current *core.Session, selectedProvider, selectedModel, reasoning string) error {
 		cfg, _ := runner.settings()
 		if selectedProvider != "codex" {
@@ -1128,16 +1134,21 @@ func browserSummary(ctx context.Context, explicit string) string {
 	return "Browser   " + safe(binary) + " · " + safe(b.Version())
 }
 
-// contextSummary is the doctor's view of the context budget. Only API providers
-// are summarized by JULIA, so only they have a compaction point; Codex compacts
-// its own threads. A leftover context_bytes is called out because it silently
-// stopped doing anything.
+// contextSummary is the doctor's view of the context budget: the configured
+// model's window, which is its own context_window when it has one. Only API
+// providers are summarized by JULIA, so only they have a compaction point;
+// Codex compacts its own threads. A leftover context_bytes is called out
+// because it silently stopped doing anything.
 func contextSummary(c config.Config) []string {
-	line := "Context   " + core.CompactTokens(c.ContextTokens) + " tokens"
+	window := c.ContextWindowFor(c.Provider, c.Model)
+	line := "Context   " + core.CompactTokens(window) + " tokens"
+	if window != c.ContextTokens {
+		line += " · the model's own context_window"
+	}
 	if c.Provider == "codex" {
 		line += " · Codex compacts its own threads"
 	} else {
-		line += " · compacts at " + core.CompactTokens(core.CompactionThreshold(c.ContextTokens))
+		line += " · compacts at " + core.CompactTokens(core.CompactionThreshold(window))
 	}
 	lines := []string{line}
 	if c.ContextBytes != 0 {
