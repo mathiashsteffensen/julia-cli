@@ -158,7 +158,7 @@ func TestViewImageExplainsWhatItCannotShow(t *testing.T) {
 }
 
 func TestViewImageIsRegistered(t *testing.T) {
-	for _, definitions := range [][]core.ToolDefinition{Definitions(nil, false), Definitions(agents.Builtin(), false)} {
+	for _, definitions := range [][]core.ToolDefinition{Definitions(nil, false, false), Definitions(agents.Builtin(), false, false)} {
 		found := false
 		for _, definition := range definitions {
 			if definition.Name == "ViewImage" {

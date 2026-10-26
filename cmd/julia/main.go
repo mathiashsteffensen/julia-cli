@@ -212,6 +212,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("linear token: %w", err)
 	}
+	mailConfig, err := tools.LoadMailConfig(mailConfigFile(path))
+	if err != nil {
+		return fmt.Errorf("mail config: %w", err)
+	}
 	// Notes are read in every run and written where someone watches: a
 	// headless task has no one to see what it saves, or to approve a save
 	// that follows content from outside the user's words, so it learns by
@@ -232,7 +236,7 @@ func run() error {
 	default:
 		return errors.New("--memory must be off, read or write")
 	}
-	demoTools := append(tools.Definitions(roles, linearToken != ""), tools.QuestionDefinition(), tools.ReviewDefinition())
+	demoTools := append(tools.Definitions(roles, linearToken != "", mailConfig.Enabled()), tools.QuestionDefinition(), tools.ReviewDefinition())
 	if snapshot > 0 {
 		fmt.Print(ui.RenderDemo(snapshot, 40, demoTools...))
 		return nil
@@ -306,7 +310,7 @@ func run() error {
 		ask, triage, questions = ui.NewBridge()
 	}
 	duration, _ := time.ParseDuration(cfg.Timeout)
-	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, triage: triage, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path), linearToken: linearToken, memory: memoryStore, memoryReadOnly: memoryFlag == "read", consolidating: consolidate}
+	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, triage: triage, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path), linearToken: linearToken, mail: mailConfig, memory: memoryStore, memoryReadOnly: memoryFlag == "read", consolidating: consolidate}
 	if consolidate {
 		// The pass rewrites notes and nothing else: no one is asked, and a
 		// note it rewrites keeps its unverified mark, as a yolo save would.
@@ -569,6 +573,9 @@ type runtimeBackend struct {
 	// linearToken is the Linear access token, from the environment or the
 	// linear.json file beside the configuration; empty offers no Linear tool.
 	linearToken string
+	// mail is the mailbox from the mail.json file beside the configuration;
+	// without credentials there is no Mail tool.
+	mail tools.MailConfig
 	// throughputPath is where timed model calls are recorded; empty records none.
 	throughputPath string
 	throughputMu   sync.Mutex
@@ -634,7 +641,7 @@ func headlessTriager(context.Context, core.Review) (core.Answer, error) {
 }
 
 func (r *runtimeBackend) Definitions() []core.ToolDefinition {
-	definitions := tools.Definitions(r.subagentRoles(), r.linearToken != "")
+	definitions := tools.Definitions(r.subagentRoles(), r.linearToken != "", r.mail.Enabled())
 	if r.ask != nil {
 		definitions = append(definitions, tools.QuestionDefinition())
 	}
@@ -716,7 +723,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		return err
 	}
 	task := newTaskContext(s.Messages, prompt.Text)
-	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: cfg.BrowserPath(), SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv), LinearToken: r.linearToken})
+	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: cfg.BrowserPath(), SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv), LinearToken: r.linearToken, Mail: r.mail})
 	if err != nil {
 		return err
 	}
@@ -1008,6 +1015,11 @@ func linearTokenFile(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "linear.json")
 }
 
+// mailConfigFile keeps the mailbox's IMAP credentials beside the configuration file.
+func mailConfigFile(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "mail.json")
+}
+
 // reviewerSummary describes the reviewer_model for doctor.
 func reviewerSummary(c config.Config) string {
 	reviewer, model := c.Reviewer()
@@ -1053,6 +1065,13 @@ func doctor(ctx context.Context, c config.Config, path string, roles []agents.Ro
 		fmt.Printf("Linear    app token (%s)\n", linearTokenFile(path))
 	} else {
 		fmt.Printf("Linear    off; save a token in %s\n", linearTokenFile(path))
+	}
+	if mailConfig, err := tools.LoadMailConfig(mailConfigFile(path)); err != nil {
+		fmt.Printf("Mail      config unreadable: %s\n", safe(err.Error()))
+	} else if mailConfig.Enabled() {
+		fmt.Printf("Mail      %s (%s)\n", safe(mailConfig.Summary()), mailConfigFile(path))
+	} else {
+		fmt.Printf("Mail      off; save IMAP credentials in %s\n", mailConfigFile(path))
 	}
 	for _, line := range memorySummary(c, dir) {
 		fmt.Println(line)

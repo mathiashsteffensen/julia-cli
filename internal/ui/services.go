@@ -60,6 +60,79 @@ func slackChannel(channel string) string {
 	return "#" + channel
 }
 
+// mailSummary is a Mail call's title row: the action, then the mailbox and
+// filters of a listing, the id of a read, or the message an archive would
+// move, as the server described it on the approval card.
+func mailSummary(arguments json.RawMessage) (string, bool) {
+	var a struct {
+		Action, Mailbox, ID, From, Subject, Text, Since, Before, Date, Into string
+		Unread                                                              bool
+		Limit                                                               int
+	}
+	if json.Unmarshal(arguments, &a) != nil || a.Action == "" {
+		return "", false
+	}
+	parts := []string{a.Action}
+	field := func(label, value string) {
+		if value != "" {
+			parts = append(parts, strings.TrimSpace(label+" "+typedLine(value)))
+		}
+	}
+	switch a.Action {
+	case "list":
+		if a.Mailbox == "" {
+			a.Mailbox = "INBOX"
+		}
+		parts = append(parts, a.Mailbox)
+		if a.Unread {
+			parts = append(parts, "unread")
+		}
+		field("from", a.From)
+		field("subject", a.Subject)
+		if a.Text != "" {
+			parts = append(parts, strconv.Quote(typedLine(a.Text)))
+		}
+		field("since", a.Since)
+		field("before", a.Before)
+		if a.Limit > 0 {
+			parts = append(parts, fmt.Sprintf("limit %d", a.Limit))
+		}
+	case "read":
+		field("", a.ID)
+	case "archive":
+		if a.From == "" && a.Subject == "" {
+			field("", a.ID)
+		}
+		field("", a.From)
+		if a.Subject != "" {
+			parts = append(parts, strconv.Quote(typedLine(a.Subject)))
+		}
+		field("", a.Date)
+	}
+	return strings.Join(parts, " · "), true
+}
+
+// mailApprovalMessage is the message an archive card is about, as the server
+// described it, one labelled line each; "" for a call that names none.
+func mailApprovalMessage(arguments json.RawMessage) string {
+	var a struct{ From, Subject, Date, ID, Into string }
+	if json.Unmarshal(arguments, &a) != nil || a.From == "" && a.Subject == "" {
+		return ""
+	}
+	var lines []string
+	add := func(label, value string) {
+		if value != "" {
+			lines = append(lines, fmt.Sprintf("%-8s %s", label, typedLine(value)))
+		}
+	}
+	add("From", a.From)
+	add("Subject", a.Subject)
+	add("Date", a.Date)
+	add("Id", a.ID)
+	add("Into", a.Into)
+	return strings.Join(lines, "\n")
+}
+
 // linearSummary is a Linear call's title row: the action, then what it acts on
 // (a team, an issue) and the fields it sets or filters by.
 func linearSummary(arguments json.RawMessage) (string, bool) {
@@ -237,7 +310,7 @@ func callArguments(raw json.RawMessage) []argument {
 // only hint at, such as a message, an issue description or a note's body.
 func argumentsShown(name string) bool {
 	switch name {
-	case "Slack", "Linear", "Memory":
+	case "Slack", "Linear", "Mail", "Memory":
 		return true
 	}
 	return false

@@ -56,6 +56,10 @@ type Config struct {
 	// linear.json file beside the configuration (see LoadLinearToken);
 	// without it there is no Linear tool.
 	LinearToken string
+	// Mail is the mailbox the Mail tool reads, from the mail.json file
+	// beside the configuration (see LoadMailConfig); without credentials
+	// there is no Mail tool.
+	Mail MailConfig
 }
 type Executor struct {
 	config    Config
@@ -148,19 +152,20 @@ func integer(description string) map[string]any {
 	return map[string]any{"type": "integer", "description": description}
 }
 func (e *Executor) Definitions() []core.ToolDefinition {
-	return definitions(nil, e.config.SlackToken != "", e.config.SlackOwner, e.config.LinearToken != "")
+	return definitions(nil, e.config.SlackToken != "", e.config.SlackOwner, e.config.LinearToken != "", e.config.Mail.Enabled())
 }
 
 // Definitions returns the same registry used by execution, without opening a
 // workspace. roles are the subagent roles the Subagent tool offers; with none,
 // there is no Subagent tool. The Slack tool is offered when the process has a
-// bot token in SLACK_BOT_TOKEN, and the Linear tool when linear is set: the
-// caller has an access token (see LoadLinearToken).
-func Definitions(roles []agents.Role, linear bool) []core.ToolDefinition {
-	return definitions(roles, SlackEnabled(), os.Getenv(SlackOwnerEnv), linear)
+// bot token in SLACK_BOT_TOKEN, the Linear tool when linear is set: the
+// caller has an access token (see LoadLinearToken), and the Mail tool when
+// mail is set: the caller has a mailbox's credentials (see LoadMailConfig).
+func Definitions(roles []agents.Role, linear, mail bool) []core.ToolDefinition {
+	return definitions(roles, SlackEnabled(), os.Getenv(SlackOwnerEnv), linear, mail)
 }
 
-func definitions(roles []agents.Role, slack bool, slackOwner string, linear bool) []core.ToolDefinition {
+func definitions(roles []agents.Role, slack bool, slackOwner string, linear, mail bool) []core.ToolDefinition {
 	path := str("Workspace-relative path. Absolute paths, symlinks and protected credential/git paths are forbidden.")
 	edits := map[string]any{"type": "array", "minItems": 1, "maxItems": 100, "items": schema(map[string]any{"old_string": str("Nonempty exact text occurring once"), "new_string": str("Replacement text")}, "old_string", "new_string")}
 	// Reading, editing, running, then the web: the sidebar packs the names in
@@ -184,6 +189,9 @@ func definitions(roles []agents.Role, slack bool, slackOwner string, linear bool
 	}
 	if linear {
 		definitions = append(definitions, linearDefinition())
+	}
+	if mail {
+		definitions = append(definitions, mailDefinition())
 	}
 	if len(roles) > 0 {
 		definitions = append(definitions, subagentDefinition(roles))
@@ -256,6 +264,8 @@ func (e *Executor) execute(ctx context.Context, call core.ToolCall, scope int) c
 		content, err = e.slack(ctx, call)
 	case "Linear":
 		content, err = e.linear(ctx, call)
+	case "Mail":
+		content, err = e.mail(ctx, call)
 	case "Write", "Edit", "MultiEdit":
 		if e.config.Mode == "read-only" {
 			err = errors.New("read-only mode prohibits file changes")

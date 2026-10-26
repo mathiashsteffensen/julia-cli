@@ -45,6 +45,30 @@ func TestLinearSummary(t *testing.T) {
 	}
 }
 
+func TestMailSummary(t *testing.T) {
+	for args, want := range map[string]string{
+		`{"action":"list_mailboxes"}`: `list_mailboxes`,
+		`{"action":"list"}`:           `list · INBOX`,
+		`{"action":"list","mailbox":"Folders/Receipts","unread":true,"from":"jane","subject":"invoice","text":"October\ntotal","since":"2026-10-01","before":"2026-10-25","limit":5}`: `list · Folders/Receipts · unread · from jane · subject invoice · "October ↵ total" · since 2026-10-01 · before 2026-10-25 · limit 5`,
+		`{"action":"read","id":"INBOX:1700000000:42"}`:    `read · INBOX:1700000000:42`,
+		`{"action":"archive","id":"INBOX:1700000000:42"}`: `archive · INBOX:1700000000:42`,
+		`{"action":"archive","id":"INBOX:1700000000:42","from":"Jane Doe <jane@example.com>","subject":"Invoice #123","date":"2026-10-24 09:14","into":"Archive"}`: `archive · Jane Doe <jane@example.com> · "Invoice #123" · 2026-10-24 09:14`,
+	} {
+		if got := toolSummary(core.ToolCall{Name: "Mail", Arguments: json.RawMessage(args)}); got != want {
+			t.Errorf("%s\n got %q\nwant %q", args, got, want)
+		}
+	}
+	if got := toolSummary(core.ToolCall{Name: "Mail", Arguments: json.RawMessage(`{"id":"INBOX:1:2"}`)}); got != "" {
+		t.Errorf("no action: %q", got)
+	}
+	if got := mailApprovalMessage(json.RawMessage(`{"action":"archive","id":"INBOX:1:2","from":"Jane Doe <jane@example.com>","subject":"Invoice\n#123","date":"2026-10-24 09:14","into":"Archive"}`)); got != "From     Jane Doe <jane@example.com>\nSubject  Invoice ↵ #123\nDate     2026-10-24 09:14\nId       INBOX:1:2\nInto     Archive" {
+		t.Errorf("message:\n%s", got)
+	}
+	if got := mailApprovalMessage(json.RawMessage(`{"action":"archive","id":"INBOX:1:2"}`)); got != "" {
+		t.Errorf("bare call: %q", got)
+	}
+}
+
 func TestMemorySummary(t *testing.T) {
 	for args, want := range map[string]string{
 		`{"action":"save","name":"process-group-cancel","description":"Cancelling a task must signal the process group","type":"feedback","paths":["internal/sandbox/**"]}`: `save · process-group-cancel · feedback · "Cancelling a task must signal the process group"`,

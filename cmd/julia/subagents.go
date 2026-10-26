@@ -23,7 +23,8 @@ func rolesDir(configPath string) string {
 func loadRoles(configPath string, cfg config.Config) ([]agents.Role, error) {
 	var names []string
 	linearToken, _ := tools.LoadLinearToken(linearTokenFile(configPath))
-	for _, definition := range tools.Definitions(nil, linearToken != "") {
+	mailConfig, _ := tools.LoadMailConfig(mailConfigFile(configPath))
+	for _, definition := range tools.Definitions(nil, linearToken != "", mailConfig.Enabled()) {
 		names = append(names, definition.Name)
 	}
 	roles, err := agents.Load(rolesDir(configPath), names)

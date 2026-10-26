@@ -547,6 +547,11 @@ func toolSummary(call core.ToolCall) string {
 			return summary
 		}
 	}
+	if call.Name == "Mail" {
+		if summary, ok := mailSummary(call.Arguments); ok {
+			return summary
+		}
+	}
 	if call.Name == "Memory" {
 		if summary, ok := memorySummary(call.Arguments); ok {
 			return summary
@@ -1338,9 +1343,10 @@ func (m *model) approvalView() string {
 	text := coralStyle.Bold(true).Render("PERMISSION REQUEST")
 	text += "\n" + creamStyle.Bold(true).Render(sanitize(request.Call.Name))
 	switch request.Call.Name {
-	case "Browser", "Memory":
-		// What the browser would do, where, and what it would open up; or
-		// the note that would be kept or forgotten, as its card words it.
+	case "Browser", "Memory", "Mail":
+		// What the browser would do, where, and what it would open up; the
+		// note that would be kept or forgotten, as its card words it; or the
+		// email that would be archived, as the server describes it.
 		text += "  " + violetStyle.Render(ansi.Truncate(sanitize(toolSummary(request.Call)), max(6, w-ansi.StringWidth(request.Call.Name)-2), "…"))
 	}
 	text += "\n\n" + creamStyle.Render(ansi.Wrap(sanitize(request.Reason), w, ""))
@@ -1351,6 +1357,12 @@ func (m *model) approvalView() string {
 		}
 		if len(origins) > 0 {
 			text += "\n\n" + coralStyle.Bold(true).Render("Approves for the rest of this turn") + "\n" + coralStyle.Render(ansi.Hardwrap(sanitize(strings.Join(origins, "\n")), w, false))
+		}
+	}
+	if request.Call.Name == "Mail" {
+		// The message the user decides on, as the server described it.
+		if message := mailApprovalMessage(request.Call.Arguments); message != "" {
+			text += "\n\n" + creamStyle.Bold(true).Render("Message") + "\n" + creamStyle.Render(ansi.Hardwrap(sanitize(message), w, false))
 		}
 	}
 	if request.ExecutionMode == "unsandboxed" {

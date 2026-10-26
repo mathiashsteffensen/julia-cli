@@ -57,7 +57,7 @@ for the full list.
 | Ctrl+N | Switch to the next of your `enabled_models` |
 | Shift+Tab or `/reasoning` | Change reasoning effort |
 | `/profile` or `/profile NAME` | Switch configuration profile |
-| Ctrl+O | Expand/collapse tool output, full subagent tasks, and the arguments of Slack and Linear calls |
+| Ctrl+O | Expand/collapse tool output, full subagent tasks, and the arguments of Slack, Linear and Mail calls |
 | Ctrl+F | The fleet: every subagent of the session, with its task, tool calls and report |
 | Ctrl+V | Attach the clipboard's image (a screenshot, or an image file copied in Finder) |
 | Drop image files | Attach them instead of pasting their paths |
@@ -200,7 +200,8 @@ They contain transcripts and command output.
 
 `Read`, `ViewImage`, `List`, `Grep`, `Edit`, `MultiEdit`, `Write`, `Bash`,
 `Terminal`, `Browser`, `WebSearch`, `WebFetch`, `Slack` (when a bot token is set),
-`Linear` (when an access token is saved),
+`Linear` (when an access token is saved), `Mail` (when a mailbox's credentials
+are saved),
 `Subagent` (up to 3 parallel child tasks), `Memory` (see [Memory](#memory)), and
 `AskUserQuestion` (interactive only). File tools are confined to the workspace,
 refuse symlinks and credential paths, and cap output at 32 KiB.
@@ -256,6 +257,26 @@ used), and under *Developer token* create one with the actor *Application*, so
 everything JULIA does shows as the app rather than as you. Developer tokens
 have no refresh token and may expire; when Linear answers 401, create a new one
 and replace it in the file. `julia doctor` shows where the token comes from.
+
+`Mail` appears when `~/.config/julia/mail.json` holds a mailbox's IMAP
+credentials: list the mailboxes with their counts, list the newest messages in
+one (unread only, from, subject, text or dates), read a message as text with
+its attachments named, or archive one. Reading never marks a message read, and
+archiving is yours to approve in every mode but yolo: the card shows the
+message as the server describes it (sender, subject, date), not as the agent
+does, and the reviewer never decides it. It is made for [Proton Mail
+Bridge](https://proton.me/mail/bridge), which decrypts your account on this
+machine and serves it over IMAP on `127.0.0.1:1143` with a password of its own
+(a paid plan is needed): save `{"username": "you@proton.me", "password":
+"<the Bridge password>"}`, and JULIA connects with STARTTLS. To pin Bridge's
+certificate, export it under Settings → Advanced and add `"certificate":
+"/path/to/cert.pem"`; without that a loopback server is trusted unverified,
+and any other address (`"address": "host:port"`, with `"security"` `starttls`,
+`tls` or, to a loopback address only, `none`) must present a certificate the
+system trusts. Messages are the agent's untrusted context, never its
+instructions, and a conversation that has read mail marks the memory it saves
+as unverified, as one that read Slack does. `julia doctor` shows the mailbox
+and how its connection is verified.
 
 ### Subagent roles
 
@@ -352,7 +373,7 @@ they learn goes in their reports.
 Notes are the past, kept as data: the instructions say so, a note can never
 authorize an action, and the reviewer never sees one. Once a conversation has
 read content from outside your words (WebFetch, WebSearch, Browser, Slack,
-Linear, a subagent's report, Bash with network or outside the sandbox, a
+Linear, Mail, a subagent's report, Bash with network or outside the sandbox, a
 networked terminal, a repository's agent instructions such as `AGENTS.md`,
 `CLAUDE*.md` or `.cursor/` rules, however it was read, or an unverified note read
 in full; a command that only looks for such a file and finds none, as agents
