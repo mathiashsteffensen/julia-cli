@@ -372,7 +372,9 @@ func (m *model) assembleReview(q *questionState, width int, plan reviewPlan, bud
 	iw := width - 2
 	blank := paint(cardBG, iw, "")
 	edge := func(s string) string { return lipgloss.NewStyle().Foreground(cardEdge).Render(s) }
-	frame := func(inner string) string { return edge("│") + inner + edge("│") }
+	frame := func(inner string) string {
+		return ink(cardBG, cardEdge).Render("▏") + inner + ink(cardBG, cardEdge).Render("▕")
+	}
 	pad := ink(cardBG, cream).Render("  ")
 
 	var head []string
@@ -446,7 +448,7 @@ func (m *model) assembleReview(q *questionState, width int, plan reviewPlan, bud
 			lines = append(lines, frame(line))
 		}
 	}
-	return append(lines, edge("╰"+strings.Repeat("─", width-2)+"╯")), hits, whole
+	return append(lines, edge(strings.Repeat("▔", width))), hits, whole
 }
 
 // severityPill draws a finding's level as a solid four-cell badge. A quiet pill
@@ -695,7 +697,7 @@ func (m *model) reviewTop(q *questionState, width int) string {
 	if len(r.triage) == 1 {
 		count = "1 finding"
 	}
-	left := edge.Render("╭─ ") + violetStyle.Bold(true).Render("✦ JULIA REVIEWS") + faintStyle.Render(" · "+count) + " "
+	left := edge.Render("▁▁ ") + violetStyle.Bold(true).Render("✦ JULIA REVIEWS") + faintStyle.Render(" · "+count) + " "
 	// One dot per finding: filled in its decision's color once decided, the
 	// open finding's ring lit in coral.
 	var dots []string
@@ -720,14 +722,14 @@ func (m *model) reviewTop(q *questionState, width int) string {
 		fill = width - ansi.StringWidth(left) - ansi.StringWidth(right) - 2
 	}
 	if fill < 1 {
-		left = edge.Render("╭─ ") + violetStyle.Bold(true).Render("✦ REVIEW") + " "
+		left = edge.Render("▁▁ ") + violetStyle.Bold(true).Render("✦ REVIEW") + " "
 		fill = width - ansi.StringWidth(left) - ansi.StringWidth(right) - 2
 	}
 	if fill < 1 {
 		right = ""
 		fill = max(0, width-ansi.StringWidth(left)-2)
 	}
-	return left + edge.Render(strings.Repeat("─", fill)) + right + edge.Render("─╮")
+	return left + edge.Render(strings.Repeat("▁", fill)) + right + edge.Render("▁▁")
 }
 
 func (m *model) reviewHint(q *questionState, width int) string {

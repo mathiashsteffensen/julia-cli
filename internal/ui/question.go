@@ -623,7 +623,9 @@ func (m *model) assembleCard(q *questionState, width int, plan cardPlan, budget 
 	textWidth := max(4, iw-4)
 	blank := paint(cardBG, iw, "")
 	edge := func(s string) string { return lipgloss.NewStyle().Foreground(cardEdge).Render(s) }
-	frame := func(inner string) string { return edge("│") + inner + edge("│") }
+	frame := func(inner string) string {
+		return ink(cardBG, cardEdge).Render("▏") + inner + ink(cardBG, cardEdge).Render("▕")
+	}
 	pad := ink(cardBG, cream).Render("  ")
 
 	// Chrome: top rule, bottom rule, hint, optional breathing room.
@@ -703,12 +705,12 @@ func (m *model) assembleCard(q *questionState, width int, plan cardPlan, budget 
 	for _, line := range foot {
 		lines = append(lines, frame(line))
 	}
-	return append(lines, edge("╰"+strings.Repeat("─", width-2)+"╯")), hits
+	return append(lines, edge(strings.Repeat("▔", width))), hits
 }
 
 func (m *model) cardTop(q *questionState, width int) string {
 	edge := lipgloss.NewStyle().Foreground(cardEdge)
-	left := edge.Render("╭─ ") + violetStyle.Bold(true).Render("✦ JULIA ASKS") + " "
+	left := edge.Render("▁▁ ") + violetStyle.Bold(true).Render("✦ JULIA ASKS") + " "
 	right := ""
 	if !q.freeform() {
 		right = " " + faintStyle.Render(fmt.Sprintf("%d / %d", q.selected+1, q.rows())) + " "
@@ -719,10 +721,10 @@ func (m *model) cardTop(q *questionState, width int) string {
 		fill = width - ansi.StringWidth(left) - 2
 	}
 	if fill < 1 {
-		left = edge.Render("╭─ ") + violetStyle.Bold(true).Render("✦") + " "
+		left = edge.Render("▁▁ ") + violetStyle.Bold(true).Render("✦") + " "
 		fill = max(0, width-ansi.StringWidth(left)-2)
 	}
-	return left + edge.Render(strings.Repeat("─", fill)) + right + edge.Render("─╮")
+	return left + edge.Render(strings.Repeat("▁", fill)) + right + edge.Render("▁▁")
 }
 
 func (m *model) cardHint(q *questionState, width int) string {

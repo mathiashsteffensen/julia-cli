@@ -73,7 +73,7 @@ var negativeNumber = regexp.MustCompile(`-\d`)
 func sidebarText(m *model) []string {
 	var rows []string
 	for _, row := range strings.Split(ansi.Strip(m.sidebar()), "\n") {
-		rows = append(rows, strings.TrimSpace(strings.Trim(strings.TrimSpace(row), "│")))
+		rows = append(rows, strings.TrimSpace(strings.Trim(strings.TrimSpace(row), "│▏▕")))
 	}
 	return rows
 }
@@ -519,7 +519,7 @@ func TestSidebarReachesTheBottomEdge(t *testing.T) {
 		// The card opens on the sidebar's first column, and the column is laid
 		// out to the bottom edge on every row.
 		border := m.margin() + m.mainWidth + 2
-		if cells := []rune(lines[4]); len(cells) <= border || cells[border] != '╭' {
+		if cells := []rune(lines[4]); len(cells) <= border || cells[border] != '▁' {
 			t.Fatalf("%v: row 4 does not open the sidebar card: %q", size, lines[4])
 		}
 		for y := 3; y < size[1]; y++ {

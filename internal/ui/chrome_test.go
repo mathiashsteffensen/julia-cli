@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 	"testing"
 
@@ -27,7 +28,7 @@ func TestComposerBlankCellsKeepPanelBackground(t *testing.T) {
 				inside := false
 				for y, line := range strings.Split(ansi.Strip(view), "\n") {
 					main := ansi.Truncate(line, m.margin()+m.mainWidth, "") // the sidebar card has corners of its own
-					top, bottom := strings.Contains(main, "╭"), strings.Contains(main, "╰")
+					top, bottom := strings.Contains(main, "▁"), strings.Contains(main, "▔")
 					inside = inside || top
 					if !inside {
 						continue
@@ -45,7 +46,11 @@ func TestComposerBlankCellsKeepPanelBackground(t *testing.T) {
 							bg = background
 						}
 						r, g, b, _ := bg.RGBA()
-						wantR, wantG, wantB, _ := panel.RGBA()
+						want := color.Color(panel)
+						if top || bottom {
+							want = background // the edge lines sit on the page, flush with the fill
+						}
+						wantR, wantG, wantB, _ := want.RGBA()
 						if r != wantR || g != wantG || b != wantB {
 							t.Fatalf("draft %q, focused %v: cell (%d,%d) has background #%02x%02x%02x, want panel", text, focused, x, y, r>>8, g>>8, b>>8)
 						}
@@ -93,9 +98,9 @@ func TestBottomControlsSurviveSpacingBreakpoints(t *testing.T) {
 					top, bottom, shortcuts := -1, -1, -1
 					for row, line := range lines {
 						switch {
-						case strings.Contains(line, "╭") && strings.Contains(line, "╮"):
+						case strings.Contains(line, "▁"):
 							top = row
-						case strings.Contains(line, "╰") && strings.Contains(line, "╯"):
+						case strings.Contains(line, "▔"):
 							bottom = row
 						case strings.Contains(line, "enter"):
 							shortcuts = row
@@ -126,9 +131,9 @@ func TestTallBottomControlsHaveBreathingRoom(t *testing.T) {
 				switch {
 				case strings.Contains(line, "Ready"):
 					status = row
-				case strings.Contains(line, "╭"):
+				case strings.Contains(line, "▁"):
 					top = row
-				case strings.Contains(line, "╰"):
+				case strings.Contains(line, "▔"):
 					bottom = row
 				case strings.Contains(line, "/help"):
 					shortcuts = row

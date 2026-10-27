@@ -151,7 +151,7 @@ func TestFleetFitsEverySize(t *testing.T) {
 				}
 			}
 			plain := ansi.Strip(view)
-			if !strings.Contains(plain, "╭") || !strings.Contains(plain, "DRAFT") {
+			if !strings.Contains(plain, "▁") || !strings.Contains(plain, "DRAFT") {
 				t.Errorf("%v populated %v: window or composer missing:\n%s", size, populated, plain)
 			}
 			if populated && !strings.Contains(plain, "worker") {

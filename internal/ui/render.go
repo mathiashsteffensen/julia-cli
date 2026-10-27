@@ -776,6 +776,12 @@ func (m *model) View() tea.View {
 	return v
 }
 
+// cardBorder frames a filled card flush with its fill. One-eighth blocks sit on
+// the cell's edge, where a box-drawing stroke sits in its middle and leaves a
+// gap inside the frame or a halo outside it, whichever background its cell
+// has. The top and bottom lines are drawn on the page, the sides on the fill.
+var cardBorder = lipgloss.Border{Top: "▁", Bottom: "▔", Left: "▏", Right: "▕", TopLeft: "▁", TopRight: "▁", BottomLeft: "▔", BottomRight: "▔"}
+
 func (m *model) composerStyle() lipgloss.Style {
 	vertical, horizontal := 0, 1
 	if m.width >= 60 {
@@ -789,7 +795,7 @@ func (m *model) composerStyle() lipgloss.Style {
 		stroke = coral
 	}
 	return lipgloss.NewStyle().Width(m.mainWidth).Padding(vertical, horizontal).
-		Background(panel).Border(lipgloss.RoundedBorder()).BorderForeground(stroke).BorderBackground(panel)
+		Background(panel).Border(cardBorder).BorderForeground(stroke).BorderTopBackground(background).BorderBottomBackground(background).BorderLeftBackground(panel).BorderRightBackground(panel)
 }
 
 func (m *model) bottomView() string {
@@ -843,7 +849,7 @@ func (m *model) bottomLayout() ([]string, int) {
 		// The top edge carries the brand's ribbon, as the masthead does; an
 		// approval keeps its coral frame whole.
 		if lines := strings.Split(composer, "\n"); len(lines) > 0 {
-			lines[0] = ribbonOn(panel, ansi.Strip(lines[0]))
+			lines[0] = ribbonOn(background, ansi.Strip(lines[0]))
 			composer = strings.Join(lines, "\n")
 		}
 	}
@@ -1065,19 +1071,18 @@ func (m *model) sidebar() string {
 		}
 		sections = append(sections, append(section, card.faint.Render("ctrl+f inspects")))
 	}
-	// What changes as the session runs sits on one card. Its frame cells are
-	// painted like its rows: a terminal draws the stroke inside the cell, so
-	// any other background shows as a gap between the edge and the fill.
-	rows := []string{"", card.faint.Render("╭" + strings.Repeat("─", width+2) + "╮")}
+	// What changes as the session runs sits on one card, framed as cardBorder
+	// frames the composer: flush with the fill.
+	rows := []string{"", page.faint.Render(strings.Repeat("▁", width+4))}
 	for i, section := range sections {
 		if i > 0 {
 			section = append([]string{""}, section...)
 		}
 		for _, row := range section {
-			rows = append(rows, card.faint.Render("│")+paint(panel, width+2, ink(panel, cream).Render(" ")+row)+card.faint.Render("│"))
+			rows = append(rows, card.faint.Render("▏")+paint(panel, width+2, ink(panel, cream).Render(" ")+row)+card.faint.Render("▕"))
 		}
 	}
-	rows = append(rows, card.faint.Render("╰"+strings.Repeat("─", width+2)+"╯"))
+	rows = append(rows, page.faint.Render(strings.Repeat("▔", width+4)))
 	// Below it, what rarely changes, set directly on the page.
 	session := []string{page.label("SESSION"), fit(page.text, id)}
 	if m.cfg.Version != "" {
