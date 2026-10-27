@@ -71,6 +71,14 @@ func TestWebSearchCollapsedRow(t *testing.T) {
 					}
 				}
 				rows := strings.Split(ansi.Strip(rendered), "\n")
+				if len(rows) == 1 {
+					// A result short enough to fit joins the call on its row.
+					title, result, ok := strings.Cut(rows[0], "  ·  ")
+					if !ok {
+						t.Fatalf("width %d: one row without a result: %q", width, rows[0])
+					}
+					rows = []string{title, result}
+				}
 				if len(rows) != 2 {
 					t.Fatalf("width %d: collapsed tool has %d rows: %q", width, len(rows), rows)
 				}

@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // Proportional, chamfered letters drawn with quadrant blocks in 18 columns.
@@ -23,11 +22,8 @@ var logoLetters = [][6]string{
 // bottom-right as bits 3 to 0) to the block element that draws them.
 var quadrants = []string{" ", "▗", "▖", "▄", "▝", "▐", "▞", "▟", "▘", "▚", "▌", "▙", "▀", "▜", "▛", "█"}
 
-// Warm amber through the interface's coral to burnt orange.
-var (
-	logoGradient = []color.RGBA{{0xF9, 0xD3, 0x99, 0xFF}, {0xF4, 0x9D, 0x89, 0xFF}, {0xE9, 0x78, 0x4A, 0xFF}}
-	logoRule     = lipgloss.Color("#A16C50")
-)
+// The brand's wave: the loader's violet and coral, warming into amber.
+var logoGradient = []color.RGBA{{0xC6, 0xB6, 0xF2, 0xFF}, {0xF4, 0x9D, 0x89, 0xFF}, {0xF9, 0xD3, 0x99, 0xFF}}
 
 func logoColor(column, width int) color.Color {
 	t := float64(column) / float64(max(1, width-1)) * float64(len(logoGradient)-1)
@@ -155,7 +151,7 @@ func heroInk(kind int, letter, shadow color.Color) color.Color {
 // background, so the shadow reads as depth rather than as a second mark.
 func shadowColor(column, width int) color.Color {
 	c := logoColor(column, width).(color.RGBA)
-	bg := color.RGBA{0x17, 0x17, 0x1B, 0xFF}
+	bg := color.RGBA{0x15, 0x13, 0x1A, 0xFF}
 	mix := func(x, y uint8) uint8 { return uint8(float64(y) + (float64(x)-float64(y))*0.12 + 0.5) }
 	return color.RGBA{mix(c.R, bg.R), mix(c.G, bg.G), mix(c.B, bg.B), 0xFF}
 }
@@ -170,25 +166,20 @@ func heroWidth(gap int) int {
 	return width
 }
 
-// sidebarLogo keeps a blank row between each rail and the lettering at every
-// terminal height. Collapsing those rows makes the diagonal rails touch the mark.
-func sidebarLogo(version string, width int) []string {
-	letters := logoLettering()
-	rail := lipgloss.NewStyle().Foreground(logoRule)
-	crest := strings.Repeat("╱", (width-5)/2)
-	header := rail.Render(crest) + "  " + coralStyle.Render("◈") + "  " + rail.Render(crest)
-	footer := rail.Render(strings.Repeat("╱", width))
-	if version != "" {
-		version = ansi.Truncate("v"+strings.Join(strings.Fields(sanitize(version)), " "), width, "")
-		gap := min(2, width-ansi.StringWidth(version))
-		rule := strings.Repeat("╱", width-ansi.StringWidth(version)-gap)
-		footer = rail.Render(rule) + strings.Repeat(" ", gap) + mutedStyle.Render(version)
+// ribbon paints text cell by cell along the brand's gradient: the masthead's
+// rule and name. ribbonOn does the same over a surface's background, for the
+// composer's top edge.
+func ribbon(text string) string { return ribbonOn(nil, text) }
+
+func ribbonOn(bg color.Color, text string) string {
+	runes := []rune(text)
+	var b strings.Builder
+	for i, r := range runes {
+		style := lipgloss.NewStyle().Foreground(logoColor(i, len(runes)))
+		if bg != nil {
+			style = style.Background(bg)
+		}
+		b.WriteString(style.Render(string(r)))
 	}
-	// The mark is narrower than the sidebar; keep it centered under the crest.
-	indent := strings.Repeat(" ", max(0, (width-ansi.StringWidth(letters[0]))/2))
-	rows := []string{header, ""}
-	for _, row := range letters {
-		rows = append(rows, indent+row)
-	}
-	return append(rows, "", footer)
+	return b.String()
 }

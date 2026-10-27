@@ -53,7 +53,7 @@ func TestTerminalScreenCard(t *testing.T) {
 	m.expandTools = true
 	layout := m.layoutEntry(item)
 	plain := ansi.Strip(layout.text)
-	for _, want := range []string{"│   The screen was still changing after 10s.", "t1 · bash", "running · 40×6", "  $ echo 界 hi", "  rows 3–6 blank"} {
+	for _, want := range []string{"    The screen was still changing after 10s.", "t1 · bash", "running · 40×6", "  $ echo 界 hi", "  rows 3–6 blank"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("expanded card lacks %q:\n%s", want, plain)
 		}
@@ -63,14 +63,14 @@ func TestTerminalScreenCard(t *testing.T) {
 			t.Errorf("row %d cells wide in %d: %q", w, m.mainWidth, ansi.Strip(row))
 		}
 	}
-	if lit := strings.Count(layout.text, "48;2;236;229;220"); lit != 1 {
+	if lit := strings.Count(layout.text, "48;2;241;235;227"); lit != 1 {
 		t.Errorf("cursor drawn %d times", lit)
 	}
 	if got := layout.targets[1]; got.label != "screen" || got.text != "$ echo 界 hi\n$" {
 		t.Errorf("copy target %+v", got)
 	}
 	// A program that has exited has no cursor to draw.
-	if layout = m.layoutEntry(terminalEntry(strings.Replace(terminalResult, "running", "exited with code 0", 1))); strings.Contains(layout.text, "48;2;236;229;220") {
+	if layout = m.layoutEntry(terminalEntry(strings.Replace(terminalResult, "running", "exited with code 0", 1))); strings.Contains(layout.text, "48;2;241;235;227") {
 		t.Error("cursor drawn for an exited program")
 	}
 }

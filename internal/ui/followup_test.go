@@ -44,7 +44,7 @@ func TestAReflectionAfterTheTurnLeavesTheInterfaceFree(t *testing.T) {
 		t.Fatalf("after: followup %v status %q %q tools %d", m.followup, ansi.Strip(m.statusLine()), m.status, m.toolCount)
 	}
 	last := m.entries[len(m.entries)-1]
-	if card := ansi.Strip(m.renderEntryContent(last)); !strings.Contains(card, "✓ Memory  reflection · save · make-check") || !strings.Contains(card, "Saved workspace note make-check") {
+	if card := ansi.Strip(m.renderEntryContent(last)); !strings.Contains(card, "Memory  reflection · save · make-check") || !strings.Contains(card, "Saved workspace note make-check") {
 		t.Fatalf("card:\n%s", card)
 	}
 }

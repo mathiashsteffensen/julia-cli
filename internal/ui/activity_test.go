@@ -190,7 +190,7 @@ func TestActivityFollowsTheLatestEntry(t *testing.T) {
 	lines := strings.Split(ansi.Strip(m.View().Content), "\n")
 	tool, activity := -1, -1
 	for i, line := range lines {
-		if strings.Contains(line, "│ ◌ Tool") {
+		if strings.Contains(line, "◌  Tool") {
 			tool = i
 		}
 		if strings.Contains(line, "Running WebSearch") {

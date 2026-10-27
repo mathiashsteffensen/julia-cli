@@ -212,10 +212,10 @@ func highlightImageTokens(line string) string {
 	var out strings.Builder
 	last := 0
 	for _, span := range imageTokenPattern.FindAllStringIndex(line, -1) {
-		out.WriteString(creamStyle.Render(line[last:span[0]]))
-		out.WriteString(violetStyle.Render(line[span[0]:span[1]]))
+		out.WriteString(ink(panel, cream).Render(line[last:span[0]]))
+		out.WriteString(ink(panel, violet).Render(line[span[0]:span[1]]))
 		last = span[1]
 	}
-	out.WriteString(creamStyle.Render(line[last:]))
+	out.WriteString(ink(panel, cream).Render(line[last:]))
 	return out.String()
 }

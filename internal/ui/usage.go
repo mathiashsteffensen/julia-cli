@@ -101,17 +101,17 @@ func (m *model) cancelWeeklyUsage() {
 	m.weekly.sequence++
 }
 
-func (m *model) weeklyUsageLine() string {
+func (m *model) weeklyUsageLine(p palette) string {
 	if m.weekly.value == nil {
 		if m.weekly.loading {
-			return mutedStyle.Render("Weekly · loading…")
+			return p.muted.Render("Weekly · loading…")
 		}
-		return faintStyle.Render("Weekly · unavailable")
+		return p.faint.Render("Weekly · unavailable")
 	}
 	value := m.weekly.value
 	stale := m.weekly.stale || (!value.ResetsAt.IsZero() && !m.now.Before(value.ResetsAt))
 	if stale {
-		return mutedStyle.Render(fmt.Sprintf("Weekly · %.0f%% · stale", value.RemainingPercent))
+		return p.muted.Render(fmt.Sprintf("Weekly · %.0f%% · stale", value.RemainingPercent))
 	}
-	return violetStyle.Render(fmt.Sprintf("Weekly · %.0f%% left", value.RemainingPercent))
+	return p.violet.Render(fmt.Sprintf("Weekly · %.0f%% left", value.RemainingPercent))
 }

@@ -26,7 +26,8 @@ func TestComposerBlankCellsKeepPanelBackground(t *testing.T) {
 				uv.NewStyledString(view).Draw(buffer, buffer.Bounds())
 				inside := false
 				for y, line := range strings.Split(ansi.Strip(view), "\n") {
-					top, bottom := strings.Contains(line, "╭"), strings.Contains(line, "╰")
+					main := ansi.Truncate(line, m.margin()+m.mainWidth, "") // the sidebar card has corners of its own
+					top, bottom := strings.Contains(main, "╭"), strings.Contains(main, "╰")
 					inside = inside || top
 					if !inside {
 						continue

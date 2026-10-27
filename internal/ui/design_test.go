@@ -2,7 +2,6 @@ package ui
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -10,36 +9,29 @@ import (
 	"julia/internal/core"
 )
 
-// The welcome's starters are set as a menu: every numeral starts at one cell
-// and every description at another, whatever the length of the title between
-// them, and the leaders between a title and its description are never fewer
-// than three dots, at the README size and in a split pane alike.
-func TestWelcomeStartersAlign(t *testing.T) {
-	for _, size := range [][2]int{{140, 44}, {90, 30}} {
-		var numerals, descriptions []int
-		for _, line := range strings.Split(ansi.Strip(RenderWelcome(size[0], size[1])), "\n") {
-			for i, s := range welcomeStarters {
-				n := strings.Index(line, fmt.Sprintf("%02d   %s", i+1, s[0]))
-				if n < 0 {
-					continue
+// The welcome's starters are pills: each title on its chip, all three on one
+// row at the README size, and one under another in a pane too narrow for the
+// row, with none of the descriptions, which are for the help text.
+func TestWelcomeStartersArePills(t *testing.T) {
+	for _, size := range [][2]int{{140, 44}, {90, 30}, {70, 26}} {
+		lines := strings.Split(ansi.Strip(RenderWelcome(size[0], size[1])), "\n")
+		var rows []int
+		for i, line := range lines {
+			for _, s := range welcomeStarters {
+				if strings.Contains(line, " "+s[0]+" ") {
+					rows = append(rows, i)
 				}
-				d := strings.Index(line, s[1])
-				if d < n {
-					t.Errorf("%v: %q lost its description", size, s[0])
-					continue
-				}
-				// Cells, not bytes: the leaders between the columns are multibyte.
-				numerals = append(numerals, ansi.StringWidth(line[:n]))
-				descriptions = append(descriptions, ansi.StringWidth(line[:d]))
-				if dots := strings.Count(line[n:d], "·"); dots < 3 {
-					t.Errorf("%v: %q is followed by %d leader dots", size, s[0], dots)
+				if strings.Contains(line, s[1]) {
+					t.Errorf("%v: the welcome spells out %q", size, s[1])
 				}
 			}
 		}
-		for name, columns := range map[string][]int{"numerals": numerals, "descriptions": descriptions} {
-			if len(columns) != 3 || columns[0] != columns[1] || columns[1] != columns[2] {
-				t.Errorf("%v: %s stagger at columns %v", size, name, columns)
-			}
+		if len(rows) != 3 {
+			t.Fatalf("%v: %d starters shown", size, len(rows))
+		}
+		oneRow := rows[0] == rows[1] && rows[1] == rows[2]
+		if wide := size[0] >= 90; oneRow != wide {
+			t.Errorf("%v: starters on rows %v", size, rows)
 		}
 	}
 }
@@ -61,8 +53,8 @@ func TestHeadingsDropTheirMarkers(t *testing.T) {
 	}
 }
 
-// A run of tool calls shares one rail: the gap between two calls draws it, the
-// gap after a reply does not, and the gap row is never copyable text.
+// A run of tool calls reads as one block: no row parts two consecutive calls,
+// while a reply before or after the run keeps its blank row.
 func TestConsecutiveToolCallsShareARail(t *testing.T) {
 	m := testModel(t, Config{})
 	m.resize(100, 30)
@@ -77,8 +69,8 @@ func TestConsecutiveToolCallsShareARail(t *testing.T) {
 			gaps = append(gaps, ansi.Strip(m.lines[i]))
 		}
 	}
-	if len(gaps) != 3 || gaps[0] != "" || gaps[1] != "│" || gaps[2] != "" {
-		t.Fatalf("gap rows = %q", gaps)
+	if len(gaps) != 2 || gaps[0] != "" || gaps[1] != "" {
+		t.Fatalf("gaps %q", gaps)
 	}
 }
 
@@ -158,7 +150,7 @@ func TestMemoryCardKeepsTheNameWhole(t *testing.T) {
 	m.refresh(true)
 	var title string
 	for _, line := range m.lines {
-		if plain := ansi.Strip(line); strings.Contains(plain, "✓ Memory") {
+		if plain := ansi.Strip(line); strings.Contains(plain, "Memory  save") {
 			title = strings.TrimRight(plain, " ")
 		}
 	}
@@ -181,8 +173,8 @@ func TestMemoryCardKeepsTheNameWhole(t *testing.T) {
 	}
 }
 
-// The rail drawn through the gap between two tool calls is decoration: a
-// dragged copy across it keeps the blank line and never the glyph.
+// A dragged copy across two consecutive tool calls is the two calls, one per
+// line, starting at each name: the chip's padding is decoration.
 func TestRailGapIsNotCopiedText(t *testing.T) {
 	m := testModel(t, Config{})
 	m.resize(100, 30)
@@ -192,7 +184,7 @@ func TestRailGapIsNotCopiedText(t *testing.T) {
 	m.entries = []entry{call("Read"), call("Grep")}
 	m.refresh(true)
 	m.selection = &selection{anchor: cell{row: 0, col: 0}, head: cell{row: len(m.lines) - 1, col: 20}, moved: true}
-	if text := m.selectedText(); strings.Contains(text, "│") || !strings.Contains(text, "\n\n") {
+	if text := m.selectedText(); text != "Read  x  ·  ok\nGrep  x  ·  ok" {
 		t.Fatalf("copied %q", text)
 	}
 }

@@ -13,8 +13,8 @@ import (
 // language label, highlighting in the house palette, and wrapped lines marked
 // as continuations so a copied command stays one command.
 var (
-	codeBackground   = lipgloss.Color("#1D1C22")
-	codeHeaderColor  = lipgloss.Color("#26232D")
+	codeBackground   = lipgloss.Color("#1C1924")
+	codeHeaderColor  = lipgloss.Color("#272231")
 	codeCommentColor = lipgloss.Color("#7D7789")
 	codeGold         = lipgloss.Color("#E9C891")
 	codeBlue         = lipgloss.Color("#A6C8E8")

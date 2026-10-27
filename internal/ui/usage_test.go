@@ -54,34 +54,34 @@ func TestWeeklyUsageZeroUnavailableAndStale(t *testing.T) {
 	var fetchErr error
 	m := testModel(t, usageConfig(func(context.Context) (*core.WeeklyUsage, error) { return value, fetchErr }))
 	m.Update(m.refreshWeeklyUsage(false)())
-	if got := ansi.Strip(m.weeklyUsageLine()); got != "Weekly · 0% left" {
+	if got := ansi.Strip(m.weeklyUsageLine(paletteOn(background))); got != "Weekly · 0% left" {
 		t.Fatalf("zero treated as unknown: %q", got)
 	}
 	fetchErr = errors.New("temporary failure")
 	m.now = m.now.Add(time.Minute)
 	m.Update(m.refreshWeeklyUsage(false)())
-	if got := ansi.Strip(m.weeklyUsageLine()); got != "Weekly · 0% · stale" {
+	if got := ansi.Strip(m.weeklyUsageLine(paletteOn(background))); got != "Weekly · 0% · stale" {
 		t.Fatalf("failed refresh hid stale state: %q", got)
 	}
 	fetchErr, value = nil, &core.WeeklyUsage{RemainingPercent: 72, ResetsAt: m.now.Add(time.Hour)}
 	m.now = m.now.Add(time.Minute)
 	m.Update(m.refreshWeeklyUsage(false)())
-	if got := ansi.Strip(m.weeklyUsageLine()); got != "Weekly · 72% left" {
+	if got := ansi.Strip(m.weeklyUsageLine(paletteOn(background))); got != "Weekly · 72% left" {
 		t.Fatalf("success did not clear stale state: %q", got)
 	}
 	m.now = value.ResetsAt
-	if !strings.Contains(ansi.Strip(m.weeklyUsageLine()), "stale") {
+	if !strings.Contains(ansi.Strip(m.weeklyUsageLine(paletteOn(background))), "stale") {
 		t.Fatal("reset time silently invented a fresh allowance")
 	}
 	value = nil
 	m.Update(m.refreshWeeklyUsage(false)())
-	if got := ansi.Strip(m.weeklyUsageLine()); got != "Weekly · unavailable" {
+	if got := ansi.Strip(m.weeklyUsageLine(paletteOn(background))); got != "Weekly · unavailable" {
 		t.Fatalf("successful missing-quota response retained old account allowance: %q", got)
 	}
 	for _, unavailable := range []*core.WeeklyUsage{nil, {RemainingPercent: math.NaN()}, {RemainingPercent: math.Inf(1)}, {RemainingPercent: -1}, {RemainingPercent: 101}} {
 		unknown := testModel(t, usageConfig(func(context.Context) (*core.WeeklyUsage, error) { return unavailable, nil }))
 		unknown.Update(unknown.refreshWeeklyUsage(false)())
-		if got := ansi.Strip(unknown.weeklyUsageLine()); got != "Weekly · unavailable" {
+		if got := ansi.Strip(unknown.weeklyUsageLine(paletteOn(background))); got != "Weekly · unavailable" {
 			t.Fatalf("invalid or missing reading inferred a percentage: %q", got)
 		}
 	}

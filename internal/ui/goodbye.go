@@ -44,7 +44,7 @@ func RenderGoodbye(s *core.Session, resume string, width int) string {
 	if prompt := total.Prompt(); prompt > 0 {
 		bar := min(value, 20)
 		hit := float64(total.CacheRead) * 100 / float64(prompt)
-		rows = append(rows, label("")+usageBar(total.CacheRead, prompt, bar, cyanStyle)+mutedStyle.Render(fit(fmt.Sprintf(" %.0f%% from cache", hit), value-bar)))
+		rows = append(rows, label("")+usageBar(total.CacheRead, prompt, bar, cyanStyle, faintStyle)+mutedStyle.Render(fit(fmt.Sprintf(" %.0f%% from cache", hit), value-bar)))
 	}
 	model := s.Model
 	if model == "" {

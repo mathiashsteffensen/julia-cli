@@ -17,7 +17,7 @@ func TestWordmarkWaitsForTerminalAcknowledgementAndRestoresAfterResize(t *testin
 	m.resize(128, 40)
 	m.Update(tea.ColorProfileMsg{Profile: colorprofile.TrueColor})
 	_, cmd := m.Update(tea.EnvMsg{"TERM_PROGRAM=ghostty", "TERM=xterm-ghostty"})
-	if cmd == nil || !strings.Contains(ansi.Strip(m.View().Content), "A little less supervision") {
+	if cmd == nil || !strings.Contains(ansi.Strip(m.View().Content), "your personal agent") {
 		t.Fatal("must show the welcome while waiting for terminal")
 	}
 	if raw := rawOutput(cmd); raw != ansi.RequestModeAltScreenSaveCursor+ansi.WindowOp(ansi.RequestCellSizeWinOp) {

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"math"
 	"strconv"
 	"strings"
@@ -67,41 +68,30 @@ func (m *model) recordUsage(event core.Event) {
 	}
 }
 
+// palette is the set of text styles for one surface, each carrying the
+// surface's background, so a style reset inside a row never lets the page
+// show through a card.
+type palette struct{ text, muted, faint, violet, coral, cyan, green lipgloss.Style }
+
+func paletteOn(bg color.Color) palette {
+	return palette{text: ink(bg, cream), muted: ink(bg, muted), faint: ink(bg, faint), violet: ink(bg, violet), coral: ink(bg, coral), cyan: ink(bg, cyan), green: ink(bg, green)}
+}
+
+// label is a section heading.
+func (p palette) label(s string) string { return p.violet.Bold(true).Render(s) }
+
 // contextSection is the CONTEXT section: a usage bar and "NN% · used / window".
 // The figure is never clamped, only the bar is. At or above the compaction
 // threshold both turn coral, since the next API turn will summarize the history.
-func (m *model) contextSection(label func(string) string, width int) []string {
+func (m *model) contextSection(p palette, width int) []string {
 	window, used := m.contextWindow(), max(m.usage().Context, 0)
-	barStyle, textStyle := violetStyle, mutedStyle
+	barStyle, textStyle := p.violet, p.muted
 	if used >= core.CompactionThreshold(window) {
-		barStyle, textStyle = coralStyle, coralStyle
+		barStyle, textStyle = p.coral, p.coral
 	}
 	percent := int(math.Min(math.Floor(float64(used)*100/float64(window)), 99_999))
 	text := fmt.Sprintf("%d%% · %s / %s", percent, compactWhole(used), compactWhole(window))
-	return []string{label("CONTEXT"), usageBar(used, window, width, barStyle), textStyle.Render(ansi.Truncate(text, width, "…"))}
-}
-
-// usageBar draws used/window across width cells. Any non-zero usage shows at
-// least one cell, and usage beyond the window fills the bar without overflowing.
-func usageBar(used, window, width int, filledStyle lipgloss.Style) string {
-	filled := 0
-	switch {
-	case used <= 0:
-	case window <= 0 || used >= window:
-		filled = width
-	default:
-		filled = min(max(1, core.RoundDiv(used*width, window)), width)
-	}
-	return filledStyle.Render(strings.Repeat("━", filled)) + faintStyle.Render(strings.Repeat("─", width-filled))
-}
-
-// tokenSection is the TOKENS section: session totals, then how the input splits
-// into cache hits and everything else (fresh tokens and cache writes).
-func (m *model) tokenSection(label func(string) string, width int) []string {
-	total := m.usage().Total
-	line := creamStyle.Render(ansi.Truncate(core.CompactTokens(total.Prompt())+" in · "+core.CompactTokens(total.Output)+" out", width, "…"))
-	split := mutedStyle.Render(ansi.Truncate(compactWhole(total.CacheRead)+" cached · "+compactWhole(total.Input+total.CacheWrite)+" new", width, "…"))
-	return []string{label("TOKENS"), line, split}
+	return []string{p.label("CONTEXT"), usageBar(used, window, width, barStyle, p.faint), textStyle.Render(ansi.Truncate(text, width, "…"))}
 }
 
 // compactWhole is core.CompactTokens without any decimal below a million, for rows
@@ -119,4 +109,27 @@ func compactWhole(n int) string {
 		return fmt.Sprintf("%dM", t/10)
 	}
 	return fmt.Sprintf("%d.%dM", t/10, t%10)
+}
+
+// usageBar draws used/window across width cells. Any non-zero usage shows at
+// least one cell, and usage beyond the window fills the bar without overflowing.
+func usageBar(used, window, width int, filled, empty lipgloss.Style) string {
+	n := 0
+	switch {
+	case used <= 0:
+	case window <= 0 || used >= window:
+		n = width
+	default:
+		n = min(max(1, core.RoundDiv(used*width, window)), width)
+	}
+	return filled.Render(strings.Repeat("━", n)) + empty.Render(strings.Repeat("─", width-n))
+}
+
+// tokenSection is the TOKENS section: session totals, then how the input splits
+// into cache hits and everything else (fresh tokens and cache writes).
+func (m *model) tokenSection(p palette, width int) []string {
+	total := m.usage().Total
+	line := p.text.Render(ansi.Truncate(core.CompactTokens(total.Prompt())+" in · "+core.CompactTokens(total.Output)+" out", width, "…"))
+	split := p.muted.Render(ansi.Truncate(compactWhole(total.CacheRead)+" cached · "+compactWhole(total.Input+total.CacheWrite)+" new", width, "…"))
+	return []string{p.label("TOKENS"), line, split}
 }

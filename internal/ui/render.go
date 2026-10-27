@@ -22,16 +22,19 @@ import (
 )
 
 var (
-	background  = lipgloss.Color("#17171B")
-	panel       = lipgloss.Color("#202026")
-	cream       = lipgloss.Color("#ECE5DC")
-	muted       = lipgloss.Color("#96929F")
-	faint       = lipgloss.Color("#56515F")
-	border      = lipgloss.Color("#62536F")
+	background  = lipgloss.Color("#15131A")
+	panel       = lipgloss.Color("#1E1B26")
+	cream       = lipgloss.Color("#F1EBE3")
+	muted       = lipgloss.Color("#9A94A6")
+	faint       = lipgloss.Color("#4E4860")
+	border      = lipgloss.Color("#5A5270")
 	coral       = lipgloss.Color("#F49D89")
 	violet      = lipgloss.Color("#C6B6F2")
 	cyan        = lipgloss.Color("#92CED2")
 	green       = lipgloss.Color("#A9C9AD")
+	amber       = lipgloss.Color("#F9D399")
+	pillBG      = lipgloss.Color("#2A2536") // a raised chip: a tool name, a starter
+	pillText    = lipgloss.Color("#D9D1E6")
 	coralStyle  = lipgloss.NewStyle().Foreground(coral)
 	violetStyle = lipgloss.NewStyle().Foreground(violet)
 	cyanStyle   = lipgloss.NewStyle().Foreground(cyan)
@@ -131,14 +134,11 @@ func (m *model) refresh(forceBottom bool) {
 	for i := range m.entries {
 		layout := m.renderEntry(&m.entries[i])
 		if i > 0 {
-			gap, meta := "", rowMeta{}
-			if m.entries[i].role == "tool" && m.entries[i-1].role == "tool" {
-				// Consecutive calls read as one run of work. The rail is
-				// decoration: a copy keeps the blank line, not the glyph.
-				gap, meta = toolRail, rowMeta{gutter: 1}
+			if m.entries[i].role != "tool" || m.entries[i-1].role != "tool" {
+				// Consecutive calls read as one run of work, with no row between them.
+				m.lines = append(m.lines, "")
+				m.rows = append(m.rows, rowRef{entry: -1})
 			}
-			m.lines = append(m.lines, gap)
-			m.rows = append(m.rows, rowRef{entry: -1, rowMeta: meta})
 		}
 		m.lines = append(m.lines, strings.Split(layout.text, "\n")...)
 		for _, row := range layout.rows {
@@ -166,7 +166,7 @@ func markdownRenderer(width int) *glamour.TermRenderer {
 	style.Document.Margin = &margin
 	style.Document.BlockPrefix = ""
 	style.Document.BlockSuffix = ""
-	style.Document.Color = str("#ECE5DC")
+	style.Document.Color = str("#F1EBE3")
 	style.Heading.Color = str("#C6B6F2")
 	style.Heading.Bold = ptr(true)
 	style.H1.Color = str("#F49D89")
@@ -174,15 +174,15 @@ func markdownRenderer(width int) *glamour.TermRenderer {
 	// Headings are set by weight and color, not by their Markdown markers.
 	style.H1.Prefix, style.H1.Suffix = "", ""
 	style.H2.Prefix, style.H3.Prefix, style.H4.Prefix, style.H5.Prefix, style.H6.Prefix = "", "", "", "", ""
-	style.HorizontalRule.Color = str("#56515F")
+	style.HorizontalRule.Color = str("#4E4860")
 	style.HorizontalRule.Format = "\n────────\n"
-	style.BlockQuote.Color = str("#96929F")
+	style.BlockQuote.Color = str("#9A94A6")
 	style.Item.BlockPrefix = "• "
 	style.Enumeration.Color = str("#C6B6F2")
-	style.Emph.Color = str("#ECE5DC")
-	style.Strong.Color = str("#ECE5DC")
+	style.Emph.Color = str("#F1EBE3")
+	style.Strong.Color = str("#F1EBE3")
 	style.Code.Color = str("#C6B6F2")
-	style.Code.BackgroundColor = str("#27242E")
+	style.Code.BackgroundColor = str("#2A2536")
 	style.CodeBlock.Theme = "dracula"
 	style.CodeBlock.Margin = &margin
 	style.Link.Color = str("#C6B6F2")
@@ -193,10 +193,6 @@ func markdownRenderer(width int) *glamour.TermRenderer {
 
 func str(value string) *string { return &value }
 func ptr[T any](value T) *T    { return &value }
-
-// toolRail is the rule beside a tool call; it runs on through the gap between
-// consecutive calls, so a burst of work reads as one block.
-var toolRail = faintStyle.Render("│")
 
 func (m *model) renderEntry(item *entry) entryLayout {
 	return m.renderEntryIn(item, column{width: m.mainWidth, markdown: m.markdown})
@@ -252,37 +248,50 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 	switch item.role {
 	case "user":
 		out.targets = []copyTarget{{"your message", item.text}}
-		bar := lipgloss.NewStyle().Foreground(coral).Render("┃") + " "
-		add(bar+coralStyle.Bold(true).Render(item.heading("YOU")), rowMeta{gutter: 2, skip: true})
-		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string { return bar + highlightImageTokens(s) })
+		// Your words sit on a card with a coral edge, as wide as the column.
+		card := func(s string) string {
+			return coralStyle.Render("▌") + paint(panel, max(3, in.width-3), ink(panel, cream).Render(" ")+s)
+		}
+		add(card(ink(panel, coral).Bold(true).Render(item.heading("You"))), rowMeta{gutter: 2, skip: true})
+		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string { return card(highlightImageTokens(s)) })
 		rows := imageRows(item.images)
 		if len(item.images) > 0 && len(item.imageIDs) == len(item.images) && m.thumbnailsShown() {
-			add(bar, rowMeta{gutter: 2, skip: true})
+			add(card(""), rowMeta{gutter: 2, skip: true})
 			rows = m.thumbnailRowsFor(item, w)
 		}
 		for _, row := range rows {
-			add(bar+ansi.Truncate(row, w, "…"), rowMeta{gutter: 2, skip: true})
+			add(card(ansi.Truncate(row, w, "…")), rowMeta{gutter: 2, skip: true})
 		}
 	case "assistant":
 		out.targets = []copyTarget{{"reply", item.text}}
-		add(" "+violetStyle.Bold(true).Render(item.heading("✦ JULIA")), rowMeta{gutter: 1, skip: true})
+		// A reply opens with the spark and runs on without a heading; a labelled
+		// reply (an agent's, a memory's) keeps its heading row.
+		lead := violetStyle.Render("✦ ")
+		if item.label != "" {
+			add(lead+violetStyle.Bold(true).Render(strings.TrimPrefix(item.label, "✦ ")), rowMeta{gutter: 2, skip: true})
+			lead = "  "
+		}
 		for i, segment := range splitFences(sanitize(item.text)) {
-			if i > 0 || strings.HasPrefix(strings.TrimLeft(segment.text, " \n"), "#") {
+			if i > 0 || item.label != "" && strings.HasPrefix(strings.TrimLeft(segment.text, " \n"), "#") {
 				// A heading straight under the label would read as part of it.
-				add("", rowMeta{gutter: 1})
+				add("", rowMeta{gutter: 2})
 			}
 			if segment.code {
+				if lead != "  " {
+					add(strings.TrimRight(lead, " "), rowMeta{gutter: 2, skip: true})
+					lead = "  "
+				}
 				target := len(out.targets)
 				label := "code"
 				if segment.language != "" {
 					label = segment.language + " code"
 				}
 				out.targets = append(out.targets, copyTarget{label, segment.text})
-				width := max(codeGutter+8, in.width-2)
+				width := max(codeGutter+8, in.width-3)
 				rows, continued := renderCodeBlock(segment.text, segment.language, width)
 				for j, row := range rows {
 					edge := j <= 1 || j == len(rows)-1 // header and padding rows
-					add(" "+row, rowMeta{gutter: 1 + codeGutter, end: width, cont: continued[j], skip: edge, target: target, code: true})
+					add("  "+row, rowMeta{gutter: 2 + codeGutter, end: width + 1, cont: continued[j], skip: edge, target: target, code: true})
 				}
 				continue
 			}
@@ -300,7 +309,8 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 				lines = lines[:len(lines)-1]
 			}
 			for _, line := range lines {
-				add(" "+line, rowMeta{gutter: 1})
+				add(lead+line, rowMeta{gutter: 2})
+				lead = "  "
 			}
 		}
 	case "tool":
@@ -336,20 +346,30 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 				detail = summary
 			}
 		}
-		icon, nameStyle := violetStyle.Render("◌"), cyanStyle.Bold(true)
-		if item.done {
-			icon = lipgloss.NewStyle().Foreground(green).Render("✓")
+		// The call is a pill: its name on a raised chip with the target beside
+		// it, and a mark before it only while it runs or once it has failed.
+		mark, pill := "  ", ink(pillBG, pillText)
+		if !item.done {
+			mark, pill = violetStyle.Render("◌ "), ink(pillBG, violet)
 		}
 		if item.result != nil && item.result.IsError {
-			icon, nameStyle = coralStyle.Render("!"), coralStyle.Bold(true)
+			mark, pill = coralStyle.Render("! "), ink(pillBG, coral)
 		}
-		bar := toolRail + " "
-		title := icon + " " + nameStyle.Render(sanitize(name))
+		bar := "  "
+		title := mark + pill.Render(" "+sanitize(name)+" ")
 		if detail != "" {
-			title += "  " + mutedStyle.Render(ansi.Truncate(sanitize(detail), max(6, w-ansi.StringWidth(name)-5), "…"))
+			title += " " + mutedStyle.Render(ansi.Truncate(sanitize(detail), max(6, w-ansi.StringWidth(name)-6), "…"))
 		}
-		add(bar+title, rowMeta{gutter: 2})
+		// The title row waits for the result: a short one joins it on its row.
+		titleAdded := false
+		flushTitle := func() {
+			if !titleAdded {
+				add(bar+title, rowMeta{gutter: 5})
+				titleAdded = true
+			}
+		}
 		if item.call != nil && item.call.Name == "Subagent" && m.expandTools {
+			flushTitle()
 			for i, task := range subagentTasks(*item.call) {
 				target := len(out.targets)
 				out.targets = append(out.targets, copyTarget{fmt.Sprintf("subagent task %d", i+1), task.prompt})
@@ -366,6 +386,7 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 			}
 		}
 		if item.call != nil && argumentsShown(item.call.Name) && m.expandTools {
+			flushTitle()
 			// The arguments in full: the title row shows the message or issue
 			// text only as far as the width allows.
 			for _, row := range argumentRows(callArguments(item.call.Arguments), w-4) {
@@ -388,6 +409,17 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 					other, isOther = browserRows(call.Action, result, w-2, m.expandTools)
 				}
 			}
+			first, _, _ := strings.Cut(result, "\n")
+			merged := false
+			if plain := !isOther && !isPage && !isScreen && !m.expandTools && result != ""; plain && ansi.StringWidth(title)+5+ansi.StringWidth(first) <= w {
+				style := faintStyle
+				if item.result.IsError {
+					style = coralStyle
+				}
+				add(bar+title+style.Render("  ·  "+first), rowMeta{gutter: 5})
+				titleAdded, merged = true, true
+			}
+			flushTitle()
 			if isOther {
 				for _, row := range other {
 					add(bar+"  "+row, rowMeta{gutter: 4, target: 1})
@@ -439,8 +471,7 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 				for _, line := range parts {
 					add(bar+mutedStyle.Render("  "+line), rowMeta{gutter: 4, target: 1})
 				}
-			} else if result != "" {
-				first, _, _ := strings.Cut(result, "\n")
+			} else if result != "" && !merged {
 				style := faintStyle
 				if item.result.IsError {
 					style = coralStyle
@@ -463,6 +494,7 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 				add(bar+"  "+ansi.Truncate(imageCaption(description), w-2, "…"), rowMeta{gutter: 4, skip: true})
 			}
 		}
+		flushTitle()
 	case "warning":
 		out.targets = []copyTarget{{"warning", item.text}}
 		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string { return coralStyle.Render("! " + s) })
@@ -693,18 +725,22 @@ func (m *model) View() tea.View {
 		return tea.NewView("")
 	}
 	contentWidth := m.width - 2*m.margin()
-	brand := coralStyle.Bold(true).Render("◆  JULIA")
-	caption := mutedStyle.Render("  YOUR PERSONAL AGENT")
-	if m.width < 65 {
-		caption = ""
-	}
+	// The masthead: the brand's wave as a ribbon across the top, the name set
+	// in the same gradient, and the workspace and mode at the right.
+	brand := ribbon("JULIA")
+	caption := mutedStyle.Render("  your personal agent")
 	right := violetStyle.Render("● " + sanitize(m.cfg.Mode))
 	if m.cfg.Demo {
 		right = violetStyle.Render("◈ PREVIEW")
 	}
+	if m.width < 65 {
+		caption = ""
+	} else if m.cfg.Session != nil && m.cfg.Session.Directory != "" {
+		right = mutedStyle.Render(ansi.Truncate(sanitize(filepath.Base(filepath.Clean(m.cfg.Session.Directory))), 24, "…")+"  ·  ") + right
+	}
 	header := brand + caption
 	header += strings.Repeat(" ", max(1, contentWidth-ansi.StringWidth(header)-ansi.StringWidth(right))) + right
-	header = "\n" + ansi.Truncate(header, contentWidth, "") + "\n" + faintStyle.Render(strings.Repeat("─", contentWidth))
+	header = ribbon(strings.Repeat("▀", contentWidth)) + "\n" + ansi.Truncate(header, contentWidth, "") + "\n"
 	body := m.withActivity(m.highlightSelection(m.viewport.View()))
 	if m.picker != nil && m.pending == nil {
 		body = m.pickerView()
@@ -717,7 +753,7 @@ func (m *model) View() tea.View {
 	}
 	body = lipgloss.NewStyle().Width(m.mainWidth).Height(m.bodyHeight).Render(body) + "\n" + m.bottomView()
 	if m.hasSidebar() {
-		// The sidebar runs from the header rule to the bottom edge, beside the composer.
+		// The sidebar runs from the masthead to the bottom edge, beside the composer.
 		body = lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(m.mainWidth).Render(body), "  ", m.sidebar())
 	}
 	view := header + "\n" + body
@@ -803,6 +839,14 @@ func (m *model) bottomLayout() ([]string, int) {
 		composerTitle += m.attachmentChips(max(0, innerWidth-ansi.StringWidth(composerTitle)))
 	}
 	composer := style.Render(ansi.Truncate(composerTitle, innerWidth, "…") + "\n" + composerInput)
+	if m.pending == nil {
+		// The top edge carries the brand's ribbon, as the masthead does; an
+		// approval keeps its coral frame whole.
+		if lines := strings.Split(composer, "\n"); len(lines) > 0 {
+			lines[0] = ribbonOn(panel, ansi.Strip(lines[0]))
+			composer = strings.Join(lines, "\n")
+		}
+	}
 	var rows []string
 	if m.height >= 28 {
 		rows = append(rows, "")
@@ -827,45 +871,20 @@ func (m *model) bottomLayout() ([]string, int) {
 // heroGap is the number of cells between the hero's letters.
 const heroGap = 2
 
-// welcomeStarters are the three suggestions, set as a menu: a bold title and
-// a muted description, each in its own column, joined by faint leaders.
+// welcomeStarters are the three suggestions: a title, shown as a pill on the
+// welcome, and what each is for.
 var welcomeStarters = [][2]string{
 	{"Explore a codebase", "and explain the moving parts"},
 	{"Investigate a question", "and follow the evidence"},
 	{"Make a change", "verify it, and report back"},
 }
 
-// tracked letter-spaces a label: one cell between letters and four between
-// words, so the words still read as words.
-func tracked(s string) string {
-	var b strings.Builder
-	for i, word := range strings.Fields(s) {
-		if i > 0 {
-			b.WriteString("    ")
-		}
-		for j, r := range word {
-			if j > 0 {
-				b.WriteByte(' ')
-			}
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-// hairline is a faint rule, width cells wide, with a small rail-coloured
-// ornament at its centre.
+// hairline is a faint rule, width cells wide, with a small amber ornament at
+// its centre.
 func hairline(width int, ornament string) string {
 	side := (width - 5) / 2
 	rule := faintStyle.Render(strings.Repeat("─", side))
-	return rule + "  " + lipgloss.NewStyle().Foreground(logoRule).Render(ornament) + "  " + rule
-}
-
-// crest is the ╱ rails with a ◈ between them: width cells wide, or one less
-// when width is even, so the rails stay equal.
-func crest(width int) string {
-	side := lipgloss.NewStyle().Foreground(logoRule).Render(strings.Repeat("╱", max(0, (width-5)/2)))
-	return side + "  " + coralStyle.Render("◈") + "  " + side
+	return rule + "  " + lipgloss.NewStyle().Foreground(amber).Render(ornament) + "  " + rule
 }
 
 // centred is the top row that puts a block of size block in the middle of a
@@ -899,85 +918,49 @@ func block(rows []string) []string {
 	return out
 }
 
-// heroMark is the crest and the wordmark: the crest cut to the letters'
-// width, a blank row, and the hero rows each led by one space so that the
+// heroMark is the wordmark: the hero rows each led by one space so that the
 // letters, not the shadow's extra column, are what the axis balances.
 func heroMark() []string {
-	rows := []string{crest(heroWidth(heroGap) - 1), ""}
+	var rows []string
 	for _, row := range heroLettering(heroGap) {
 		rows = append(rows, " "+row)
 	}
 	return rows
 }
 
-// jewelLockup is the small-terminal mark: the sidebar's quadrant lettering
-// with the tagline under it, and the crest above when there is a row for it
-// and one to keep it off the letters.
-func jewelLockup(withCrest bool) []string {
-	letters := logoLettering()
-	var rows []string
-	if withCrest {
-		rows = append(rows, crest(ansi.StringWidth(letters[0])), "")
-	}
-	rows = append(rows, letters...)
-	return append(rows, "", creamStyle.Render("At your service, sir."))
+// jewelLockup is the small-terminal mark: the quadrant lettering with the
+// caption under it.
+func jewelLockup() []string {
+	return append(logoLettering(), "", mutedStyle.Render("your personal agent"))
 }
 
-// starterMenu sets the starters as a menu: a violet numeral, a bold title and
-// a muted description, each column starting at one cell on every row, with
-// faint dot leaders between title and description. The leader zone is wide
-// enough that even the longest title is followed by three dots, and the dots
-// sit on one column parity so they align down the menu.
-func starterMenu() []string {
-	const numW = 5
-	titleW := 0
-	for _, s := range welcomeStarters {
-		titleW = max(titleW, ansi.StringWidth(s[0]))
-	}
-	// The zone runs from the cell after the title to the cell before the
-	// description, with dots on the description's parity, so the first dot
-	// after the longest title is six cells before the description.
-	descCol := numW + titleW + 7
-	rows := make([]string, len(welcomeStarters))
+// starterRows sets the starters as pills: on one row when they fit in width,
+// else one under another.
+func starterRows(width int) []string {
+	pills := make([]string, len(welcomeStarters))
 	for i, s := range welcomeStarters {
-		var leader strings.Builder
-		for c := numW + ansi.StringWidth(s[0]) + 1; c < descCol-1; c++ {
-			if c%2 == descCol%2 {
-				leader.WriteString("·")
-			} else {
-				leader.WriteByte(' ')
-			}
-		}
-		rows[i] = violetStyle.Render(fmt.Sprintf("%02d", i+1)) + "   " + creamStyle.Bold(true).Render(s[0]) + " " + faintStyle.Render(leader.String()) + " " + mutedStyle.Render(s[1])
+		pills[i] = ink(pillBG, pillText).Render(" " + s[0] + " ")
 	}
-	width := 0
-	for _, row := range rows {
-		width = max(width, ansi.StringWidth(row))
+	if row := strings.Join(pills, "   "); ansi.StringWidth(row) <= width {
+		return []string{row}
 	}
-	for i, row := range rows {
-		rows[i] = row + strings.Repeat(" ", width-ansi.StringWidth(row))
-	}
-	return rows
+	return pills
 }
 
-// welcome is the body before the first message, set like the title page of a
-// book. With room: the crest and wordmark as one lockup, a tracked label, a
-// hairline, the taglines, and the starters as a menu. With less room the
-// lockup alone over "At your service, sir."; smaller still, the quadrant
-// jewel; and at the last resort, two lines of text. The block is centred,
-// and never starts on the row under the header rule.
+// welcome is the body before the first message: the wordmark with its
+// caption, and the starters beneath when there is room. With less room the
+// quadrant jewel, and at the last resort two lines of text. The block is
+// centred, and never starts on the row under the masthead.
 func (m *model) welcome() string {
 	w, h := m.mainWidth, m.bodyHeight
 	var rows []string
 	switch {
-	case h >= 15 && w >= 65:
-		rows = welcomePage(h)
-	case h >= 10 && w >= heroWidth(heroGap)+6:
-		rows = append(heroMark(), "", creamStyle.Render("At your service, sir."))
+	case h >= 7 && w >= heroWidth(heroGap)+6:
+		rows = welcomePage(w, h)
 	case h >= 5 && w >= 24:
-		rows = jewelLockup(h >= 9)
+		rows = jewelLockup()
 	default:
-		rows = []string{coralStyle.Bold(true).Render("J U L I A"), creamStyle.Render("At your service, sir.")}
+		rows = []string{ribbon("J U L I A"), mutedStyle.Render("your personal agent")}
 		if h < 2 {
 			rows = rows[:1]
 		}
@@ -987,40 +970,17 @@ func (m *model) welcome() string {
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Top, content)
 }
 
-// welcomePage is the full welcome: the lockup with the label set directly
-// under the shadow's feet, a row, the hairline, a row, the headline, a row,
-// and the menu. That core of fifteen rows always keeps a row of air above and
-// below. The italic second tagline and then a second row before the menu are
-// added, in that order, while the block still keeps two rows of air at each
-// end, so a short pane sheds the italic before it ever crowds the hairline
-// onto the label.
-func welcomePage(h int) []string {
-	hero := heroWidth(heroGap) - 1
-	menu := starterMenu()
-	rows := heroMark()
-	rows = append(rows,
-		mutedStyle.Render(tracked("AT YOUR SERVICE")),
-		"",
-		hairline(hero, "◆"),
-		"",
-		creamStyle.Bold(true).Render("A little less supervision. A lot more done."),
-	)
-	core := len(rows) + 1 + len(menu)
-	fits := func(cost int) bool {
-		if core+cost <= h-4 {
-			core += cost
-			return true
-		}
-		return false
-	}
-	if fits(1) {
-		rows = append(rows, mutedStyle.Italic(true).Render("Think deeply. Work carefully. Keep going."))
-	}
-	rows = append(rows, "")
-	if fits(1) {
+// welcomePage is the full welcome: the wordmark with the caption set directly
+// under the shadow's feet, then, while the block still keeps a row of air at
+// each end, a row and the starter pills.
+func welcomePage(w, h int) []string {
+	rows := append(heroMark(), mutedStyle.Render("your personal agent"))
+	pills := starterRows(w - 4)
+	if len(rows)+1+len(pills) <= h-2 {
 		rows = append(rows, "")
+		rows = append(rows, pills...)
 	}
-	return append(rows, menu...)
+	return rows
 }
 
 // showsReasoning reports whether provider takes a reasoning effort: a CLI
@@ -1054,9 +1014,11 @@ func (m *model) scrollSidebar(delta int) {
 }
 
 func (m *model) sidebar() string {
-	const width = 23
-	label := func(s string) string { return violetStyle.Bold(true).Render(s) }
-	value := func(s string) string { return creamStyle.Render(ansi.Truncate(sanitize(s), width, "…")) }
+	const width = 23 // text cells on a row, inside the card and below it
+	card, page := paletteOn(panel), paletteOn(background)
+	fit := func(style lipgloss.Style, s string) string {
+		return style.Render(ansi.Truncate(sanitize(s), width, "…"))
+	}
 	provider, modelName, reasoning, directory, id := "—", "default", "", "", "new conversation"
 	if m.cfg.Session != nil {
 		provider, modelName, directory, id = m.cfg.Session.Provider, m.cfg.Session.Model, m.cfg.Session.Directory, m.cfg.Session.ID
@@ -1069,70 +1031,85 @@ func (m *model) sidebar() string {
 	if directory != "" {
 		directory = filepath.Clean(directory)
 	}
-	connection := []string{label("CONNECTION"), cyanStyle.Render(ansi.Truncate(sanitize(provider), width, "…")), value(modelName)}
+	connection := []string{card.label("MODEL"), fit(card.text, modelName), fit(card.cyan, provider)}
 	if m.cfg.Profile != "" {
-		connection = append(connection, mutedStyle.Render(ansi.Truncate("profile: "+sanitize(m.cfg.Profile), width, "…")))
+		connection = append(connection, fit(card.muted, "profile: "+m.cfg.Profile))
 	}
 	if showsReasoning(provider, m.cfg.NamedProviders) {
 		if !config.IsCLIProvider(provider) && reasoning == "provider default" {
-			connection = append(connection, mutedStyle.Render("reasoning:"), mutedStyle.Render("provider default"))
+			connection = append(connection, card.muted.Render("reasoning:"), card.muted.Render("provider default"))
 		} else {
-			connection = append(connection, mutedStyle.Render(ansi.Truncate("reasoning: "+sanitize(reasoning), width, "…")))
+			connection = append(connection, fit(card.muted, "reasoning: "+reasoning))
 		}
 		if config.IsCLIProvider(provider) {
-			connection = append(connection, m.weeklyUsageLine())
+			connection = append(connection, m.weeklyUsageLine(card))
 		}
 	}
 	// The per-call figures describe the last model call only; the session totals
 	// and the context estimate have their own sections.
-	activity := []string{label("ACTIVITY"), value(fmt.Sprintf("%d tool calls", m.toolCount)), mutedStyle.Render("last call"), mutedStyle.Render(ansi.Truncate(fmt.Sprintf("%s in · %s out", core.CompactTokens(m.inputTokens), core.CompactTokens(m.outputTokens)), width, "…"))}
-	sections := [][]string{
-		{label("WORKSPACE"), value(filepath.Base(directory)), mutedStyle.Render(ansi.Truncate(directory, width, "…"))},
-		connection,
-		m.contextSection(label, width),
-		m.tokenSection(label, width),
-		activity,
-	}
+	activity := []string{card.label("ACTIVITY"), fit(card.text, fmt.Sprintf("%d tool calls", m.toolCount)), card.muted.Render("last call"), fit(card.muted, fmt.Sprintf("%s in · %s out", core.CompactTokens(m.inputTokens), core.CompactTokens(m.outputTokens)))}
+	sections := [][]string{m.contextSection(card, width), m.tokenSection(card, width), activity, connection}
 	if n := len(m.fleet); n > 0 {
 		count := fmt.Sprintf("%d subagents", n)
 		if n == 1 {
 			count = "1 subagent"
 		}
-		section := []string{label("FLEET"), value(count)}
+		section := []string{card.label("FLEET"), fit(card.text, count)}
 		// The states on one row when they fit, else one per row.
 		if summary := m.fleetSummary(); ansi.StringWidth(summary) <= width {
-			section = append(section, mutedStyle.Render(summary))
+			section = append(section, card.muted.Render(summary))
 		} else {
 			for _, part := range strings.Split(summary, " · ") {
-				section = append(section, mutedStyle.Render(ansi.Truncate(part, width, "…")))
+				section = append(section, fit(card.muted, part))
 			}
 		}
-		sections = append(sections, append(section, faintStyle.Render("ctrl+f inspects")))
+		sections = append(sections, append(section, card.faint.Render("ctrl+f inspects")))
 	}
-	sections = append(sections, [][]string{
-		{label("PERMISSIONS"), lipgloss.NewStyle().Foreground(green).Render(ansi.Truncate("◈ "+sanitize(m.cfg.Mode), width, "…")), mutedStyle.Render(ansi.Truncate(permissionCaption(m.cfg.Mode), width, "…"))},
-		{label("SESSION"), value(id)},
-	}...)
-	if rows := toolRows(m.cfg.ToolDefinitions, width); len(rows) > 0 {
-		essentials := []string{faintStyle.Render(strings.Repeat("─", width)), "", label("THE ESSENTIALS")}
-		for _, row := range rows {
-			essentials = append(essentials, mutedStyle.Render(row))
+	// What changes as the session runs sits on one card. Its frame cells are
+	// painted like its rows: a terminal draws the stroke inside the cell, so
+	// any other background shows as a gap between the edge and the fill.
+	rows := []string{"", card.faint.Render("╭" + strings.Repeat("─", width+2) + "╮")}
+	for i, section := range sections {
+		if i > 0 {
+			section = append([]string{""}, section...)
 		}
-		sections = append(sections, essentials)
+		for _, row := range section {
+			rows = append(rows, card.faint.Render("│")+paint(panel, width+2, ink(panel, cream).Render(" ")+row)+card.faint.Render("│"))
+		}
 	}
-	// The masthead and every section always render in full; a sidebar taller than
+	rows = append(rows, card.faint.Render("╰"+strings.Repeat("─", width+2)+"╯"))
+	// Below it, what rarely changes, set directly on the page.
+	session := []string{page.label("SESSION"), fit(page.text, id)}
+	if m.cfg.Version != "" {
+		session = append(session, fit(page.faint, "JULIA v"+strings.Join(strings.Fields(m.cfg.Version), " ")))
+	}
+	below := [][]string{
+		{page.label("WORKSPACE"), fit(page.text, filepath.Base(directory)), fit(page.muted, directory)},
+		{page.label("PERMISSIONS"), fit(page.green, "● "+m.cfg.Mode), fit(page.muted, permissionCaption(m.cfg.Mode))},
+		session,
+	}
+	if tools := toolRows(m.cfg.ToolDefinitions, width); len(tools) > 0 {
+		essentials := []string{page.label("THE ESSENTIALS")}
+		for _, row := range tools {
+			essentials = append(essentials, page.muted.Render(row))
+		}
+		below = append(below, essentials)
+	}
+	for _, section := range below {
+		rows = append(rows, "")
+		for _, row := range section {
+			rows = append(rows, " "+row)
+		}
+	}
+	// The card and every section always render in full; a sidebar taller than
 	// the body scrolls on its own under the mouse wheel.
-	lines := slices.Concat([]string{""}, sidebarLogo(m.cfg.Version, width))
-	for _, section := range sections {
-		lines = append(append(lines, ""), section...)
-	}
 	height := m.sidebarHeight()
-	m.sidebarOffset = max(0, min(m.sidebarOffset, len(lines)-height))
-	lines = lines[m.sidebarOffset:]
-	if len(lines) > height {
-		lines = lines[:height]
+	m.sidebarOffset = max(0, min(m.sidebarOffset, len(rows)-height))
+	rows = rows[m.sidebarOffset:]
+	if len(rows) > height {
+		rows = rows[:height]
 	}
-	return lipgloss.NewStyle().Width(26).Height(height).BorderLeft(true).BorderStyle(lipgloss.NormalBorder()).BorderForeground(faint).PaddingLeft(2).Render(strings.Join(lines, "\n"))
+	return lipgloss.NewStyle().Width(width + 4).Height(height).Render(strings.Join(rows, "\n"))
 }
 
 // Pack the registered names into rows; no tool names belong in the view.
@@ -1181,7 +1158,7 @@ func permissionCaption(mode string) string {
 func (m *model) activityLine(width int) string {
 	streamWidth := min(activityWidth, max(3, width/5))
 	stream := ansi.Truncate(m.spinner.View(), streamWidth, "")
-	duration := mutedStyle.Render(elapsed(m.now.Sub(m.started)))
+	duration := faintStyle.Render("·  " + elapsed(m.now.Sub(m.started)))
 	labelWidth := max(0, width-streamWidth-ansi.StringWidth(duration)-4)
 	label := mutedStyle.Render(ansi.Truncate(sanitize(m.status), labelWidth, "…"))
 	return stream + "  " + label + "  " + duration

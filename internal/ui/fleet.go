@@ -461,12 +461,8 @@ func (m *model) fleetPane(l fleetLayout) []string {
 	in := column{width: width, markdown: m.fleetMarkdown, wordWrap: true}
 	for i := range a.entries {
 		layout := m.renderEntryIn(&a.entries[i], in)
-		if i > 0 {
-			gap := ""
-			if a.entries[i].role == "tool" && a.entries[i-1].role == "tool" {
-				gap = toolRail
-			}
-			lines = append(lines, gap)
+		if i > 0 && (a.entries[i].role != "tool" || a.entries[i-1].role != "tool") {
+			lines = append(lines, "")
 		}
 		lines = append(lines, strings.Split(layout.text, "\n")...)
 	}

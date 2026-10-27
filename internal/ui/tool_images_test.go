@@ -46,11 +46,16 @@ func TestToolImagesDrawAsThumbnailsInTheToolCard(t *testing.T) {
 			t.Fatalf("expanded=%v: drew %d cells of a %dx%d thumbnail", expanded, got, cols, rows)
 		}
 		lines := strings.Split(ansi.Strip(rendered), "\n")
-		want := []string{"│ ✓ ViewImage  $JULIA_SCRATCH/shot.png", "│   $JULIA_SCRATCH/shot.png · 1440×900 PNG", "│ "}
-		if strings.Join(lines[:3], "\n") != strings.Join(want, "\n") {
+		// Collapsed, the one-line result joins the call on its row; expanded, it
+		// is set under it. A blank row then parts the text from the thumbnail.
+		want := []string{"     ViewImage  $JULIA_SCRATCH/shot.png  ·  $JULIA_SCRATCH/shot.png · 1440×900 PNG", "  "}
+		if expanded {
+			want = []string{"     ViewImage  $JULIA_SCRATCH/shot.png", "    $JULIA_SCRATCH/shot.png · 1440×900 PNG", "  "}
+		}
+		if strings.Join(lines[:len(want)], "\n") != strings.Join(want, "\n") {
 			t.Fatalf("expanded=%v: card opens\n%s", expanded, strings.Join(lines[:3], "\n"))
 		}
-		if last := lines[len(lines)-1]; last != "│   ▣ "+img.Info().String() {
+		if last := lines[len(lines)-1]; last != "    ▣ "+img.Info().String() {
 			t.Fatalf("expanded=%v: caption %q", expanded, last)
 		}
 		for _, line := range strings.Split(rendered, "\n") {
@@ -80,7 +85,7 @@ func TestToolImagesAreCaptionedWithoutGraphics(t *testing.T) {
 		t.Fatal("drew placeholders without graphics")
 	}
 	lines := strings.Split(ansi.Strip(rendered), "\n")
-	if len(lines) != 3 || lines[2] != "│   ▣ "+img.Info().String() {
+	if len(lines) != 2 || lines[1] != "    ▣ "+img.Info().String() {
 		t.Fatalf("card\n%s", strings.Join(lines, "\n"))
 	}
 }
@@ -96,7 +101,10 @@ func TestResumedToolImagesShowTheirMarkerAsACaption(t *testing.T) {
 	for _, expanded := range []bool{false, true} {
 		m.expandTools = expanded
 		lines := strings.Split(ansi.Strip(m.renderEntryContent(m.entries[1])), "\n")
-		want := []string{"│ ✓ ViewImage  $JULIA_SCRATCH/shots/term.png", "│   $JULIA_SCRATCH/shots/term.png · 1440×900 PNG", "│   ▣ PNG · 1440×900 · 312 KB"}
+		want := []string{"     ViewImage  $JULIA_SCRATCH/shots/term.png  ·  $JULIA_SCRATCH/shots/term.png · 1440×900 PNG", "    ▣ PNG · 1440×900 · 312 KB"}
+		if expanded {
+			want = []string{"     ViewImage  $JULIA_SCRATCH/shots/term.png", "    $JULIA_SCRATCH/shots/term.png · 1440×900 PNG", "    ▣ PNG · 1440×900 · 312 KB"}
+		}
 		if strings.Join(lines, "\n") != strings.Join(want, "\n") {
 			t.Fatalf("expanded=%v: card\n%s", expanded, strings.Join(lines, "\n"))
 		}

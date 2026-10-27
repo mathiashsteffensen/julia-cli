@@ -60,7 +60,7 @@ func TestUsageBar(t *testing.T) {
 		{0, -1, 0},
 		{5, -1, 23},
 	} {
-		bar := ansi.Strip(usageBar(tc.used, tc.window, width, violetStyle))
+		bar := ansi.Strip(usageBar(tc.used, tc.window, width, violetStyle, faintStyle))
 		if got := strings.Count(bar, "━"); got != tc.filled || ansi.StringWidth(bar) != width {
 			t.Errorf("usageBar(%d, %d) = %q, want %d filled cells of %d", tc.used, tc.window, bar, tc.filled, width)
 		}
@@ -73,7 +73,7 @@ var negativeNumber = regexp.MustCompile(`-\d`)
 func sidebarText(m *model) []string {
 	var rows []string
 	for _, row := range strings.Split(ansi.Strip(m.sidebar()), "\n") {
-		rows = append(rows, strings.TrimSpace(strings.TrimPrefix(row, "│")))
+		rows = append(rows, strings.TrimSpace(strings.Trim(strings.TrimSpace(row), "│")))
 	}
 	return rows
 }
@@ -360,8 +360,8 @@ func styleSequence(style lipgloss.Style) string {
 }
 
 func TestContextTurnsCoralAtCompactionThreshold(t *testing.T) {
-	coralOpen := styleSequence(coralStyle)
-	if coralOpen == "" || coralOpen == styleSequence(mutedStyle) {
+	coralOpen := styleSequence(paletteOn(panel).coral)
+	if coralOpen == "" || coralOpen == styleSequence(paletteOn(panel).muted) {
 		t.Fatalf("cannot distinguish coral output: %q", coralOpen)
 	}
 	for _, window := range []int{0, 100_000, 512_000} {
@@ -377,7 +377,7 @@ func TestContextTurnsCoralAtCompactionThreshold(t *testing.T) {
 			session := &core.Session{ID: "c", Provider: "fake", Usage: core.SessionUsage{Context: tc.context}}
 			m := testModel(t, Config{Session: session, ContextWindow: window})
 			m.resize(128, 60)
-			// The logo's crest shares the coral, so only the context rows count.
+			// Only the context rows count.
 			var context []string
 			for _, row := range strings.Split(m.sidebar(), "\n") {
 				if strings.ContainsAny(ansi.Strip(row), "━─%") {
@@ -419,7 +419,7 @@ func TestSidebarNeverOverflowsItsColumn(t *testing.T) {
 						t.Fatalf("%.8s usage %d window %d: %d rows at height %d", provider, i, window, len(lines), height)
 					}
 					for _, line := range lines {
-						if ansi.StringWidth(line) > 26 {
+						if ansi.StringWidth(line) > 27 {
 							t.Fatalf("%.8s usage %d window %d height %d: row exceeds the sidebar: %q", provider, i, window, height, ansi.Strip(line))
 						}
 					}
@@ -458,9 +458,8 @@ func TestSidebarShowsEverySectionInOrder(t *testing.T) {
 	text := strings.Join(rows, "\n")
 	at := 0
 	for _, want := range []string{
-		strings.TrimSpace(ansi.Strip(logoLettering()[0])), "v0.1.0",
-		"WORKSPACE", "CONNECTION", "reasoning: high", "Weekly", "CONTEXT", "46% · 119k / 256k",
-		"TOKENS", "0 cached · 0 new", "ACTIVITY", "last call", "PERMISSIONS", "SESSION", "THE ESSENTIALS", "Read",
+		"CONTEXT", "46% · 119k / 256k", "TOKENS", "0 cached · 0 new", "ACTIVITY", "last call",
+		"MODEL", "reasoning: high", "Weekly", "WORKSPACE", "PERMISSIONS", "SESSION", "v0.1.0", "THE ESSENTIALS", "Read",
 	} {
 		i := strings.Index(text[at:], want)
 		if i < 0 {
@@ -478,9 +477,8 @@ func TestSidebarShowsEverySectionInOrder(t *testing.T) {
 func TestSidebarScrollsIndependently(t *testing.T) {
 	m := testModel(t, Config{Version: "0.1.0", Session: &core.Session{ID: "scroll", Directory: "/tmp/julia", Provider: "codex", Model: "selected"}, ToolDefinitions: []core.ToolDefinition{{Name: "Read"}}})
 	m.resize(128, 24)
-	lettering := strings.TrimSpace(ansi.Strip(logoLettering()[0]))
-	if rows := sidebarText(m); len(rows) != m.sidebarHeight() || !hasRow(rows, lettering) || hasRow(rows, "THE ESSENTIALS") {
-		t.Fatalf("a short sidebar should open on the masthead:\n%s", strings.Join(rows, "\n"))
+	if rows := sidebarText(m); len(rows) != m.sidebarHeight() || !hasRow(rows, "CONTEXT") || hasRow(rows, "THE ESSENTIALS") {
+		t.Fatalf("a short sidebar should open on the card:\n%s", strings.Join(rows, "\n"))
 	}
 	x, y := m.margin()+m.mainWidth+4, 3+m.sidebarHeight()/2
 	if !m.overSidebar(x, y) || m.overSidebar(m.margin()+1, y) {
@@ -495,7 +493,7 @@ func TestSidebarScrollsIndependently(t *testing.T) {
 		m.Update(tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelDown})
 	}
 	rows := sidebarText(m)
-	if len(rows) != m.sidebarHeight() || !hasRow(rows, "Read") || hasRow(rows, lettering) {
+	if len(rows) != m.sidebarHeight() || !hasRow(rows, "Read") || hasRow(rows, "CONTEXT") {
 		t.Fatalf("scrolling down should end on the last section:\n%s", strings.Join(rows, "\n"))
 	}
 	bottom := m.sidebarOffset
@@ -518,10 +516,15 @@ func TestSidebarReachesTheBottomEdge(t *testing.T) {
 		if len(lines) != size[1] {
 			t.Fatalf("%v: %d rows", size, len(lines))
 		}
+		// The card opens on the sidebar's first column, and the column is laid
+		// out to the bottom edge on every row.
 		border := m.margin() + m.mainWidth + 2
+		if cells := []rune(lines[4]); len(cells) <= border || cells[border] != '╭' {
+			t.Fatalf("%v: row 4 does not open the sidebar card: %q", size, lines[4])
+		}
 		for y := 3; y < size[1]; y++ {
-			if cells := []rune(lines[y]); len(cells) <= border || cells[border] != '│' {
-				t.Fatalf("%v: row %d has no sidebar border: %q", size, y, lines[y])
+			if cells := []rune(lines[y]); len(cells) < border+27 {
+				t.Fatalf("%v: row %d stops short of the sidebar: %q", size, y, lines[y])
 			}
 		}
 		if footer := ansi.StringWidth(m.footer()); footer > m.mainWidth {

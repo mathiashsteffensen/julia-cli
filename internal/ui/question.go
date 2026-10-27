@@ -25,8 +25,8 @@ var (
 	cardBG = panel
 	// Near-grays with a blue tint can snap to navy in 256-color terminals; this
 	// one maps to a true gray there (checked against colorprofile.ANSI256).
-	cardSelect = lipgloss.Color("#303038")
-	cardInset  = lipgloss.Color("#141418")
+	cardSelect = lipgloss.Color("#2C2738")
+	cardInset  = lipgloss.Color("#100E14")
 	cardEdge   = lipgloss.Color("#8E81C2")
 	cardQuote  = lipgloss.Color("#B9AEE3")
 	cardDim    = lipgloss.Color("#7A7586")
