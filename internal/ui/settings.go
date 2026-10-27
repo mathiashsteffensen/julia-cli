@@ -125,19 +125,22 @@ func (m *model) catalogFetch() (func(context.Context) ([]core.ModelOption, error
 		}
 		catalog, err := codex(ctx)
 		if err != nil {
-			return known, fmt.Errorf("Codex models: %w", err)
+			return known, err
 		}
 		return mergeCatalog(known, catalog), nil
 	}, nil
 }
 
-// mergeCatalog adds Codex's catalog to the known models. A known Codex model
-// takes the catalog's details and efforts but keeps its own starting effort.
+// mergeCatalog adds the CLI providers' catalogs to the known models; an entry
+// without a provider is Codex's. A known model takes the catalog's details and
+// efforts but keeps its own starting effort.
 func mergeCatalog(known, catalog []core.ModelOption) []core.ModelOption {
 	options := append([]core.ModelOption(nil), known...)
 	for _, entry := range catalog {
-		entry.Provider = "codex"
-		if option := modelOption(options, "codex", entry.ID); option != nil && option.ID == entry.ID {
+		if entry.Provider == "" {
+			entry.Provider = "codex"
+		}
+		if option := modelOption(options, entry.Provider, entry.ID); option != nil && option.ID == entry.ID {
 			reasoning := option.DefaultReasoning
 			*option = entry
 			if reasoning != "" {
@@ -362,7 +365,9 @@ func (m *model) cycleReasoning() tea.Cmd {
 		options, err := m.cfg.Models(ctx)
 		options = append([]core.ModelOption(nil), options...)
 		for i := range options {
-			options[i].Provider = "codex"
+			if options[i].Provider == "" {
+				options[i].Provider = "codex"
+			}
 			options[i].ReasoningEfforts = append([]string(nil), options[i].ReasoningEfforts...)
 		}
 		return reasoningCycleMsg{sequence: sequence, sessionID: sessionID, model: modelID, options: options, err: err}
@@ -627,7 +632,7 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 		// A named provider's model support is not in the catalog, so do not carry a
 		// potentially unsupported effort to a different model.
 		reasoning = ""
-	} else if provider == "codex" && (modelChanged || providerChanged) {
+	} else if config.IsCLIProvider(provider) && (modelChanged || providerChanged) {
 		if option := modelOption(m.models, provider, model); option != nil && option.ID == model && (reasoning == "" || (len(option.ReasoningEfforts) > 0 && !slices.Contains(option.ReasoningEfforts, reasoning))) {
 			reasoning, reset = option.DefaultReasoning, true
 		}
@@ -700,12 +705,7 @@ func (m *model) cycleModel() tea.Cmd {
 }
 
 func (m *model) modelProviderLabel(provider string) string {
-	switch provider {
-	case "codex":
-		return "Codex"
-	default:
-		return provider
-	}
+	return config.CLIProviderName(provider)
 }
 
 // isNamed reports whether provider is one of the configured named providers.

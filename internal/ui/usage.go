@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"julia/internal/config"
 	"julia/internal/core"
 )
 
@@ -34,7 +35,7 @@ type weeklyUsageMsg struct {
 // Calls are coalesced on the UI goroutine. A completed turn can bring the next
 // refresh forward, but short turns never create overlapping or rapid requests.
 func (m *model) refreshWeeklyUsage(afterTurn bool) tea.Cmd {
-	if m.cfg.Session.Provider != "codex" || m.cfg.Demo || m.cfg.WeeklyUsage == nil || m.quitting || m.lifetime.Err() != nil {
+	if !config.IsCLIProvider(m.cfg.Session.Provider) || m.cfg.Demo || m.cfg.WeeklyUsage == nil || m.quitting || m.lifetime.Err() != nil {
 		return nil
 	}
 	if afterTurn {
@@ -69,7 +70,7 @@ func (m *model) refreshWeeklyUsage(afterTurn bool) tea.Cmd {
 }
 
 func (m *model) receiveWeeklyUsage(msg weeklyUsageMsg) {
-	if msg.sequence != m.weekly.sequence || !m.weekly.loading || m.cfg.Session.Provider != "codex" || m.quitting || m.lifetime.Err() != nil {
+	if msg.sequence != m.weekly.sequence || !m.weekly.loading || !config.IsCLIProvider(m.cfg.Session.Provider) || m.quitting || m.lifetime.Err() != nil {
 		return
 	}
 	m.weekly.loading = false

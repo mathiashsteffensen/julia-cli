@@ -14,14 +14,25 @@ import (
 
 // The executing model follows session settings; approval uses the configured reviewer.
 func newBackend(ctx context.Context, cfg config.Config, checkpoint func(*core.Session) error) (core.Backend, core.Approver, error) {
-	if cfg.Provider == "codex" {
+	reviewer, reviewModel := cfg.Reviewer()
+	switch cfg.Provider {
+	case "codex":
 		binary, err := findCodex(cfg.CodexBinary)
 		if err != nil {
 			return nil, nil, err
 		}
-		reviewer, reviewModel := cfg.Reviewer()
 		backend := &provider.Codex{Binary: binary, Model: cfg.Model, Reasoning: cfg.Reasoning, ReadOnly: cfg.Mode == "read-only", Checkpoint: checkpoint, ReviewModel: reviewModel}
 		if reviewer == "codex" {
+			return backend, backend.Review, nil
+		}
+		return backend, approvalReviewer(cfg), nil
+	case "claude":
+		binary, err := findClaude(cfg.ClaudeBinary)
+		if err != nil {
+			return nil, nil, err
+		}
+		backend := &provider.Claude{Binary: binary, Model: cfg.Model, Reasoning: cfg.Reasoning, Checkpoint: checkpoint, ReviewModel: reviewModel}
+		if reviewer == "claude" {
 			return backend, backend.Review, nil
 		}
 		return backend, approvalReviewer(cfg), nil
@@ -45,10 +56,25 @@ func newBackend(ctx context.Context, cfg config.Config, checkpoint func(*core.Se
 // approvalReviewer is the reviewer_model's reviewer, never the executing model.
 func approvalReviewer(cfg config.Config) core.Approver {
 	reviewer, model := cfg.Reviewer()
-	if reviewer != "codex" {
-		return decisionsApprovalReviewer(cfg, reviewer, model)
+	switch reviewer {
+	case "codex":
+		return codexApprovalReviewer(cfg.CodexBinary, model)
+	case "claude":
+		return claudeApprovalReviewer(cfg.ClaudeBinary, model)
 	}
-	return codexApprovalReviewer(cfg.CodexBinary, model)
+	return decisionsApprovalReviewer(cfg, reviewer, model)
+}
+
+// claudeApprovalReviewer reviews through Claude Code, found lazily so a
+// session on another provider still starts without it.
+func claudeApprovalReviewer(binary, model string) core.Approver {
+	return func(ctx context.Context, approval core.Approval) (core.Decision, error) {
+		resolved, err := findClaude(binary)
+		if err != nil {
+			return core.Decision{}, fmt.Errorf("Claude Code approval reviewer unavailable: %w", err)
+		}
+		return (&provider.Claude{Binary: resolved, ReviewModel: model}).Review(ctx, approval)
+	}
 }
 
 // Resolve lazily so API sessions can still use reads and human approval when

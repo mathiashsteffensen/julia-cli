@@ -184,7 +184,7 @@ func reviewerFactoryConfig(t *testing.T, name, binary string) config.Config {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Provider, cfg.Model, cfg.CodexBinary = name, "main-model-must-stay-independent", binary
-	if name == "codex" {
+	if config.IsCLIProvider(name) {
 		cfg.Reasoning = "high"
 	} else {
 		if !slices.Contains(config.BuiltinProviders, name) {

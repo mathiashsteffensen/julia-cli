@@ -392,7 +392,7 @@ func TestSubagentModelConfiguration(t *testing.T) {
 		{`{"scout": "minimax/m3"}`, `subagents.scout "minimax/m3" must be provider/<model-id>`},
 		{`{"scout": "openai"}`, `subagents.scout "openai" needs a model ID`},
 		{`{"scout": "openrouter/` + CompatibleDecisionsModel + `"}`, "decisions-only"},
-		{`{"scout": {"id": "openai/m", "reasoning": "high"}}`, "reasoning is configurable for Codex and your providers"},
+		{`{"scout": {"id": "openai/m", "reasoning": "high"}}`, "reasoning is configurable for Codex, Claude Code and your providers"},
 		{`{"scout": {"id": "openrouter/m", "reasoning": "extreme"}}`, "reasoning for a named provider must be one of"},
 		{`{"scout": {"id": "codex/m", "effort": "high"}}`, `unknown field "effort"`},
 		{`{"Scout": "codex/m"}`, `subagents "Scout" is not a role name, which is at most 32 lowercase letters, digits or hyphens, starting with a letter`},
@@ -443,7 +443,7 @@ func TestMemoryConfiguration(t *testing.T) {
 		{`{"model":"minimax/m3"}`, `memory.model "minimax/m3" must be provider/<model-id>`},
 		{`{"model":"openai"}`, `memory.model "openai" needs a model ID`},
 		{`{"model":"openrouter/` + CompatibleDecisionsModel + `"}`, "decisions-only"},
-		{`{"model":{"id":"openai/m","reasoning":"high"}}`, "reasoning is configurable for Codex and your providers"},
+		{`{"model":{"id":"openai/m","reasoning":"high"}}`, "reasoning is configurable for Codex, Claude Code and your providers"},
 		{`{"model":{"id":"openrouter/m","reasoning":"extreme"}}`, "reasoning for a named provider must be one of"},
 		{`{"model":{"id":"codex/m","effort":"high"}}`, `unknown field "effort"`},
 		{`{"model":""}`, `memory.model "" must be provider/<model-id>`},
@@ -508,7 +508,7 @@ func TestNamedProviders(t *testing.T) {
 	if cfg.Provider != "openrouter" || cfg.Model != "vendor/model" || len(cfg.Providers) != 2 || cfg.Providers[0] != openRouter {
 		t.Fatalf("providers not loaded: %+v", cfg)
 	}
-	if want := []string{"codex", "openai", "anthropic", "google", "openrouter", "local"}; !slices.Equal(cfg.ProviderIDs(), want) {
+	if want := []string{"codex", "claude", "openai", "anthropic", "google", "openrouter", "local"}; !slices.Equal(cfg.ProviderIDs(), want) {
 		t.Fatalf("provider ids %v, want %v", cfg.ProviderIDs(), want)
 	}
 	if !cfg.IsNamed("local") || cfg.IsNamed("codex") || cfg.IsNamed("compatible") {
@@ -649,6 +649,39 @@ func TestModelContextWindowMinimum(t *testing.T) {
 	} {
 		if _, err := Load(writeConfig(t, data)); err != nil {
 			t.Errorf("rejected %s: %v", data, err)
+		}
+	}
+}
+
+func TestClaudeProviderConfiguration(t *testing.T) {
+	for _, data := range []string{`{"model":"claude"}`, `{"model":"claude/sonnet"}`, `{"model":{"id":"claude/opus","reasoning":"xhigh"}}`, `{"model":"codex","reviewer_model":"claude/sonnet"}`, `{"model":"claude/opus","reviewer_model":"codex/gpt-6-luna"}`, `{"model":"openai/m","subagents":{"scout":{"id":"claude/haiku","reasoning":"low"}}}`, `{"model":"codex","memory":{"model":"claude/sonnet"}}`} {
+		cfg, err := Load(writeConfig(t, data))
+		if err != nil {
+			t.Fatalf("%s: %v", data, err)
+		}
+		if cfg.ClaudeBinary != "claude" {
+			t.Fatalf("%s: claude_binary %q", data, cfg.ClaudeBinary)
+		}
+	}
+	cfg, err := Load(writeConfig(t, `{"model":{"id":"claude/opus","reasoning":"high"},"claude_binary":"/opt/claude/bin/claude","reviewer_model":"claude/sonnet"}`))
+	if err != nil || cfg.Provider != "claude" || cfg.Model != "opus" || cfg.ModelReasoning != "high" || cfg.ClaudeBinary != "/opt/claude/bin/claude" {
+		t.Fatalf("claude config: %+v %v", cfg, err)
+	}
+	if reviewer, model := cfg.Reviewer(); reviewer != "claude" || model != "sonnet" {
+		t.Fatal("claude reviewer", reviewer, model)
+	}
+	if !cfg.SupportsReasoning("claude") || !IsCLIProvider("claude") || IsCLIProvider("anthropic") || CLIProviderName("claude") != "Claude Code" || cfg.KeyEnv("claude") != "" {
+		t.Fatal("claude is a CLI provider without a key")
+	}
+	for data, want := range map[string]string{
+		`{"model":{"id":"claude/opus","reasoning":"turbo"}}`: "reasoning for Claude Code must be one of low, medium, high, xhigh, or max",
+		`{"model":{"id":"claude/opus","reasoning":"none"}}`:  "reasoning for Claude Code must be one of",
+		`{"model":"codex","reviewer_model":"claude"}`:        "reviewer_model must be provider/<model-id>",
+		`{"model":"claude/ opus"}`:                           "surrounding whitespace",
+		`{"enabled_models":["claude"]}`:                      "needs a model ID",
+	} {
+		if _, err := Load(writeConfig(t, data)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: got %v, want %q", data, err, want)
 		}
 	}
 }

@@ -5,6 +5,8 @@ Codex subscription or any of several API providers, executes Bash in a macOS
 Seatbelt sandbox, and sends risky actions to a separate reviewer model before
 they run.
 
+Note: This harness is designed to be opinionated. Underlying models are highly configurable but tools, workflows and the TUI are fixed. If you do not like it, this harness is not for you and I would highly recommend you give something like [Pi](https://pi.dev) a try.
+
 ![JULIA welcome screen](docs/welcome.png)
 
 ## Principle: it should be gorgeous
@@ -18,7 +20,8 @@ line says only what matters. A change that works but looks careless is not done.
 
 Requires Go 1.27+, `rg`, and macOS (sandboxed Bash is macOS-only for now). For
 the default provider, install and sign in to the Codex CLI. JULIA also finds the
-copy bundled with the ChatGPT macOS app.
+copy bundled with the ChatGPT macOS app. For the `claude` provider, install the
+Claude Code CLI and sign in to it with your Claude subscription.
 
 ```sh
 make build            # → bin/julia
@@ -46,72 +49,66 @@ Other flags: `--model`, `--reasoning`, `--mode`, `--memory off|read|write`,
 `--timeout`, `--config`, `--profile`. Run `julia -h`
 for the full list.
 
-| Key | Action |
-| --- | --- |
-| Enter / Alt+Enter | Send / new line |
-| Enter while JULIA works | Queue the message; it is sent when the turn settles (a turn that fails or is interrupted puts it back in the composer) |
-| Ctrl+S or the steer button | Steer: hand the queued message, or the draft, to the turn under way, which reads it after its current step |
-| ↑ in an empty composer | Take the last queued message back to edit |
-| Esc | Cancel the running task |
-| Ctrl+P or `/model` | Model picker: every model in one list |
-| Ctrl+N | Switch to the next of your `enabled_models` |
-| Shift+Tab or `/reasoning` | Change reasoning effort |
-| `/profile` or `/profile NAME` | Switch configuration profile |
-| Ctrl+O | Expand/collapse tool output, full subagent tasks, and the arguments of Slack, Linear and Mail calls |
-| Ctrl+F | The fleet: every subagent of the session, with its task, tool calls and report |
-| Ctrl+V | Attach the clipboard's image (a screenshot, or an image file copied in Finder) |
-| Drop image files | Attach them instead of pasting their paths |
-| Drag | Copy the selection (without borders or padding) |
-| Click a code block | Copy its code |
-| Double-click | Copy a whole message, a tool's command, or its output |
-| `/copy`, `/copy code` | Copy the last reply, or its last code block |
-| `/review`, `/review WHAT` | Review your uncommitted changes, or what you name (a commit, a path, a PR), and triage the findings |
-| `/memory` | What JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it |
-| `/clear`, `/help`, `/quit` | New conversation, shortcuts, exit |
+| Key                           | Action                                                                                                                 |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Enter / Alt+Enter             | Send / new line                                                                                                        |
+| Enter while JULIA works       | Queue the message; it is sent when the turn settles (a turn that fails or is interrupted puts it back in the composer) |
+| Ctrl+S or the steer button    | Steer: hand the queued message, or the draft, to the turn under way, which reads it after its current step             |
+| ↑ in an empty composer        | Take the last queued message back to edit                                                                              |
+| Esc                           | Cancel the running task                                                                                                |
+| Ctrl+P or `/model`            | Model picker: every model in one list                                                                                  |
+| Ctrl+N                        | Switch to the next of your `enabled_models`                                                                            |
+| Shift+Tab or `/reasoning`     | Change reasoning effort                                                                                                |
+| `/profile` or `/profile NAME` | Switch configuration profile                                                                                           |
+| Ctrl+O                        | Expand/collapse tool output, full subagent tasks, and the arguments of Slack, Linear and Mail calls                    |
+| Ctrl+F                        | The fleet: every subagent of the session, with its task, tool calls and report                                         |
+| Ctrl+V                        | Attach the clipboard's image (a screenshot, or an image file copied in Finder)                                         |
+| Drop image files              | Attach them instead of pasting their paths                                                                             |
+| Drag                          | Copy the selection (without borders or padding)                                                                        |
+| Click a code block            | Copy its code                                                                                                          |
+| Double-click                  | Copy a whole message, a tool's command, or its output                                                                  |
+| `/copy`, `/copy code`         | Copy the last reply, or its last code block                                                                            |
+| `/review`, `/review WHAT`     | Review your uncommitted changes, or what you name (a commit, a path, a PR), and triage the findings                    |
+| `/memory`                     | What JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it                             |
+| `/clear`, `/help`, `/quit`    | New conversation, shortcuts, exit                                                                                      |
 
 During an approval prompt, `y`/Enter allows the action once (a Browser origin, for
 the rest of the turn); any other key denies it.
 
-When you ask for a code review, in your own words or with `/review`, JULIA puts its findings in a review card and waits
-for your call on each one: **Fix**, **Ignore**, **I fixed it**, or **Reply** with your
-own words. ↑↓ moves between findings, ←→ and Enter choose (or `f` `i` `d` `r`), `F`
-marks every open finding Fix, Backspace undoes a decision, and Ctrl+S or the Send row
-hands the decisions back; JULIA then fixes what you marked. Esc skips the review
-(twice once you have decided something). Try it offline with `julia --demo` and `/review`.
-
-Each attached image puts an `[Image #N]` token in your message; delete the token
-to drop the image. Images are scaled to at most 2000 px on the long side and sent
-to every provider, Codex included. Ctrl+V falls back to an ordinary text paste
-when the clipboard holds no image. On Linux it needs `wl-paste` or `xclip`. In Ghostty, sent
-images are drawn inline as thumbnails; other terminals show a caption instead.
-
-When JULIA settles while its terminal is in the background (a turn ends with
-nothing queued after it, or an approval, question or review card is waiting on
-you), it sends a desktop notification and rings the bell. Ghostty, iTerm2,
-WezTerm and kitty show the notification; other terminals, Terminal.app among
-them, only hear the bell. A focused terminal is left alone. In tmux, set
-`allow-passthrough on` and `focus-events on`.
-
-JULIA handles selection itself, because mouse reporting is on and rows carry
-borders and the sidebar. Copies go to the system clipboard, or through the
-terminal (OSC 52) over SSH.
-
 ## Providers
 
-| Provider | Backend | API key env |
-| --- | --- | --- |
-| `codex` (default) | Local Codex app-server, your ChatGPT sign-in | — |
-| `openai` | Responses API | `OPENAI_API_KEY` |
-| `anthropic` | Messages API | `ANTHROPIC_API_KEY` |
-| `google` | Gemini API | `GEMINI_API_KEY` |
-| your `providers` | OpenAI-compatible chat completions (OpenRouter, LM Studio, Ollama, …) | its `api_key_env`, or none |
+| Provider          | Backend                                                               | API key env                |
+| ----------------- | --------------------------------------------------------------------- | -------------------------- |
+| `codex` (default) | Local Codex app-server, your ChatGPT sign-in                          | —                          |
+| `claude`          | Local Claude Code CLI, your Claude sign-in                            | —                          |
+| `openai`          | Responses API                                                         | `OPENAI_API_KEY`           |
+| `anthropic`       | Messages API                                                          | `ANTHROPIC_API_KEY`        |
+| `google`          | Gemini API                                                            | `GEMINI_API_KEY`           |
+| your `providers`  | OpenAI-compatible chat completions (OpenRouter, LM Studio, Ollama, …) | its `api_key_env`, or none |
 
 Models are named `provider/<model-id>`, in the config and in `--model`. A bare
-`codex` is the model your Codex is configured with; every other provider needs a
-model ID. Reasoning effort is supported on Codex and your `providers`, which are
-sent `reasoning_effort` only when you pick one; an endpoint whose model has no
-reasoning may ignore it or refuse the request. Endpoints
-must be HTTPS unless they are on loopback.
+`codex` is the model your Codex is configured with, and a bare `claude` is Claude
+Code's default model; every other provider needs a model ID. Reasoning effort is
+supported on Codex, on Claude Code (`low`, `medium`, `high`, `xhigh` or `max`)
+and on your `providers`, which are sent `reasoning_effort` only when you pick
+one; an endpoint whose model has no reasoning may ignore it or refuse the
+request. Endpoints must be HTTPS unless they are on loopback.
+
+`claude` runs the unmodified Claude Code CLI headlessly, one process per turn on
+its stream-json protocol, resumed by session ID, under whatever sign-in the CLI
+holds: `julia login claude` runs `claude auth login`, and the usage line in the
+sidebar is your plan's seven-day window. JULIA never reads or stores its
+credentials, and drops `ANTHROPIC_API_KEY` from the process so the subscription
+is what pays. Claude Code's own tools are switched off, along with its settings
+files, hooks, skills, slash commands and configured MCP servers; JULIA's tools
+are served to it as an MCP server over the same pipe, named `mcp__julia__Bash`
+and so on, and run and reviewed by JULIA exactly as on every other provider. A
+model is one of the CLI's aliases (`claude/opus`, `claude/sonnet`, `claude/haiku`)
+or a full model ID, as `--model` takes it; the picker lists what the CLI offers.
+`claude_binary` in the config names the CLI; unset, `claude` is found on PATH or
+where its installers put it. Anthropic's terms let a subscriber drive the
+unmodified binary for their own work this way and forbid routing other people's
+requests through a subscription, so use your own sign-in on your own machine.
 
 OpenAI-compatible endpoints are named in the config's `providers`, and each `id`
 is then a provider of its own:
@@ -119,8 +116,12 @@ is then a provider of its own:
 ```json
 {
   "providers": [
-    {"id": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY"},
-    {"id": "local", "base_url": "http://localhost:1234/v1"}
+    {
+      "id": "openrouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY"
+    },
+    { "id": "local", "base_url": "http://localhost:1234/v1" }
   ]
 }
 ```
@@ -150,22 +151,37 @@ keys are only referenced by env var name.
   "context_tokens": 256000,
   "timeout": "4h",
   "providers": [
-    {"id": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY"}
+    {
+      "id": "openrouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY"
+    }
   ],
-  "enabled_models": ["codex/gpt-6-astra", {"id": "openrouter/vendor/model-b", "reasoning": "high", "context_window": 1000000}],
+  "enabled_models": [
+    "codex/gpt-6-astra",
+    {
+      "id": "openrouter/vendor/model-b",
+      "reasoning": "high",
+      "context_window": 1000000
+    }
+  ],
   "skill_paths": ["~/.codex/skills/coding-assistance-style/SKILL.md"],
   "workspace_instructions": ["AGENTS.md"],
   "browser": "/Applications/Chromium.app",
   "subagents": {
     "scout": "openrouter/vendor/fast-model",
-    "reviewer": {"id": "openrouter/vendor/model-b", "reasoning": "high"},
+    "reviewer": { "id": "openrouter/vendor/model-b", "reasoning": "high" },
     "oracle": "codex/gpt-6-astra"
   },
-  "memory": {"reflection": "on", "model": "codex/gpt-6-astra", "index_bytes": 16384}
+  "memory": {
+    "reflection": "on",
+    "model": "codex/gpt-6-astra",
+    "index_bytes": 16384
+  }
 }
 ```
 
-- `enabled_models` come first in the model picker, ahead of the rest of Codex's catalog, and Ctrl+N cycles through them.
+- `enabled_models` come first in the model picker, ahead of the rest of Codex's and Claude Code's catalogs, and Ctrl+N cycles through them.
 - `model` and each `enabled_models` entry are `provider/<model-id>`, or `{"id": "provider/<model-id>", "reasoning": "<effort>", "context_window": <tokens>}` for a model that starts at that effort when you launch with it or switch to it, and has a context window of its own. Both keys are optional.
 - `context_tokens` is the assumed window for every model without a `context_window` of its own. API providers compact the history at 85% of the model's window, and the sidebar's context gauge measures against it.
 - `skill_paths` are extra instruction files added to every turn. If you omit it, JULIA loads `coding-assistance-style/SKILL.md` from `$CODEX_HOME/skills` or `~/.agents/skills`. `[]` disables skills.
@@ -253,7 +269,7 @@ are named, never given as ids. Creating, updating, labelling and commenting are
 reviewed in auto mode and approved in ask mode; reading is free. The token is an OAuth application's
 access token, sent as a Bearer token: in Linear, open Settings → API → OAuth
 applications, create an application (a callback URL is required but never
-used), and under *Developer token* create one with the actor *Application*, so
+used), and under _Developer token_ create one with the actor _Application_, so
 everything JULIA does shows as the app rather than as you. Developer tokens
 have no refresh token and may expire; when Linear answers 401, create a new one
 and replace it in the file. `julia doctor` shows where the token comes from.
@@ -284,14 +300,14 @@ Each task given to `Subagent` names a role, which adds instructions for that kin
 of work, can limit the child to some tools, and can run it on its own model (see
 `subagents` above). The built-in roles are Markdown files in [`agents/`](agents):
 
-| Role | For | Tools |
-| --- | --- | --- |
-| `scout` | Fast reconnaissance: compressed context, with paths and line ranges, for another agent | Read, List, Grep, ViewImage, Bash |
-| `researcher` | Web research: a sourced brief that keeps evidence apart from inference | WebSearch, WebFetch, Browser, Read, List, Grep |
-| `worker` | Implementation of a well-defined task or approved plan, validated | all |
-| `reviewer` | Evidence-backed review of a diff, plan or area of the code, by severity | Read, List, Grep, ViewImage, Bash |
-| `oracle` | A second opinion on a decision: drift, contradictions, hidden assumptions | Read, List, Grep, ViewImage, Bash |
-| `delegate` | Anything that fits no other role | all |
+| Role         | For                                                                                    | Tools                                          |
+| ------------ | -------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `scout`      | Fast reconnaissance: compressed context, with paths and line ranges, for another agent | Read, List, Grep, ViewImage, Bash              |
+| `researcher` | Web research: a sourced brief that keeps evidence apart from inference                 | WebSearch, WebFetch, Browser, Read, List, Grep |
+| `worker`     | Implementation of a well-defined task or approved plan, validated                      | all                                            |
+| `reviewer`   | Evidence-backed review of a diff, plan or area of the code, by severity                | Read, List, Grep, ViewImage, Bash              |
+| `oracle`     | A second opinion on a decision: drift, contradictions, hidden assumptions              | Read, List, Grep, ViewImage, Bash              |
+| `delegate`   | Anything that fits no other role                                                       | all                                            |
 
 Ctrl+F opens the fleet, a window over the conversation that lists every
 subagent the session has run down its left side; the arrow keys move through
@@ -362,13 +378,13 @@ turn instead, since its changes then need your approval, and a headless run
 always reflects within the turn. Subagents see the notes but save none; what
 they learn goes in their reports.
 
-| Type | For |
-| --- | --- |
-| `feedback` | How you want work done: a correction, preference, convention or rule you gave, or an approach you confirmed, with why |
-| `procedure` | How a recurring task is done here when the files do not spell it out |
-| `user` | Who you are: role, expertise, standing preferences (global) |
-| `project` | A fact about the workspace, or the machine, that its files do not record |
-| `reference` | Where something lives: a URL, a ticket, a document |
+| Type        | For                                                                                                                   |
+| ----------- | --------------------------------------------------------------------------------------------------------------------- |
+| `feedback`  | How you want work done: a correction, preference, convention or rule you gave, or an approach you confirmed, with why |
+| `procedure` | How a recurring task is done here when the files do not spell it out                                                  |
+| `user`      | Who you are: role, expertise, standing preferences (global)                                                           |
+| `project`   | A fact about the workspace, or the machine, that its files do not record                                              |
+| `reference` | Where something lives: a URL, a ticket, a document                                                                    |
 
 Notes are the past, kept as data: the instructions say so, a note can never
 authorize an action, and the reviewer never sees one. Once a conversation has
@@ -433,12 +449,12 @@ count as neither use nor reads.
 
 ## Permissions and sandbox
 
-| Mode | Behavior |
-| --- | --- |
+| Mode             | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `auto` (default) | Reads, workspace edits, offline or loopback sandboxed Bash and terminals, and the Browser on the loopback servers its terminals started and workspace files run freely. Bash with network, escalated Bash, a networked terminal's start and every input to it, web searches, each new Browser origin (the machine's other loopback servers included), and text, keys, uploads and scripts sent to a page beyond loopback go to the reviewer model. |
-| `ask` | You approve every mutation, command, terminal start and input, search, and Browser action on a page (navigating, clicking, typing, scripts); looking at a page needs no approval. |
-| `read-only` | Only `Read`, `ViewImage`, `Grep`, and `List`. |
-| `yolo` | No sandbox and no review: Bash and terminals run directly on the host with the process environment, and every action is granted. For an unattended agent in a container that is itself the trust boundary, such as a one-task Cloud Run job. Set it explicitly in the config or with `--mode yolo`; it is never a fallback, and never for a machine you care about. |
+| `ask`            | You approve every mutation, command, terminal start and input, search, and Browser action on a page (navigating, clicking, typing, scripts); looking at a page needs no approval.                                                                                                                                                                                                                                                                  |
+| `read-only`      | Only `Read`, `ViewImage`, `Grep`, and `List`.                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `yolo`           | No sandbox and no review: Bash and terminals run directly on the host with the process environment, and every action is granted. For an unattended agent in a container that is itself the trust boundary, such as a one-task Cloud Run job. Set it explicitly in the config or with `--mode yolo`; it is never a fallback, and never for a machine you care about.                                                                                |
 
 **Sandbox.** Bash runs under a deny-by-default Seatbelt profile. It can write
 only to the workspace (never `.git`), a temp dir, isolated Go caches, and
@@ -486,7 +502,9 @@ text is untrusted: the agent treats it as data, never as instructions.
 
 **Reviewer.** `reviewer_model` in the config picks it, as `provider/<model-id>`.
 Unset, it is `codex/gpt-6-luna`: Codex with no reasoning, running in a
-read-only, no-network process. `<provider-id>/<model-id>` for one of your
+read-only, no-network process. `claude/<model>`, such as `claude/sonnet`, reviews
+through Claude Code at low effort in an unsaved session with no tools, on your
+Claude subscription. `<provider-id>/<model-id>` for one of your
 `providers`, such as `openrouter/typesafe/jev-1.13`, reviews instead through that
 provider's Decisions API. Approval then requires ≥50% task relevance and >70% on each harm
 check. The reviewer sees the proposed action and your messages, but nothing else
@@ -528,14 +546,14 @@ expected result. It uses your configured provider and personal skill
 minute or two; `JULIA_MEMORY_EVAL_KEEP=dir` keeps each arm's state, workspace
 and JSON events there.
 
-| Package | Role |
-| --- | --- |
-| `cmd/julia` | CLI entry, flags, subcommands, wiring |
-| `agents` | Built-in subagent roles (Markdown) and their loader |
-| `internal/core` | Shared types, `Backend` interface, system prompt (`system.md`) |
-| `internal/provider` | Codex app-server and Fantasy adapters, compaction, reviewers |
-| `internal/tools` | Tool execution, sandbox, permissions, browser network policy, web search, subagents |
-| `internal/browser`, `internal/terminal` | Headless Chrome over the DevTools protocol; virtual terminals |
-| `internal/ui` | Bubble Tea TUI |
-| `internal/memory` | Notes kept between sessions, their index, and the reflection step's prompt |
-| `internal/session`, `internal/config`, `internal/instructions` | Persistence, settings, skill loading |
+| Package                                                        | Role                                                                                |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `cmd/julia`                                                    | CLI entry, flags, subcommands, wiring                                               |
+| `agents`                                                       | Built-in subagent roles (Markdown) and their loader                                 |
+| `internal/core`                                                | Shared types, `Backend` interface, system prompt (`system.md`)                      |
+| `internal/provider`                                            | Codex app-server, Claude Code and Fantasy adapters, compaction, reviewers           |
+| `internal/tools`                                               | Tool execution, sandbox, permissions, browser network policy, web search, subagents |
+| `internal/browser`, `internal/terminal`                        | Headless Chrome over the DevTools protocol; virtual terminals                       |
+| `internal/ui`                                                  | Bubble Tea TUI                                                                      |
+| `internal/memory`                                              | Notes kept between sessions, their index, and the reflection step's prompt          |
+| `internal/session`, `internal/config`, `internal/instructions` | Persistence, settings, skill loading                                                |

@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	"julia/internal/config"
 	"julia/internal/core"
 	"julia/internal/images"
 	sessions "julia/internal/session"
@@ -293,7 +294,7 @@ func newModel(cfg Config) *model {
 			cfg.Session.Usage = demoUsage()
 		}
 		m.notice = "Preview · offline · no tools or provider calls · try /ask or /review"
-		if cfg.Session.Provider == "codex" {
+		if config.IsCLIProvider(cfg.Session.Provider) {
 			m.weekly.value = &core.WeeklyUsage{RemainingPercent: 61, ResetsAt: m.now.Add(3 * 24 * time.Hour)}
 		}
 	}

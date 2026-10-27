@@ -17,6 +17,7 @@ import (
 	"charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"julia/internal/config"
 	"julia/internal/core"
 )
 
@@ -1022,10 +1023,10 @@ func welcomePage(h int) []string {
 	return append(rows, menu...)
 }
 
-// showsReasoning reports whether provider takes a reasoning effort: Codex, or
-// a named provider that supports one.
+// showsReasoning reports whether provider takes a reasoning effort: a CLI
+// provider, or a named provider that supports one.
 func showsReasoning(provider string, named map[string]bool) bool {
-	return provider == "codex" || named[provider]
+	return config.IsCLIProvider(provider) || named[provider]
 }
 
 func reasoningDisplay(provider, effort string, named map[string]bool) string {
@@ -1073,12 +1074,12 @@ func (m *model) sidebar() string {
 		connection = append(connection, mutedStyle.Render(ansi.Truncate("profile: "+sanitize(m.cfg.Profile), width, "…")))
 	}
 	if showsReasoning(provider, m.cfg.NamedProviders) {
-		if provider != "codex" && reasoning == "provider default" {
+		if !config.IsCLIProvider(provider) && reasoning == "provider default" {
 			connection = append(connection, mutedStyle.Render("reasoning:"), mutedStyle.Render("provider default"))
 		} else {
 			connection = append(connection, mutedStyle.Render(ansi.Truncate("reasoning: "+sanitize(reasoning), width, "…")))
 		}
-		if provider == "codex" {
+		if config.IsCLIProvider(provider) {
 			connection = append(connection, m.weeklyUsageLine())
 		}
 	}

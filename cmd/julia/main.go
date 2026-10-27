@@ -61,8 +61,8 @@ func run() error {
 	flags.StringVar(&profile, "profile", "", "configuration profile: config.<name>.json beside config.json, which is the default profile")
 	flags.StringVar(&dir, "dir", ".", "workspace directory")
 	flags.StringVar(&prompt, "prompt", "", "run one task without the TUI")
-	flags.StringVar(&modelFlag, "model", "", "provider/<model-id>: codex, openai, anthropic, google or the id of one of your providers (bare codex uses your Codex model)")
-	flags.StringVar(&reasoning, "reasoning", "", "Reasoning effort (Codex model-supported value, or reasoning_effort for your providers; model support varies)")
+	flags.StringVar(&modelFlag, "model", "", "provider/<model-id>: codex, claude, openai, anthropic, google or the id of one of your providers (bare codex uses your Codex model, bare claude Claude Code's default)")
+	flags.StringVar(&reasoning, "reasoning", "", "Reasoning effort (Codex model-supported value, Claude Code's low to max, or reasoning_effort for your providers; model support varies)")
 	flags.StringVar(&mode, "mode", "", "auto, ask, read-only, or yolo (no sandbox, no review: for an unattended container)")
 	flags.StringVar(&resume, "resume", "", "resume a saved session ID")
 	flags.StringVar(&timeout, "timeout", "", "maximum duration per task, e.g. 4h")
@@ -178,11 +178,7 @@ func run() error {
 			consolidate = true
 			prompt, memoryFlag, cfg.Mode = memory.ConsolidationPrompt, "write", "read-only"
 		case "login":
-			cmd := exec.CommandContext(ctx, cfg.CodexBinary, "login")
-			cmd.Stdin = os.Stdin
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
+			return login(ctx, cfg, args[1:])
 		case "config":
 			if len(args) != 2 || args[1] != "init" {
 				return errors.New("usage: julia config init")
@@ -399,7 +395,7 @@ func run() error {
 	}
 	uiConfig.ApplySettings = func(current *core.Session, selectedProvider, selectedModel, reasoning string) error {
 		cfg, _ := runner.settings()
-		if selectedProvider != "codex" {
+		if !config.IsCLIProvider(selectedProvider) {
 			if _, err := apiKey(cfg, selectedProvider); err != nil {
 				return err
 			}
@@ -436,17 +432,14 @@ func run() error {
 		runner.switchProfile(next)
 		return profileSettings(next), nil
 	}
-	// Codex is found through the active profile's codex_binary.
-	codexBinary := func() string {
+	// The CLIs are found through the active profile's codex_binary and
+	// claude_binary.
+	active := func() config.Config {
 		cfg, _ := runner.settings()
-		return cfg.CodexBinary
+		return cfg
 	}
 	uiConfig.Models = func(ctx context.Context) ([]core.ModelOption, error) {
-		binary, err := findCodex(codexBinary())
-		if err != nil {
-			return nil, err
-		}
-		return (&provider.Codex{Binary: binary}).Models(ctx)
+		return cliCatalog(ctx, active())
 	}
 	if throughputErr == nil {
 		uiConfig.Throughput = func() map[string]throughput.Stats {
@@ -455,7 +448,15 @@ func run() error {
 		}
 	}
 	uiConfig.WeeklyUsage = func(ctx context.Context) (*core.WeeklyUsage, error) {
-		binary, err := findCodex(codexBinary())
+		cfg := active()
+		if cfg.Provider == "claude" {
+			binary, err := findClaude(cfg.ClaudeBinary)
+			if err != nil {
+				return nil, err
+			}
+			return (&provider.Claude{Binary: binary}).WeeklyUsage(ctx)
+		}
+		binary, err := findCodex(cfg.CodexBinary)
 		if err != nil {
 			return nil, err
 		}
@@ -516,7 +517,7 @@ func selectSessionModel(cfg *config.Config, s *core.Session, directory, provider
 			return errors.New("resuming with a different provider is not supported; start a new session")
 		}
 		if modelOverride != "" && modelOverride != s.Model {
-			if s.Provider != "codex" {
+			if !config.IsCLIProvider(s.Provider) {
 				return errors.New("resuming with a different API model is not supported; start a new session")
 			}
 			s.Model = modelOverride
@@ -538,14 +539,14 @@ func modelSettings(cfg config.Config) (model, reasoning string) {
 	model, reasoning = cfg.Model, cfg.Reasoning
 	if model == "" {
 		model = "provider default"
-		if cfg.Provider == "codex" {
-			model = "inherited from Codex"
+		if config.IsCLIProvider(cfg.Provider) {
+			model = "inherited from " + config.CLIProviderName(cfg.Provider)
 		}
 	}
 	if reasoning == "" {
 		reasoning = "not configurable for this provider"
-		if cfg.Provider == "codex" {
-			reasoning = "inherited from Codex"
+		if config.IsCLIProvider(cfg.Provider) {
+			reasoning = "inherited from " + config.CLIProviderName(cfg.Provider)
 		} else if cfg.SupportsReasoning(cfg.Provider) {
 			reasoning = "provider/model default"
 		}
@@ -1005,6 +1006,102 @@ func findCodex(binary string) (string, error) {
 	return "", errors.New("Codex CLI was not found; install it or set codex_binary in your config")
 }
 
+// findClaude resolves the Claude Code CLI: the configured binary on PATH, else
+// where its native installer and npm put it.
+func findClaude(binary string) (string, error) {
+	if binary == "" {
+		binary = "claude"
+	}
+	if path, err := exec.LookPath(binary); err == nil {
+		return path, nil
+	}
+	if binary == "claude" {
+		home, _ := os.UserHomeDir()
+		for _, path := range []string{filepath.Join(home, ".local", "bin", "claude"), filepath.Join(home, ".claude", "local", "claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"} {
+			if home == "" && strings.HasPrefix(path, string(filepath.Separator)+".") {
+				continue
+			}
+			if _, err := os.Stat(path); err == nil {
+				return path, nil
+			}
+		}
+	}
+	return "", errors.New("Claude Code CLI was not found; install it or set claude_binary in your config")
+}
+
+// claudeLoginStatus reports Claude Code's sign-in as `claude auth status`
+// prints it, without reading any credential.
+func claudeLoginStatus(ctx context.Context, binary string) string {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binary, "auth", "status").Output()
+	var status struct {
+		LoggedIn   bool   `json:"loggedIn"`
+		AuthMethod string `json:"authMethod"`
+	}
+	if err != nil || json.Unmarshal(out, &status) != nil {
+		return "unknown · run claude auth status"
+	}
+	if !status.LoggedIn {
+		return "signed out · run julia login claude"
+	}
+	return "signed in · " + safe(status.AuthMethod)
+}
+
+// login signs in to a CLI provider's own account through its CLI: the one
+// named, else the configured provider's, else Codex.
+func login(ctx context.Context, cfg config.Config, args []string) error {
+	which := cfg.Provider
+	if len(args) > 0 {
+		which = args[0]
+	}
+	if !config.IsCLIProvider(which) {
+		if len(args) > 0 {
+			return errors.New("usage: julia login [codex|claude]")
+		}
+		which = "codex"
+	}
+	var cmd *exec.Cmd
+	if which == "claude" {
+		binary, err := findClaude(cfg.ClaudeBinary)
+		if err != nil {
+			return err
+		}
+		cmd = exec.CommandContext(ctx, binary, "auth", "login")
+	} else {
+		cmd = exec.CommandContext(ctx, cfg.CodexBinary, "login")
+	}
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// cliCatalog lists the models of every installed CLI provider. One that is
+// missing or fails still leaves the others' models, with its error.
+func cliCatalog(ctx context.Context, cfg config.Config) ([]core.ModelOption, error) {
+	var models []core.ModelOption
+	var errs []error
+	if binary, err := findCodex(cfg.CodexBinary); err != nil {
+		errs = append(errs, err)
+	} else if catalog, err := (&provider.Codex{Binary: binary}).Models(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("Codex models: %w", err))
+	} else {
+		models = append(models, catalog...)
+	}
+	if binary, err := findClaude(cfg.ClaudeBinary); err != nil {
+		errs = append(errs, err)
+	} else if catalog, err := (&provider.Claude{Binary: binary}).Models(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("Claude Code models: %w", err))
+	} else {
+		models = append(models, catalog...)
+	}
+	if len(models) == 0 {
+		return nil, errors.Join(errs...)
+	}
+	return models, nil
+}
+
 // searchKeyFile keeps the Firecrawl key beside the configuration file it serves.
 func searchKeyFile(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "firecrawl.json")
@@ -1025,6 +1122,9 @@ func reviewerSummary(c config.Config) string {
 	reviewer, model := c.Reviewer()
 	if endpoint, ok := c.Endpoint(reviewer); ok {
 		return fmt.Sprintf("Reviewer  %s %s · Decisions API at %s", safe(reviewer), safe(model), safe(endpoint.BaseURL))
+	}
+	if reviewer == "claude" {
+		return fmt.Sprintf("Reviewer  Claude Code %s · reasoning %s", safe(model), provider.ClaudeReviewerReasoning)
 	}
 	if model == "" {
 		model = provider.CodexReviewerModel
@@ -1096,6 +1196,12 @@ func doctor(ctx context.Context, c config.Config, path string, roles []agents.Ro
 	} else {
 		fmt.Println("Codex     unavailable")
 	}
+	if b, err := findClaude(c.ClaudeBinary); err == nil {
+		fmt.Println("Claude   ", b)
+		fmt.Println("Login    ", claudeLoginStatus(ctx, b))
+	} else {
+		fmt.Println("Claude    unavailable")
+	}
 	bundle, skillErr := instructions.Build(instructions.Options{SkillPaths: c.SkillPaths, CodexHome: os.Getenv("CODEX_HOME")})
 	if skillErr != nil {
 		return fmt.Errorf("check skills: %w", skillErr)
@@ -1166,6 +1272,8 @@ func contextSummary(c config.Config) []string {
 	}
 	if c.Provider == "codex" {
 		line += " · Codex compacts its own threads"
+	} else if c.Provider == "claude" {
+		line += " · Claude Code compacts its own sessions"
 	} else {
 		line += " · compacts at " + core.CompactTokens(core.CompactionThreshold(window))
 	}

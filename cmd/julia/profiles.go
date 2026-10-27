@@ -78,7 +78,7 @@ func loadSwitchedProfile(dir, name string, overrides launchOverrides, preference
 	if _, err := loadRoles(config.ProfilePath(dir, name), cfg); err != nil {
 		return cfg, fmt.Errorf("profile %s: %w", name, err)
 	}
-	if cfg.Provider != "codex" {
+	if !config.IsCLIProvider(cfg.Provider) {
 		if _, err := apiKey(cfg, cfg.Provider); err != nil {
 			return cfg, fmt.Errorf("profile %s: %w", name, err)
 		}

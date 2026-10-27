@@ -96,7 +96,7 @@ func TestCLIReasoningAndModelOverridesConfigurationWithoutProviderCalls(t *testi
 		{"unknown provider", []string{"--model", "vendor/model"}, "provider/<model-id>"},
 		{"invalid effort override", []string{"--reasoning", "bad effort"}, "reasoning must"},
 		{"invalid model override", []string{"--model", "codex/ leading-space"}, "model IDs must"},
-		{"API cannot ignore configured effort", []string{"--model", "openai/vendor-model"}, "Codex and your providers only"},
+		{"API cannot ignore configured effort", []string{"--model", "openai/vendor-model"}, "Codex, Claude Code and your providers only"},
 		{"explicit empty clears configured effort", []string{"--model", "local/vendor/model", "--reasoning="}, ""},
 		{"the compatible provider is gone", []string{"--model", "compatible/vendor/model", "--reasoning="}, "provider/<model-id>"},
 		{"removed endpoint flag", []string{"--compatible-base-url", "http://127.0.0.1:1/v1"}, "flag provided but not defined"},

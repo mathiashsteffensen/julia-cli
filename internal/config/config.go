@@ -32,7 +32,8 @@ type Config struct {
 	// Provider, Model, ModelReasoning and ModelContextWindow come from the
 	// "model" entry: provider/<model-id>, or an object with that id, the
 	// reasoning effort the model starts with and its context window. A bare
-	// "codex" is Codex's own configured model.
+	// "codex" is Codex's own configured model, and a bare "claude" is Claude
+	// Code's default model.
 	Provider           string `json:"-"`
 	Model              string `json:"-"`
 	ModelReasoning     string `json:"-"`
@@ -51,8 +52,11 @@ type Config struct {
 	// boundary, and is never a fallback.
 	Mode        string `json:"mode"`
 	CodexBinary string `json:"codex_binary,omitempty"`
-	Reasoning   string `json:"reasoning,omitempty"`
-	MaxSteps    int    `json:"max_steps"`
+	// ClaudeBinary is the Claude Code CLI the claude provider runs; empty
+	// finds claude on PATH or in its usual install locations.
+	ClaudeBinary string `json:"claude_binary,omitempty"`
+	Reasoning    string `json:"reasoning,omitempty"`
+	MaxSteps     int    `json:"max_steps"`
 	// ContextTokens is the context window assumed for every model without a
 	// context_window of its own; compaction triggers at a fraction of it.
 	ContextTokens int `json:"context_tokens"`
@@ -67,9 +71,9 @@ type Config struct {
 	// overrides it.
 	Browser string `json:"browser,omitempty"`
 	// ReviewerModel is the model that reviews risky actions, as
-	// provider/<model-id>: codex/gpt-6-luna, or <id>/<model-id> for a model
-	// served through a named provider's Decisions API. Empty is the default
-	// Codex reviewer.
+	// provider/<model-id>: codex/gpt-6-luna, claude/sonnet, or <id>/<model-id>
+	// for a model served through a named provider's Decisions API. Empty is
+	// the default Codex reviewer.
 	ReviewerModel string `json:"reviewer_model,omitempty"`
 	// Subagents assigns models to subagent roles by name, each
 	// provider/<model-id> or an object with that id and a reasoning effort. A
@@ -114,7 +118,25 @@ func (c Config) ReflectionEnabled() bool {
 
 // BuiltinProviders are the providers a model ID may name besides the
 // configured ones.
-var BuiltinProviders = []string{"codex", "openai", "anthropic", "google"}
+var BuiltinProviders = []string{"codex", "claude", "openai", "anthropic", "google"}
+
+// CLIProviders are the providers that run a locally installed agent CLI under
+// its own sign-in, with no API key: Codex's app-server and Claude Code.
+var CLIProviders = []string{"codex", "claude"}
+
+// IsCLIProvider reports whether provider is one of CLIProviders.
+func IsCLIProvider(provider string) bool { return contains(CLIProviders, provider) }
+
+// CLIProviderName is how a CLI provider is called in the interface.
+func CLIProviderName(provider string) string {
+	switch provider {
+	case "codex":
+		return "Codex"
+	case "claude":
+		return "Claude Code"
+	}
+	return provider
+}
 
 // ProviderConfig is a named OpenAI-compatible endpoint in "providers". Its key
 // is read from APIKeyEnv; without one the endpoint is called keyless.
@@ -296,7 +318,7 @@ func (c Config) BrowserPath() string {
 }
 
 func Default() Config {
-	return Config{Provider: "codex", Mode: "auto", CodexBinary: "codex", MaxSteps: 256, ContextTokens: core.DefaultContextWindow, Timeout: "4h", Memory: MemoryConfig{Reflection: "on"}}
+	return Config{Provider: "codex", Mode: "auto", CodexBinary: "codex", ClaudeBinary: "claude", MaxSteps: 256, ContextTokens: core.DefaultContextWindow, Timeout: "4h", Memory: MemoryConfig{Reflection: "on"}}
 }
 func Path() (string, error) {
 	d := os.Getenv("XDG_CONFIG_HOME")
@@ -346,8 +368,8 @@ func (c Config) Validate() error {
 	}
 	if c.ReviewerModel != "" {
 		reviewer, model := c.Reviewer()
-		if (reviewer != "codex" && !c.IsNamed(reviewer)) || model == "" || len(c.ReviewerModel) > 512 || c.ReviewerModel != strings.TrimSpace(c.ReviewerModel) || strings.IndexFunc(c.ReviewerModel, unicode.IsControl) >= 0 {
-			return fmt.Errorf("reviewer_model must be provider/<model-id> with provider codex or one of providers, such as codex/gpt-6-luna or openrouter/%s", CompatibleDecisionsModel)
+		if (!IsCLIProvider(reviewer) && !c.IsNamed(reviewer)) || model == "" || len(c.ReviewerModel) > 512 || c.ReviewerModel != strings.TrimSpace(c.ReviewerModel) || strings.IndexFunc(c.ReviewerModel, unicode.IsControl) >= 0 {
+			return fmt.Errorf("reviewer_model must be provider/<model-id> with provider codex, claude or one of providers, such as codex/gpt-6-luna, claude/sonnet or openrouter/%s", CompatibleDecisionsModel)
 		}
 	}
 	if len(c.EnabledModels) > 100 {
@@ -424,15 +446,15 @@ func (c Config) Validate() error {
 }
 
 // validateModel checks one model entry of the named field: provider/<model-id>,
-// its reasoning effort and its context window. Only Codex may leave the model
-// ID out, for its own configured model.
+// its reasoning effort and its context window. Only a CLI provider may leave
+// the model ID out, for the model its CLI is configured with.
 func (c Config) validateModel(field string, entry ModelEntry) error {
 	id, reasoning := entry.ID, entry.Reasoning
 	provider, model := SplitModel(id)
 	if !contains(c.ProviderIDs(), provider) {
 		return fmt.Errorf("%s %q must be provider/<model-id> with provider %s", field, id, strings.Join(c.ProviderIDs(), ", "))
 	}
-	if provider != "codex" && model == "" {
+	if !IsCLIProvider(provider) && model == "" {
 		return fmt.Errorf("%s %q needs a model ID: %s/<model-id>", field, id, provider)
 	}
 	if len(model) > 512 || model != strings.TrimSpace(model) || strings.IndexFunc(model, unicode.IsControl) >= 0 {
@@ -503,11 +525,15 @@ func (c Config) validateReasoning(provider, effort string) error {
 		return nil
 	}
 	if !c.SupportsReasoning(provider) {
-		return errors.New("reasoning is configurable for Codex and your providers only")
+		return errors.New("reasoning is configurable for Codex, Claude Code and your providers only")
 	}
-	// Codex advertises effort names per model as an open string. A named
-	// provider is sent reasoning_effort, whose values OpenRouter documents.
-	if provider != "codex" && !contains(OpenRouterReasoningEfforts(), effort) {
+	// Codex advertises effort names per model as an open string. Claude Code
+	// takes its own fixed levels. A named provider is sent reasoning_effort,
+	// whose values OpenRouter documents.
+	if provider == "claude" && !contains(ClaudeEfforts(), effort) {
+		return errors.New("reasoning for Claude Code must be one of low, medium, high, xhigh, or max")
+	}
+	if provider != "codex" && provider != "claude" && !contains(OpenRouterReasoningEfforts(), effort) {
 		return errors.New("reasoning for a named provider must be one of none, minimal, low, medium, high, xhigh, or max")
 	}
 	if len(effort) > 64 || strings.IndexFunc(effort, func(r rune) bool {
@@ -523,10 +549,15 @@ func IsDecisionsOnlyCompatibleModel(model string) bool {
 }
 
 // SupportsReasoning reports providers where JULIA sends a chosen effort
-// instead of silently ignoring it: Codex, and every named provider, which is
-// sent reasoning_effort whether or not its model supports it.
+// instead of silently ignoring it: Codex, Claude Code, and every named
+// provider, which is sent reasoning_effort whether or not its model supports it.
 func (c Config) SupportsReasoning(provider string) bool {
-	return provider == "codex" || c.IsNamed(provider)
+	return IsCLIProvider(provider) || c.IsNamed(provider)
+}
+
+// ClaudeEfforts are the effort levels Claude Code's --effort accepts.
+func ClaudeEfforts() []string {
+	return []string{"low", "medium", "high", "xhigh", "max"}
 }
 
 // IsOpenRouter reports whether baseURL is an OpenRouter endpoint.
