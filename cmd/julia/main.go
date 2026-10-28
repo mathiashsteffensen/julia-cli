@@ -27,6 +27,7 @@ import (
 	"julia/internal/memory"
 	"julia/internal/provider"
 	"julia/internal/session"
+	"julia/internal/skills"
 	"julia/internal/throughput"
 	"julia/internal/tools"
 	"julia/internal/ui"
@@ -605,6 +606,37 @@ type runtimeBackend struct {
 	skillsDir string
 }
 
+// skillCatalog is every skill in the user's skills folder, those only the
+// user may run included.
+func (r *runtimeBackend) skillCatalog() (skills.Catalog, []string, error) {
+	dir := r.skillsDir
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return skills.Catalog{}, nil, fmt.Errorf("locate skills: %w", err)
+		}
+		dir = skills.DefaultDir(home)
+	}
+	return skills.Discover(dir)
+}
+
+// invokeSkill adds to prompt the instructions of the skill the user ran
+// (see skills.Invocation) and returns that skill.
+func (r *runtimeBackend) invokeSkill(prompt *core.Prompt) (skills.Skill, error) {
+	catalog, _, err := r.skillCatalog()
+	if err != nil {
+		return skills.Skill{}, err
+	}
+	skill, ok := catalog.Find(prompt.Skill)
+	if !ok {
+		return skills.Skill{}, fmt.Errorf("skill %q is not in %s", prompt.Skill, catalog.Dir)
+	}
+	if prompt.Text, err = skills.Invocation(prompt.Text, skill); err != nil {
+		return skills.Skill{}, fmt.Errorf("run skill %s: %w", skill.Name, err)
+	}
+	return skill, nil
+}
+
 // settings are the configuration and task timeout a turn starts with.
 func (r *runtimeBackend) settings() (config.Config, time.Duration) {
 	r.profileMu.Lock()
@@ -725,6 +757,18 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// A skill the user ran brings its instructions into their message: the
+	// model follows them, and the reviewer takes them as the user's request.
+	// What they typed stays what memory and the title go by.
+	typed := prompt.Text
+	var invoked *skills.Skill
+	if prompt.Skill != "" {
+		skill, err := r.invokeSkill(&prompt)
+		if err != nil {
+			return err
+		}
+		invoked = &skill
+	}
 	task := newTaskContext(s.Messages, prompt.Text)
 	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: cfg.BrowserPath(), SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv), LinearToken: r.linearToken, Mail: r.mail})
 	if err != nil {
@@ -758,8 +802,8 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 			// An unverified note is labelled wherever it is shown; only reading
 			// one in full on purpose taints the conversation, or a single such
 			// note with a common keyword would mark every session it reaches.
-			memoryIndex = recall.Section(cfg.Memory.IndexBytes, prompt.Text, r.memoryReadOnly)
-			relevant := recall.Relevant(prompt.Text)
+			memoryIndex = recall.Section(cfg.Memory.IndexBytes, typed, r.memoryReadOnly)
+			relevant := recall.Relevant(typed)
 			if n := recall.Count(); n > 0 {
 				text := fmt.Sprintf("Recalled %d %s", n, map[bool]string{true: "note", false: "notes"}[n == 1])
 				if len(relevant) > 0 {
@@ -769,7 +813,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 			}
 			// The consolidation pass sees every note to rewrite it, not to use it.
 			if !r.consolidating {
-				turn := memory.Activity{Kind: memory.ActivityTurn, Session: s.ID, Workspace: s.Directory, Notes: recall.Count(), Omitted: recall.Omitted(cfg.Memory.IndexBytes, prompt.Text)}
+				turn := memory.Activity{Kind: memory.ActivityTurn, Session: s.ID, Workspace: s.Directory, Notes: recall.Count(), Omitted: recall.Omitted(cfg.Memory.IndexBytes, typed)}
 				for _, note := range relevant {
 					turn.Relevant = append(turn.Relevant, note.Name)
 				}
@@ -798,7 +842,13 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		emit(core.Event{Kind: "status", Text: "Loaded repository instructions: " + path})
 	}
 	if s.Title == "New conversation" || s.Title == "" {
-		s.Title = session.Title(prompt.Text)
+		s.Title = session.Title(typed)
+	}
+	// The Skill tool loads the skills the instructions list, and the files
+	// beside a skill the user ran, even one the model is not offered.
+	skillCatalog := bundle.Skills
+	if invoked != nil {
+		skillCatalog = skillCatalog.With(*invoked)
 	}
 	var agentTools core.ToolExecutor = executor
 	if roles := r.subagentRoles(); len(roles) > 0 {
@@ -807,7 +857,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		agentTools = tools.WithSubagents(executor, roles, func(childCtx context.Context, role agents.Role, task string, childTools core.ToolExecutor) (string, error) {
 			// A child's instructions list the skills too, so it can load them
 			// whatever tools its role limits it to.
-			childTools = tools.WithSkills(childTools, bundle.Skills)
+			childTools = tools.WithSkills(childTools, skillCatalog)
 			settings := subagentSettings(cfg, selected, role.Name)
 			modelID := config.JoinModel(settings.Provider, settings.Model)
 			instructionText, err := bundle.For(settings.Provider, settings.Model, settings.Reasoning)
@@ -880,7 +930,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 			return output, err
 		})
 	}
-	agentTools = tools.WithSkills(agentTools, bundle.Skills)
+	agentTools = tools.WithSkills(agentTools, skillCatalog)
 	// Outermost: subagent children receive the base executor and so can never ask the user.
 	agentTools = tools.WithInteractions(agentTools, r.ask, r.triage)
 	if r.ask != nil || r.triage != nil {
@@ -995,7 +1045,19 @@ func (o onlyMemory) Execute(_ context.Context, call core.ToolCall) core.ToolResu
 // comes from configuration so the sidebar gauge and API compaction measure the
 // same budget.
 func baseUIConfig(s *core.Session, cfg config.Config, definitions []core.ToolDefinition) ui.Config {
-	return ui.Config{Session: s, Version: version, Mode: cfg.Mode, ToolDefinitions: definitions, ContextWindow: cfg.ContextTokens}
+	return ui.Config{Session: s, Version: version, Mode: cfg.Mode, ToolDefinitions: definitions, ContextWindow: cfg.ContextTokens, Skills: userSkills}
+}
+
+// userSkills is every skill in ~/.agents/skills, for the interface's slash
+// commands. A skill that cannot be read has no command; the turn's warnings
+// say why.
+func userSkills() []skills.Skill {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	catalog, _, _ := skills.Discover(skills.DefaultDir(home))
+	return catalog.Skills
 }
 
 func findCodex(binary string) (string, error) {

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"unicode/utf8"
@@ -46,13 +47,16 @@ func DefaultDir(home string) string {
 	return filepath.Join(home, ".agents", "skills")
 }
 
-// Skill is one skill the model may load.
+// Skill is one of the user's skills.
 type Skill struct {
 	Name        string
 	Description string
 	// Dir is the skill's folder with symlinks resolved; every file the skill
 	// offers lies inside it.
 	Dir string
+	// UserOnly marks a skill whose frontmatter sets disable-model-invocation:
+	// the user runs it as a slash command, and the model is never offered it.
+	UserOnly bool
 }
 
 // Catalog is the skills found in one directory, sorted by name.
@@ -61,11 +65,10 @@ type Catalog struct {
 	Skills []Skill
 }
 
-// Discover finds the skills in dir. A missing directory has none. A folder
-// without SKILL.md is not a skill and is passed over; a skill whose SKILL.md
-// is unreadable or malformed is left out with a warning. Skills marked
-// disable-model-invocation are for the user to run, not for the model to
-// pick, so the catalog leaves them out too.
+// Discover finds the skills in dir, those only the user may run included
+// (see Offered). A missing directory has none. A folder without SKILL.md is
+// not a skill and is passed over; a skill whose SKILL.md is unreadable or
+// malformed is left out with a warning.
 func Discover(dir string) (Catalog, []string, error) {
 	catalog := Catalog{Dir: dir}
 	root, err := filepath.EvalSymlinks(dir)
@@ -103,7 +106,7 @@ func Discover(dir string) (Catalog, []string, error) {
 }
 
 // load reads the skill in folder name under root. found is false for a
-// folder that is not a skill, or one only the user may run.
+// folder that is not a skill.
 func load(root, name string) (skill Skill, found bool, err error) {
 	dir, err := filepath.EvalSymlinks(filepath.Join(root, name))
 	if err != nil {
@@ -124,13 +127,11 @@ func load(root, name string) (skill Skill, found bool, err error) {
 	if err != nil {
 		return skill, false, err
 	}
-	if header.DisableModelInvocation {
-		return skill, false, nil
-	}
 	if err := header.validate(name); err != nil {
 		return skill, false, err
 	}
-	return Skill{Name: header.Name, Description: strings.Join(strings.Fields(header.Description), " "), Dir: dir}, true, nil
+	description := strings.Join(strings.Fields(header.Description), " ")
+	return Skill{Name: header.Name, Description: description, Dir: dir, UserOnly: header.DisableModelInvocation}, true, nil
 }
 
 // frontmatter is what JULIA uses from a SKILL.md header; other fields, such
@@ -174,6 +175,27 @@ func (h frontmatter) validate(folder string) error {
 		return fmt.Errorf("description is longer than %d characters", maxDescriptionLength)
 	}
 	return nil
+}
+
+// Offered is the catalog the model sees: every skill but those only the
+// user may run.
+func (c Catalog) Offered() Catalog {
+	offered := Catalog{Dir: c.Dir}
+	for _, skill := range c.Skills {
+		if !skill.UserOnly {
+			offered.Skills = append(offered.Skills, skill)
+		}
+	}
+	return offered
+}
+
+// With is the catalog with skill in it too, kept in name order; a skill of
+// that name already there is replaced.
+func (c Catalog) With(skill Skill) Catalog {
+	skills := slices.DeleteFunc(slices.Clone(c.Skills), func(s Skill) bool { return s.Name == skill.Name })
+	skills = append(skills, skill)
+	slices.SortFunc(skills, func(a, b Skill) int { return strings.Compare(a.Name, b.Name) })
+	return Catalog{Dir: c.Dir, Skills: skills}
 }
 
 // Find returns the skill named name.

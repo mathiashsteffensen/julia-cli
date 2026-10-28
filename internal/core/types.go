@@ -66,6 +66,10 @@ type Prompt struct {
 	Text     string
 	Images   []Image
 	Steering Steering
+	// Skill names the skill the user ran as a slash command, Text being the
+	// command as typed. The runtime adds the skill's instructions to Text
+	// before a provider sees it; providers ignore this field.
+	Skill string
 }
 
 // ModelOption describes a provider-advertised model and its reasoning controls.

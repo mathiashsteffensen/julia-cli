@@ -23,6 +23,7 @@ import (
 	"julia/internal/core"
 	"julia/internal/images"
 	sessions "julia/internal/session"
+	"julia/internal/skills"
 	"julia/internal/throughput"
 )
 
@@ -85,7 +86,10 @@ type Config struct {
 	// session's fleet shows what its children did.
 	Children func(parent string) ([]*core.Session, error)
 	// Memory answers the /memory command: an empty action lists the notes this workspace sees, "show" with a name shows one, and "forget" with a name deletes it; the Markdown returned is shown in the conversation.
-	Memory        func(action, name string) (string, error)
+	Memory func(action, name string) (string, error)
+	// Skills lists the user's skills, each a slash command; it is read again
+	// whenever the command menu opens or a command runs.
+	Skills        func() []skills.Skill
 	Version       string // shown in the sidebar masthead
 	ContextWindow int    // tokens the context gauge is measured against; <= 0 means core.DefaultContextWindow
 	// ContextWindowFor is the window of the session's model, by provider and
@@ -137,9 +141,12 @@ type approvalMsg struct{ request ApprovalRequest }
 type tickMsg time.Time
 
 type model struct {
-	cfg           Config
-	input         textarea.Model
-	composerRows  int // input rows the current layout was measured with
+	cfg          Config
+	input        textarea.Model
+	composerRows int // input rows the current layout was measured with
+	// menu completes slash commands; skills are the user's, as last read.
+	menu          commandMenu
+	skills        []skills.Skill
 	viewport      viewport.Model
 	spinner       activityModel
 	width         int
@@ -341,6 +348,7 @@ func waitStream(stream <-chan streamMsg, ctx context.Context) tea.Cmd {
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
+	m.syncMenu()
 	if m.input.Height() != m.composerRows || len(m.queueStrip()) != m.queueRows {
 		// The draft or the queue grew or shrank a row: give the transcript the difference.
 		m.resize(m.width, m.height)
@@ -525,6 +533,11 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.picker != nil && m.pending == nil && msg.String() != "ctrl+c" {
 			return m, m.updatePicker(msg)
 		}
+		if m.menuOpen() {
+			if handled, cmd := m.updateMenu(msg); handled {
+				return m, cmd
+			}
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			m.cancelWeeklyUsage()
@@ -706,12 +719,23 @@ func (m *model) submit() tea.Cmd {
 		if m.memoryCommand(prompt) {
 			return nil
 		}
+		if skill, ok := m.skillCommand(prompt); ok {
+			if m.cfg.Demo {
+				m.notice = "Offline preview. Restart without --demo to run a skill."
+				return nil
+			}
+			// The command is sent as typed; the runtime adds the skill to it.
+			request := m.takeImages(prompt)
+			request.Skill = skill
+			m.input.Reset()
+			return m.send(request)
+		}
 		var cmd tea.Cmd
 		switch prompt {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **click** a link to open it · **double-click** copies a whole message\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/review` reviews your uncommitted changes · `/review WHAT` reviews what you name · you decide each finding in a card\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- `/memory pin NAME` shows a note in full every turn · `/memory unpin NAME` undoes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- `/profile` switches configuration profile · `/profile NAME` switches to one directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, **Enter** queues your message: it is sent when JULIA settles, or at once with **Ctrl+S** or the steer button, which hands it to the task under way. **↑** in an empty composer takes a queued message back to edit."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **click** a link to open it · **double-click** copies a whole message\n- **/** opens the command menu · **↑↓** choose · **Tab** completes · **Enter** runs\n- `/SKILL` runs one of your skills from `~/.agents/skills`, with what follows as its input · `/skill:SKILL` when a command already has its name\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/review` reviews your uncommitted changes · `/review WHAT` reviews what you name · you decide each finding in a card\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- `/memory pin NAME` shows a note in full every turn · `/memory unpin NAME` undoes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- `/profile` switches configuration profile · `/profile NAME` switches to one directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, **Enter** queues your message: it is sent when JULIA settles, or at once with **Ctrl+S** or the steer button, which hands it to the task under way. **↑** in an empty composer takes a queued message back to edit."})
 		case "/ask", "/ask text":
 			if !m.cfg.Demo {
 				m.notice = "Unknown command. /help lists the essentials."
@@ -938,7 +962,12 @@ func (m *model) loadHistory() {
 		switch message.Role {
 		case "user", "assistant":
 			if message.Content != "" {
-				item := entry{role: message.Role, text: message.Content, images: message.Images}
+				text := message.Content
+				if message.Role == "user" {
+					// A skill the user ran shows as the command they typed.
+					text = skills.Typed(text)
+				}
+				item := entry{role: message.Role, text: text, images: message.Images}
 				m.registerImages(&item)
 				m.entries = append(m.entries, item)
 			}

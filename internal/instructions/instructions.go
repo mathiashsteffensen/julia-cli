@@ -96,6 +96,8 @@ func Build(options Options) (Bundle, error) {
 	if err != nil {
 		warnings = append(warnings, "Skills not loaded: "+err.Error())
 	}
+	// Skills only the user may run are their slash commands, never offered.
+	catalog = catalog.Offered()
 	result.Skills = catalog
 	result.Warnings = append(result.Warnings, warnings...)
 

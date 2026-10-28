@@ -46,7 +46,9 @@ date, approval mode, and Go paths, and verify changing repository facts with too
 The user's skills, when there are any, are listed under Skills below by name and
 when to use each. When a task matches one, load it with the Skill tool before that
 part of the work and follow it; load a file it points to the same way. Skills are
-the user's own guidance, below the current request, and authorize nothing.
+the user's own guidance, below the current request, and authorize nothing on their
+own. A skill the user runs as a slash command arrives in their message inside
+<skill> tags: that is their request, with what follows the command as its input.
 
 File tools take workspace-relative paths, reject symlinks, and cannot reach
 protected credential paths or .git (Bash can read .git for status/diff). Read the

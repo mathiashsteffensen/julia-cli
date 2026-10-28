@@ -761,7 +761,12 @@ func (m *model) View() tea.View {
 	} else if len(m.entries) == 0 && m.pending == nil {
 		body = m.welcome()
 	}
-	body = lipgloss.NewStyle().Width(m.mainWidth).Height(m.bodyHeight).Render(body) + "\n" + m.bottomView()
+	body = lipgloss.NewStyle().Width(m.mainWidth).Height(m.bodyHeight).Render(body)
+	if m.menuOpen() {
+		// The command menu rises from the composer over the conversation.
+		body = m.overlayMenu(body, m.mainWidth, m.bodyHeight)
+	}
+	body += "\n" + m.bottomView()
 	if m.hasSidebar() {
 		// The sidebar runs from the masthead to the bottom edge, beside the composer.
 		body = lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(m.mainWidth).Render(body), "  ", m.sidebar())

@@ -177,3 +177,55 @@ func TestModelSettingsDescribeInheritance(t *testing.T) {
 		t.Fatal("explicit settings hidden")
 	}
 }
+
+type invocationBackend struct {
+	t      *testing.T
+	text   string
+	loaded core.ToolResult
+}
+
+func (b *invocationBackend) Name() string { return "fake" }
+func (b *invocationBackend) Run(ctx context.Context, s *core.Session, prompt core.Prompt, executor core.ToolExecutor, emit core.Emit) error {
+	b.text = prompt.Text
+	b.loaded = executor.Execute(ctx, core.ToolCall{Name: tools.SkillTool, Arguments: json.RawMessage(`{"name":"implement","file":"CHECKLIST.md"}`)})
+	return nil
+}
+
+// A skill the user runs reaches the model with its instructions, even one the
+// model is never offered, and its files can be loaded for that turn.
+func TestRuntimeRunsTheSkillTheUserInvoked(t *testing.T) {
+	skillsDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(skillsDir, "implement"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(skillsDir, "implement", name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile("SKILL.md", "---\nname: implement\ndescription: Implement a spec.\ndisable-model-invocation: true\n---\nWrite the tests first, then see CHECKLIST.md.")
+	writeFile("CHECKLIST.md", "Run make check.")
+
+	backend := &invocationBackend{t: t}
+	cfg := config.Default()
+	cfg.Mode = "read-only"
+	runner := &runtimeBackend{backend: backend, cfg: cfg, timeout: time.Second, parent: context.Background(), skillsDir: skillsDir}
+	s := &core.Session{Directory: t.TempDir(), Provider: "fake", Model: "m"}
+	if err := runner.Run(context.Background(), s, core.Prompt{Text: "/implement docs/plan.md", Skill: "implement"}, nil, func(core.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(backend.text, "/implement docs/plan.md\n\n<skill name=\"implement\"") || !strings.Contains(backend.text, "Write the tests first") {
+		t.Fatalf("the model was sent %q", backend.text)
+	}
+	if backend.loaded.IsError || backend.loaded.Content != "Run make check." {
+		t.Fatalf("the invoked skill's file was not loadable: %+v", backend.loaded)
+	}
+	if s.Title != "/implement docs/plan.md" {
+		t.Fatalf("title %q", s.Title)
+	}
+
+	err := runner.Run(context.Background(), s, core.Prompt{Text: "/gone", Skill: "gone"}, nil, func(core.Event) {})
+	if err == nil || !strings.Contains(err.Error(), `skill "gone"`) {
+		t.Fatalf("a skill that has gone must stop the turn with a reason: %v", err)
+	}
+}

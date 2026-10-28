@@ -20,7 +20,7 @@ func write(t *testing.T, path, content string) {
 	}
 }
 
-func TestDiscoverOffersWellFormedSkillsTheModelMayRun(t *testing.T) {
+func TestDiscoverFindsWellFormedSkills(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "diagnosing-bugs", Entry), "---\nname: diagnosing-bugs\ndescription: >\n  Diagnosis loop for hard bugs.\n  Use when something is broken.\nlicense: MIT\nmetadata:\n  author: me\n---\n\n# Diagnosing\n")
 	write(t, filepath.Join(dir, "implement", Entry), "---\nname: implement\ndescription: \"Implement a spec.\"\n---\nBody")
@@ -44,8 +44,22 @@ func TestDiscoverOffersWellFormedSkillsTheModelMayRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := catalog.Names(), []string{"diagnosing-bugs", "implement", "linked"}; !slices.Equal(got, want) {
+	if got, want := catalog.Names(), []string{"diagnosing-bugs", "grill-me", "implement", "linked"}; !slices.Equal(got, want) {
+		t.Fatalf("found %v, want %v", got, want)
+	}
+	if grill, _ := catalog.Find("grill-me"); !grill.UserOnly {
+		t.Fatal("disable-model-invocation must mark the skill user-only")
+	}
+	// The model is offered every skill but those only the user may run.
+	if got, want := catalog.Offered().Names(), []string{"diagnosing-bugs", "implement", "linked"}; !slices.Equal(got, want) {
 		t.Fatalf("offered %v, want %v", got, want)
+	}
+	grill, _ := catalog.Find("grill-me")
+	if got := catalog.Offered().With(grill).Names(); !slices.Equal(got, []string{"diagnosing-bugs", "grill-me", "implement", "linked"}) {
+		t.Fatalf("With must keep name order: %v", got)
+	}
+	if got := catalog.With(grill).Names(); len(got) != 4 {
+		t.Fatalf("With must replace a skill of the same name: %v", got)
 	}
 	if skill, _ := catalog.Find("diagnosing-bugs"); skill.Description != "Diagnosis loop for hard bugs. Use when something is broken." {
 		t.Fatalf("a folded description must read as one line: %q", skill.Description)

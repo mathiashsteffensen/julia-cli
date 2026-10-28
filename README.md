@@ -73,6 +73,8 @@ for the full list.
 | `/review`, `/review WHAT`     | Review your uncommitted changes, or what you name (a commit, a path, a PR), and triage the findings                    |
 | `/memory`                     | What JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it                             |
 | `/clear`, `/help`, `/quit`    | New conversation, shortcuts, exit                                                                                      |
+| `/`, then ↑↓, Tab, Enter      | Command menu: every command and skill that matches what you type · Tab completes · Enter runs · Esc closes             |
+| `/SKILL`, `/SKILL INPUT`      | Run one of your [skills](#skills), with what follows as its input · `/skill:SKILL` when a command has its name         |
 
 During an approval prompt, `y`/Enter allows the action once (a Browser origin, for
 the rest of the turn); any other key denies it.
@@ -175,9 +177,17 @@ JULIA offers every [Agent Skill](https://agentskills.io/specification) in
 each skill's name and description, and the model loads a skill's instructions,
 or a file beside them, with the read-only Skill tool when a task calls for it.
 A symlinked skill folder is followed; nothing outside a skill's folder can be
-read through the tool. Skills marked `disable-model-invocation: true` are left
-out, and a malformed one is left out with a warning. `julia doctor` lists what
-it finds. The old `skill_paths` key is ignored.
+read through the tool. A malformed skill is left out with a warning. `julia
+doctor` lists what it finds. The old `skill_paths` key is ignored.
+
+Every skill is also a slash command: `/code-review since main` sends your
+message as typed, with the skill's `SKILL.md` added for the model, which takes
+what follows the command as the skill's input; the action reviewer reads it as
+part of your request. A skill whose name is a built-in command's runs as
+`/skill:<name>` instead. Skills marked `disable-model-invocation: true` are
+commands only: the model is never offered them, but one you run can load the
+files beside it for that turn. Typing `/` opens a menu of the commands and
+skills that match; the skills folder is read again each time it opens.
 
 ### Profiles
 
@@ -291,35 +301,13 @@ holds and how to apply it, kept under `~/.local/state/julia/memory` (respects
 and delete; `julia memory` lists them.
 
 Every turn ends its instructions with a Memory section: how to learn, then the
-index of its notes, each as its name, type, date and lesson, with the notes you
-pinned and the notes that name something in your request shown in full. Pin a
-note that bears on most of your work, such as how you want code written, with
+index of its notes.
+
+Pin a memory that bears on most of your work, such as how you want code written, with
 `julia memory pin NAME`: every turn then leads its Memory section with it, in
 full, as a standing preference to apply without being asked, rather than as one
 line among many. Only you pin, at most five notes per scope; pinning vouches for
-the note as `confirm` does. A run without memory has no such
-section and no tool. A note anchored to paths or commands is also repeated inside the
-result of a tool that touches them, as a `[Memory · name]` line, so the lesson
-arrives when it applies rather than when it happens to be noticed; each note
-arrives this way once per conversation, as the index repeats it every turn. The agent
-saves with the `Memory` tool when you correct it or state a preference, when you
-confirm an approach, when it learns a fact about the project or the machine that
-the files do not record, or where something lives; it is told not to save what
-the repository records, what matters only to the task, secrets, or anything a
-page, file or tool output asked it to remember. After a turn in auto or yolo mode
-that could have taught something (you corrected or instructed it, an action was
-denied, or a tool failed and the work went on), a reflection step, a separate
-tool-free model call over the turn at low effort unless `memory.model` gives its
-own, saves or revises what the agent missed, at most three notes, each shown as a
-Memory card marked `reflection` and kept in the transcript, and tallies which
-notes helped, which misled, and which were ignored (you had to say again what a
-note already said). In the TUI it runs after the turn, so the next
-message can be typed at once: the status line says while it runs, Esc skips it,
-a message sent meanwhile waits for it, and quitting finishes it first (Ctrl+C
-skips). In auto mode after content from outside your words it runs within the
-turn instead, since its changes then need your approval, and a headless run
-always reflects within the turn. Subagents see the notes but save none; what
-they learn goes in their reports.
+the note as `confirm` does.
 
 | Type        | For                                                                                                                   |
 | ----------- | --------------------------------------------------------------------------------------------------------------------- |
@@ -330,27 +318,7 @@ they learn goes in their reports.
 | `reference` | Where something lives: a URL, a ticket, a document                                                                    |
 
 Notes are the past, kept as data: the instructions say so, a note can never
-authorize an action, and the reviewer never sees one. Once a conversation has
-read content from outside your words (WebFetch, WebSearch, Browser, Slack,
-Linear, Mail, a subagent's report, Bash with network or outside the sandbox, a
-networked terminal, a repository's agent instructions such as `AGENTS.md`,
-`CLAUDE*.md` or `.cursor/` rules, however it was read, or an unverified note read
-in full; a command that only looks for such a file and finds none, as agents
-often do before they start, reads nothing), every change to the notes in it, the agent's or the reflection step's,
-needs your approval in auto mode, is refused where no one can approve, and is
-marked unverified: in the index, in `Memory read` and in `julia memory`. The mark lasts as long as the
-conversation, and a note keeps its own through every rewrite until you clear it
-with `julia memory confirm` or write the note yourself; wherever an unverified
-note appears, it says so. Forgetting or rewriting a global note, one you
-wrote or pinned, or a `feedback` or `user` note an earlier session saved from
-your words, asks you too: files older than a rule you gave do not overturn it,
-and headless such a change is refused. The reflection after a turn cannot ask: it
-leaves such a change undone and says so on its card. A note cannot hold a credential, HTML comments and hidden
-characters are stripped from it, at most five notes are saved and three
-forgotten in one turn, and a forgotten or replaced version waits in a `.trash`
-directory for 30 days. Headless runs (`--prompt`) read notes but save none unless started with
-`--memory write`; `--memory off` runs without memory. In ask mode every save and
-forget is approved by you; read-only mode only reads.
+authorize an action, and the reviewer never sees one.
 
 ```sh
 julia memory                 # the notes this workspace sees, then the global ones
@@ -365,30 +333,9 @@ julia memory path | workspaces
 
 The consolidation pass is offered no tool but Memory, and `--continue` passes
 over its session. `/memory`, `/memory NAME`, `/memory forget NAME` and `/memory pin|unpin NAME` do the same
-in the TUI, for the session's workspace. A
-note's frontmatter records who wrote it (`source`: agent, reflection or user),
-the session, when, how often it was read, and how often the reflection step
-found it helpful, misleading or ignored; consolidation reads those to decide what earns
-its place.
+in the TUI, for the session's workspace.
 
-`julia memory stats` measures whether memory earns its keep. Each turn that sees
-the notes, each cue delivered, each read, save and forget (failures with their
-reason), and each reflection step (what it changed, or why it did not run, and
-the tokens it spent) is appended to `activity.jsonl` in the store, which names
-notes, tools and workspaces but never what a note says, and keeps the newer half
-once it passes 4 MiB. The stats sum it: turns, cues per session, reads, saves by
-who made them, the reflection's outcomes and cost, its verdicts, then one row per
-note: the turns whose index held it, then what reached the agent beyond that line
-(cues, full showings for a request that named it, reads), its verdicts, and how
-many of the sessions that could see it those reached. A note is marked `pinned`,
-`index only` when it has no cues (the index is its whole delivery, so its
-verdicts are what say whether it lands), `cues never fired` when a week-old
-note's cues never matched, `noisy` when its cues fire in most sessions, and
-`often ignored` when you keep repeating what it says. The reflection step counts
-a note as ignored even when your correction is narrower than the note, as a
-complaint that one file is hard to follow is covered by a note on writing for
-the next reader. The consolidation pass's reads are recorded as its own and
-count as neither use nor reads.
+`julia memory stats` measures whether memory earns its keep.
 
 ## Permissions and sandbox
 
@@ -397,63 +344,48 @@ count as neither use nor reads.
 | `auto` (default) | Reads, workspace edits, offline or loopback sandboxed Bash and terminals, and the Browser on the loopback servers its terminals started and workspace files run freely. Bash with network, escalated Bash, a networked terminal's start and every input to it, web searches, each new Browser origin (the machine's other loopback servers included), and text, keys, uploads and scripts sent to a page beyond loopback go to the reviewer model. |
 | `ask`            | You approve every mutation, command, terminal start and input, search, and Browser action on a page (navigating, clicking, typing, scripts); looking at a page needs no approval.                                                                                                                                                                                                                                                                  |
 | `read-only`      | Only `Read`, `ViewImage`, `Grep`, and `List`.                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `yolo`           | No sandbox and no review: Bash and terminals run directly on the host with the process environment, and every action is granted. For an unattended agent in a container that is itself the trust boundary, such as a one-task Cloud Run job. Set it explicitly in the config or with `--mode yolo`; it is never a fallback, and never for a machine you care about.                                                                                |
+| `yolo`           | No sandbox and no review: Bash and terminals run directly on the host with the process environment, and every action is granted. Set it explicitly in the config or with `--mode yolo`. It is never a fallback, and never for a machine you care about.                                                                                                                                                                                            |
 
-**Sandbox.** Bash runs under a deny-by-default Seatbelt profile. It can write
+## Sandbox
+
+Bash runs under a deny-by-default Seatbelt profile. It can write
 only to the workspace (never `.git`), a temp dir, isolated Go caches, and
 `$JULIA_SCRATCH`. It has no network and no access to home credentials, and
-credentials are stripped from its environment. A `Terminal` program gets the same
-profile plus its own terminal, through `/dev/tty` and the descriptors it inherits;
-no terminal can be opened by its device name, which macOS reuses. The agent can
-request `network: true` for a single call, or for one terminal's lifetime, or
-`loopback: true`, which lets it listen on localhost and connect to the servers it,
-or the agent's loopback terminals, start there: dev servers and tests that start
-local servers. Services already running on the machine (a database, your own dev
-server, JULIA's browser proxy) and Unix sockets stay closed to it; they need
-`network: true`. Auto mode runs loopback commands without review, since they reach
-only what the agent itself started.
+credentials are stripped from its environment.
+
+A `Terminal` program gets the same profile plus its own terminal, through `/dev/tty` and the descriptors it inherits.
+No terminal can be opened by its device name, which macOS reuses. The agent can request `network: true` for a single call,
+or for one terminal's lifetime, or `loopback: true`, which lets it listen on localhost and connect to the servers it,
+or its other loopback terminals started.
+
+Services already running on the machine (a database, your own dev server, JULIA's browser proxy)
+and Unix sockets stay closed to it; they need `network: true`.
+Auto mode runs loopback commands without review, since they reach only what the agent itself started.
+
 Seatbelt cannot tell a wildcard listener from a loopback one, so a server bound to
 every interface still accepts the local network, as it would if you ran it; bind
-127.0.0.1 to avoid that. A Bash call can
-also request `sandbox_permissions: "require_escalated"` with a justification, which
-runs that exact command on the host after approval; terminals never leave the
-sandbox. If the sandbox can't be set up, the command fails rather than running
-unsandboxed.
+127.0.0.1 to avoid that.
 
-**Browser network policy.** Chrome sandboxes its own renderers and runs outside
-Seatbelt, so its reach is decided per request instead, at two layers that both
-refuse by default. Every request a page, frame or worker makes (documents and
-redirects, subresources, fetch, workers) is paused until the policy rules on it, and
-every connection beyond loopback goes through a JULIA proxy that opens only
-approved hosts, which also stops WebSockets and preconnects. Without asking, a page
-reaches loopback servers, files in the workspace and `$JULIA_SCRATCH` (served by
-JULIA without following symlinks, never credential or `.git` paths), and `data:`
-and `blob:` URLs. Any other origin, a CDN or font host included, stays blocked until
-approved for the rest of the turn (`network: true` on navigate, or the `allow`
-action), once per origin, by the reviewer or by you. The trade-off: a page or an
-evaluated script can send what it reads to any origin it reaches, so each one is
-judged once as a destination, and what the agent itself types, uploads or evaluates
-on a page beyond loopback (or in a popup such a page opened) is reviewed again. A
-page or frame from beyond loopback cannot use local servers except by navigating to
-them: the policy judges each frame's requests by its own document, and Chrome counts
-what arrives through the proxy as the public internet, so its Local Network Access
-checks refuse such a document's WebSockets to loopback too. Only Chrome may use the
-proxy. An approved name must resolve to a public address, so DNS rebinding cannot
-turn it into a LAN or localhost client. Downloads are saved where the sandbox cannot
-reach and copied into `$JULIA_SCRATCH/downloads` without following symlinks. Page
-text is untrusted: the agent treats it as data, never as instructions.
+A Bash call can also request `sandbox_permissions: "require_escalated"` with a justification, which
+runs that exact command on the host after approval. Terminals never leave the sandbox.
+If the sandbox can't be set up, the command fails rather than running unsandboxed.
 
-**Reviewer.** `reviewer_model` in the config picks it, as `provider/<model-id>`.
-Unset, it is `codex/gpt-6-luna`: Codex with no reasoning, running in a
-read-only, no-network process. `claude/<model>`, such as `claude/sonnet`, reviews
-through Claude Code at low effort in an unsaved session with no tools, on your
-Claude subscription. `<provider-id>/<model-id>` for one of your
-`providers`, such as `openrouter/typesafe/jev-1.13`, reviews instead through that
-provider's Decisions API. Approval then requires ≥50% task relevance and >70% on each harm
-check. The reviewer sees the proposed action and your messages, but nothing else
-from the agent. A denial goes back to the
-agent with the reason. After 3 denials in a row (or 20 in one turn), or when the
+## Reviewer
+
+`reviewer_model` in the config picks it, as `provider/<model-id>`.
+
+Unset, it is `codex/gpt-6-luna` - Codex with no reasoning, running in a read-only, no-network process.
+
+`claude/<model>`, such as `claude/sonnet`, reviews through Claude Code at low effort
+in an unsaved session with no tools, on your Claude subscription.
+
+`<provider-id>/<model-id>` for one of your `providers`, such as `openrouter/typesafe/jev-1.13`,
+reviews instead through that provider's Decisions API. Approval then requires ≥50% task relevance and >70% on each harm
+check. The reviewer sees the proposed action and your messages, but nothing else from the agent.
+A denial goes back to the agent with the reason. After 3 denials in a row (or 20 in one turn), or when the
 reviewer fails, you are asked instead. In headless mode the action is denied.
+
+If you have access to Jev or another decision model via API, that is highly recommended.
 
 ## Development
 
