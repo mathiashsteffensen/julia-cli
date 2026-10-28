@@ -590,6 +590,16 @@ func toolSummary(call core.ToolCall) string {
 			return summary
 		}
 	}
+	if call.Name == "Skill" {
+		// The skill, and the file in its folder when it is not SKILL.md.
+		var skill struct{ Name, File string }
+		if json.Unmarshal(call.Arguments, &skill) == nil && skill.Name != "" {
+			if skill.File == "" || skill.File == "SKILL.md" {
+				return skill.Name
+			}
+			return skill.Name + "/" + skill.File
+		}
+	}
 	var args map[string]json.RawMessage
 	if json.Unmarshal(call.Arguments, &args) != nil {
 		return string(call.Arguments)

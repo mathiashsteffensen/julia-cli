@@ -242,7 +242,6 @@ func TestJevDenialReturnsToAgentAndSeesTheUsersAnswer(t *testing.T) {
 	}}
 	runner, s := newQuestionRunner(backend, ask, false, t.TempDir())
 	runner.cfg = cfg
-	runner.cfg.SkillPaths = []string{}
 	runner.review = approvalReviewer(cfg)
 	runner.approve = func(_ context.Context, a core.Approval) (core.Decision, error) {
 		t.Errorf("a single Jev denial prompted the user: %s", a.Reason)

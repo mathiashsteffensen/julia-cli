@@ -28,7 +28,6 @@ const CompatibleDecisionsModel = "typesafe/jev-1.13"
 const MinContextTokens = 32000
 
 type Config struct {
-	SkillPaths []string `json:"skill_paths,omitempty"`
 	// Provider, Model, ModelReasoning and ModelContextWindow come from the
 	// "model" entry: provider/<model-id>, or an object with that id, the
 	// reasoning effort the model starts with and its context window. A bare
@@ -64,8 +63,12 @@ type Config struct {
 	// ContextTokens. The field stays only because configs are decoded with
 	// DisallowUnknownFields and earlier 'config init' runs wrote context_bytes
 	// into every user's config, which must keep loading.
-	ContextBytes int    `json:"context_bytes,omitempty"`
-	Timeout      string `json:"timeout"`
+	ContextBytes int `json:"context_bytes,omitempty"`
+	// LegacySkillPaths is deprecated and ignored: JULIA offers every skill in
+	// ~/.agents/skills. It stays so configs that still name skill_paths keep
+	// loading under DisallowUnknownFields; doctor points it out.
+	LegacySkillPaths []string `json:"skill_paths,omitempty"`
+	Timeout          string   `json:"timeout"`
 	// Browser is the Chrome or Chromium the Browser tool launches: an
 	// executable or a macOS .app bundle. Empty finds one; JULIA_BROWSER
 	// overrides it.
@@ -354,14 +357,6 @@ func Load(path string) (Config, error) {
 func (c Config) Validate() error {
 	if err := c.validateProviders(); err != nil {
 		return err
-	}
-	if len(c.SkillPaths) > 8 {
-		return errors.New("at most 8 skill_paths are allowed")
-	}
-	for _, path := range c.SkillPaths {
-		if path == "" {
-			return errors.New("skill_paths must not contain empty paths")
-		}
 	}
 	if err := c.validateModel("model", c.modelEntry()); err != nil {
 		return err

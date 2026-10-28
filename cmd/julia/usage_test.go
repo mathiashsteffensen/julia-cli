@@ -94,7 +94,6 @@ func TestSubagentSpendRollsUpIntoParentSessionOnce(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			backend := &usageBackend{parent: parent, parentContext: 1_600, children: tt.children}
 			cfg := config.Default()
-			cfg.SkillPaths = []string{}
 			var mu sync.Mutex
 			saved := map[string]core.Session{}
 			runner := &runtimeBackend{backend: backend, cfg: cfg, timeout: 10 * time.Second, parent: context.Background(),
@@ -180,7 +179,6 @@ func (b *emitOnlyBackend) Run(_ context.Context, _ *core.Session, _ core.Prompt,
 func TestRuntimeEmitWrapperForwardsUsageWithoutRecordingIt(t *testing.T) {
 	events := []core.Event{core.UsageEvent(core.TokenUsage{Input: 100, CacheRead: 900, Output: 30}, 1_030), {Kind: "status", Text: "working"}}
 	cfg := config.Default()
-	cfg.SkillPaths = []string{}
 	runner := &runtimeBackend{backend: &emitOnlyBackend{events: events}, cfg: cfg, timeout: 10 * time.Second, parent: context.Background()}
 	s := session.New(t.TempDir(), "fake", "model")
 	var seen []core.Event
@@ -212,7 +210,6 @@ func TestRuntimeProviderRecordedUsageIsCountedOnce(t *testing.T) {
 			want = sumUsage(u, child)
 		}
 		cfg := config.Default()
-		cfg.SkillPaths = []string{}
 		runner := &runtimeBackend{backend: backend, cfg: cfg, timeout: 10 * time.Second, parent: context.Background()}
 		if withSubagents {
 			runner.makeBackend = func(context.Context, config.Config) (core.Backend, core.Approver, error) { return backend, nil, nil }
@@ -332,11 +329,11 @@ func TestCLIStartsWithLegacyContextBytesAndValidatesContextTokens(t *testing.T) 
 	for _, tt := range []struct {
 		name, config, wantError string
 	}{
-		{"legacy config from config init", `{"model":"codex","mode":"auto","codex_binary":"codex","max_steps":256,"context_bytes":160000,"timeout":"4h","skill_paths":[]}`, ""},
-		{"legacy value is not validated", `{"context_bytes":5,"skill_paths":[]}`, ""},
-		{"new key", `{"context_tokens":128000,"skill_paths":[]}`, ""},
-		{"window too small", `{"context_tokens":1000,"skill_paths":[]}`, "context_tokens must be at least"},
-		{"unknown keys still rejected", `{"context_words":1,"skill_paths":[]}`, "context_words"},
+		{"legacy config from config init", `{"model":"codex","mode":"auto","codex_binary":"codex","max_steps":256,"context_bytes":160000,"timeout":"4h","skill_paths":["~/.codex/skills/coding-assistance-style/SKILL.md",""]}`, ""},
+		{"legacy value is not validated", `{"context_bytes":5}`, ""},
+		{"new key", `{"context_tokens":128000}`, ""},
+		{"window too small", `{"context_tokens":1000}`, "context_tokens must be at least"},
+		{"unknown keys still rejected", `{"context_words":1}`, "context_words"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()

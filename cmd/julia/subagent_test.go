@@ -56,7 +56,6 @@ func (b *delegationBackend) Run(ctx context.Context, s *core.Session, prompt cor
 
 func TestRuntimeSubagentsInheritSettingsAndAuthorization(t *testing.T) {
 	cfg := config.Default()
-	cfg.SkillPaths = []string{}
 	cfg.Mode = "ask"
 	s := session.New(t.TempDir(), "fake", "selected-model")
 	s.Reasoning = "high"
@@ -166,7 +165,6 @@ func (b *roleBackend) Run(ctx context.Context, s *core.Session, prompt core.Prom
 
 func TestRuntimeSubagentRolesRunOnTheirModels(t *testing.T) {
 	cfg := config.Default()
-	cfg.SkillPaths = []string{}
 	cfg.Providers = []config.ProviderConfig{{ID: "openrouter", BaseURL: "https://openrouter.ai/api/v1", APIKeyEnv: "ROUTER_KEY"}}
 	cfg.EnabledModels = []config.ModelEntry{{ID: "openrouter/vendor/scout-model", Reasoning: "xhigh"}}
 	cfg.Subagents = map[string]config.ModelEntry{
@@ -241,7 +239,6 @@ func TestRuntimeSubagentRolesRunOnTheirModels(t *testing.T) {
 func TestRuntimeSubagentThatCannotStartIsNeitherSavedNorAnnounced(t *testing.T) {
 	t.Setenv("JULIA_TEST_UNSET_KEY", "")
 	cfg := config.Default()
-	cfg.SkillPaths = []string{}
 	cfg.Providers = []config.ProviderConfig{{ID: "openrouter", BaseURL: "https://openrouter.ai/api/v1", APIKeyEnv: "JULIA_TEST_UNSET_KEY"}}
 	cfg.Subagents = map[string]config.ModelEntry{"scout": {ID: "openrouter/vendor/m"}}
 	backend := &roleBackend{children: map[string]roleChild{}, tasks: `{"tasks":[{"role":"scout","task":"map it"},{"role":"worker","task":"build it"}]}`}

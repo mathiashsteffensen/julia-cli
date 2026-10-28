@@ -601,6 +601,8 @@ type runtimeBackend struct {
 	// roles are the subagent roles a delegated task may name; children are run
 	// by makeBackend, so without it there are none.
 	roles []agents.Role
+	// skillsDir is where the user's skills are found; empty is ~/.agents/skills.
+	skillsDir string
 }
 
 // settings are the configuration and task timeout a turn starts with.
@@ -778,7 +780,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 	bundle, err := instructions.Build(instructions.Options{
 		Directory: s.Directory, Provider: s.Provider, Model: s.Model, Reasoning: selected.Reasoning, Mode: cfg.Mode,
 		Sandbox: executor.SandboxInfo(), Timeout: timeout.String(), Headless: r.headless,
-		SkillPaths: cfg.SkillPaths, CodexHome: os.Getenv("CODEX_HOME"),
+		SkillsDir:       r.skillsDir,
 		BashEnvironment: bashEnvironment, WorkspaceInstructions: cfg.WorkspaceInstructions,
 		Memory: memoryIndex,
 	})
@@ -789,8 +791,8 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 	for _, warning := range bundle.Warnings {
 		emit(core.Event{Kind: "warning", Text: warning})
 	}
-	for _, path := range bundle.Skills {
-		emit(core.Event{Kind: "status", Text: "Loaded skill: " + path})
+	if names := bundle.Skills.Names(); len(names) > 0 {
+		emit(core.Event{Kind: "status", Text: "Skills: " + strings.Join(names, ", ")})
 	}
 	for _, path := range bundle.Repository {
 		emit(core.Event{Kind: "status", Text: "Loaded repository instructions: " + path})
@@ -803,6 +805,9 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		// Snapshot trusted settings before the parent provider changes its session.
 		parentID, directory := s.ID, s.Directory
 		agentTools = tools.WithSubagents(executor, roles, func(childCtx context.Context, role agents.Role, task string, childTools core.ToolExecutor) (string, error) {
+			// A child's instructions list the skills too, so it can load them
+			// whatever tools its role limits it to.
+			childTools = tools.WithSkills(childTools, bundle.Skills)
 			settings := subagentSettings(cfg, selected, role.Name)
 			modelID := config.JoinModel(settings.Provider, settings.Model)
 			instructionText, err := bundle.For(settings.Provider, settings.Model, settings.Reasoning)
@@ -875,6 +880,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 			return output, err
 		})
 	}
+	agentTools = tools.WithSkills(agentTools, bundle.Skills)
 	// Outermost: subagent children receive the base executor and so can never ask the user.
 	agentTools = tools.WithInteractions(agentTools, r.ask, r.triage)
 	if r.ask != nil || r.triage != nil {
@@ -1202,15 +1208,19 @@ func doctor(ctx context.Context, c config.Config, path string, roles []agents.Ro
 	} else {
 		fmt.Println("Claude    unavailable")
 	}
-	bundle, skillErr := instructions.Build(instructions.Options{SkillPaths: c.SkillPaths, CodexHome: os.Getenv("CODEX_HOME")})
+	bundle, skillErr := instructions.Build(instructions.Options{})
 	if skillErr != nil {
 		return fmt.Errorf("check skills: %w", skillErr)
 	}
+	fmt.Printf("Skills     %s · %d offered\n", safe(bundle.Skills.Dir), len(bundle.Skills.Skills))
 	for _, warning := range bundle.Warnings {
 		fmt.Println("Skills    ", safe(warning))
 	}
-	for _, path := range bundle.Skills {
-		fmt.Println("Skill     ", safe(path))
+	for _, skill := range bundle.Skills.Skills {
+		fmt.Println("Skill     ", safe(skill.Name))
+	}
+	if c.LegacySkillPaths != nil {
+		fmt.Println("Skills     skill_paths in the configuration is ignored; skills load from the folder above")
 	}
 	fmt.Println(browserSummary(ctx, c.BrowserPath()))
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

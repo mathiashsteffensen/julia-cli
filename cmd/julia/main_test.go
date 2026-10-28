@@ -11,68 +11,81 @@ import (
 
 	"julia/internal/config"
 	"julia/internal/core"
+	"julia/internal/tools"
 )
 
 type instructionBackend struct {
 	t         *testing.T
 	seen      []string
+	loaded    []string
 	skillPath string
 }
 
 func (b *instructionBackend) Name() string { return "fake" }
-func (b *instructionBackend) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tools core.ToolExecutor, emit core.Emit) error {
+func (b *instructionBackend) Run(ctx context.Context, s *core.Session, prompt core.Prompt, executor core.ToolExecutor, emit core.Emit) error {
 	b.seen = append(b.seen, s.Instructions)
 	args, _ := json.Marshal(map[string]any{"path": b.skillPath})
-	if result := tools.Execute(ctx, core.ToolCall{Name: "Read", Arguments: args}); !result.IsError {
+	if result := executor.Execute(ctx, core.ToolCall{Name: "Read", Arguments: args}); !result.IsError {
 		b.t.Fatal("host skill loading widened workspace tool access")
 	}
+	loaded := executor.Execute(ctx, core.ToolCall{Name: tools.SkillTool, Arguments: json.RawMessage(`{"name":"style"}`)})
+	if loaded.IsError {
+		b.t.Fatalf("the Skill tool did not load a listed skill: %s", loaded.Content)
+	}
+	b.loaded = append(b.loaded, loaded.Content)
 	return nil
 }
 
-func TestRuntimeRefreshesInstructionsWithoutExpandingToolAccess(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "SKILL.md")
-	if err := os.WriteFile(path, []byte("style revision one"), 0600); err != nil {
+func writeStyleSkill(t *testing.T, path, revision string) {
+	t.Helper()
+	content := "---\nname: style\ndescription: Style " + revision + " for every task.\n---\nFollow policy " + revision + "."
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRuntimeRefreshesInstructionsWithoutExpandingToolAccess(t *testing.T) {
+	skillsDir := t.TempDir()
+	path := filepath.Join(skillsDir, "style", "SKILL.md")
+	if err := os.Mkdir(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeStyleSkill(t, path, "one")
 	backend := &instructionBackend{t: t, skillPath: path}
 	cfg := config.Default()
-	cfg.SkillPaths = []string{path}
 	cfg.Reasoning = "medium"
-	runner := &runtimeBackend{backend: backend, cfg: cfg, timeout: time.Second, parent: context.Background()}
+	runner := &runtimeBackend{backend: backend, cfg: cfg, timeout: time.Second, parent: context.Background(), skillsDir: skillsDir}
 	s := &core.Session{Directory: t.TempDir(), Provider: "fake", Model: "first-model", Reasoning: "medium"}
 	emit := func(core.Event) {}
 	if err := runner.Run(context.Background(), s, core.Prompt{Text: "Inspect this project"}, nil, emit); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("style revision two"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeStyleSkill(t, path, "two")
 	runner.cfg.Mode, runner.headless = "read-only", true
 	s.Reasoning, s.Model = "high", "second-model"
 	if err := runner.Run(context.Background(), s, core.Prompt{Text: "Continue"}, nil, emit); err != nil {
 		t.Fatal(err)
 	}
-	if len(backend.seen) != 2 || !strings.Contains(backend.seen[0], "style revision one") || strings.Contains(backend.seen[1], "style revision one") || !strings.Contains(backend.seen[1], "style revision two") || !strings.Contains(backend.seen[1], `"human_approval_available": false`) || !strings.Contains(backend.seen[1], `"approval_mode": "read-only"`) {
+	if len(backend.seen) != 2 || !strings.Contains(backend.seen[0], "- style: Style one") || strings.Contains(backend.seen[1], "Style one") || !strings.Contains(backend.seen[1], "- style: Style two") || !strings.Contains(backend.seen[1], `"human_approval_available": false`) || !strings.Contains(backend.seen[1], `"approval_mode": "read-only"`) {
 		t.Fatal("runtime did not supply refreshed instructions")
+	}
+	if strings.Contains(backend.seen[1], "Follow policy") {
+		t.Fatal("a skill's instructions belong to the Skill tool, not every turn")
+	}
+	if len(backend.loaded) != 2 || !strings.Contains(backend.loaded[0], "Follow policy one.") || !strings.Contains(backend.loaded[1], "Follow policy two.") {
+		t.Fatalf("the Skill tool loaded %q", backend.loaded)
 	}
 	for i, expected := range []struct{ model, effort string }{{"first-model", "medium"}, {"second-model", "high"}} {
 		if !strings.Contains(backend.seen[i], `"model": "`+expected.model+`"`) || !strings.Contains(backend.seen[i], `"reasoning_effort": "`+expected.effort+`"`) {
 			t.Fatal("runtime instructions lost current model/reasoning settings")
 		}
 	}
-	runner.cfg.SkillPaths = []string{filepath.Join(t.TempDir(), "missing.md")}
-	if err := runner.Run(context.Background(), s, core.Prompt{Text: "Continue"}, nil, emit); err == nil {
-		t.Fatal("missing explicit skill did not stop the turn")
-	}
-	if len(backend.seen) != 2 {
-		t.Fatal("provider ran with missing configured instructions")
-	}
 }
 
 func TestCLIReasoningAndModelOverridesConfigurationWithoutProviderCalls(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(`{"model":"codex/gpt-6-astra","reasoning":"medium","skill_paths":[],"providers":[{"id":"local","base_url":"http://127.0.0.1:1/v1"}]}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"model":"codex/gpt-6-astra","reasoning":"medium","providers":[{"id":"local","base_url":"http://127.0.0.1:1/v1"}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())

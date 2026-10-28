@@ -65,7 +65,6 @@ const reflectionAnswer = `{"operations":[{"action":"save","scope":"workspace","n
 func reflectionRunner(t *testing.T, backend core.Backend, mode string) (*runtimeBackend, *memory.Store, *core.Session) {
 	t.Helper()
 	cfg := config.Default()
-	cfg.SkillPaths = []string{}
 	cfg.Mode = mode
 	store := &memory.Store{Directory: t.TempDir()}
 	runner := &runtimeBackend{backend: backend, cfg: cfg, timeout: time.Minute, parent: context.Background(), memory: store}

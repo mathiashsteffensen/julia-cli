@@ -1,27 +1,29 @@
 # JULIA
 
+**J**ust **U**sing **L**anguage **I**ntelligently, **A**pparently
+
 A terminal coding agent written in Go (Bubble Tea / Fantasy). It runs on your
-Codex subscription or any of several API providers, executes Bash in a macOS
+Codex or Claude subscription or any compatible API providers. It executes Bash in a macOS
 Seatbelt sandbox, and sends risky actions to a separate reviewer model before
 they run.
 
+![JULIA welcome screen](docs/welcome.png)
+
 Note: This harness is designed to be opinionated. Underlying models are highly configurable but tools, workflows and the TUI are fixed. If you do not like it, this harness is not for you and I would highly recommend you give something like [Pi](https://pi.dev) a try.
 
-![JULIA welcome screen](docs/welcome.png)
+Also note: This harness is largely slop. The codebase is a mess and should not be viewed by the faint of heart. However, it works and is a joy to use. The sandboxing limits and auto-approvals are however very well-tested. Running this harness in auto mode should be considered as safe as using auto mode in a harness like Codex or Claude Code.
 
 ## Principle: it should be gorgeous
 
 A core principle of this harness is that it should be gorgeous. You spend hours
 reading what it shows you, so how it looks is part of how well it works. Every
-surface is designed: a code block gets a card, a selection is lit, and a status
+interface is designed: a code block gets a card, a selection is lit, and a status
 line says only what matters. A change that works but looks careless is not done.
 
 ## Install
 
-Requires Go 1.27+, `rg`, and macOS (sandboxed Bash is macOS-only for now). For
-the default provider, install and sign in to the Codex CLI. JULIA also finds the
-copy bundled with the ChatGPT macOS app. For the `claude` provider, install the
-Claude Code CLI and sign in to it with your Claude subscription.
+Requires Go 1.27+, `rg`, and macOS (sandboxed Bash is macOS-only for now, do not run this on your dev machine if you use linux). For
+the default provider, install and sign in to the Codex or Claude CLI. JULIA also finds the copy bundled with the ChatGPT macOS app.
 
 ```sh
 make build            # → bin/julia
@@ -86,33 +88,6 @@ the rest of the turn); any other key denies it.
 | `google`          | Gemini API                                                            | `GEMINI_API_KEY`           |
 | your `providers`  | OpenAI-compatible chat completions (OpenRouter, LM Studio, Ollama, …) | its `api_key_env`, or none |
 
-Models are named `provider/<model-id>`, in the config and in `--model`. A bare
-`codex` is the model your Codex is configured with, and a bare `claude` is Claude
-Code's default model; every other provider needs a model ID. Reasoning effort is
-supported on Codex, on Claude Code (`low`, `medium`, `high`, `xhigh` or `max`)
-and on your `providers`, which are sent `reasoning_effort` only when you pick
-one; an endpoint whose model has no reasoning may ignore it or refuse the
-request. Endpoints must be HTTPS unless they are on loopback.
-
-`claude` runs the unmodified Claude Code CLI headlessly, one process per turn on
-its stream-json protocol, resumed by session ID, under whatever sign-in the CLI
-holds: `julia login claude` runs `claude auth login`, and the usage line in the
-sidebar is your plan's seven-day window. JULIA never reads or stores its
-credentials, and drops `ANTHROPIC_API_KEY` from the process so the subscription
-is what pays. Claude Code's own tools are switched off, along with its settings
-files, hooks, skills, slash commands and configured MCP servers; JULIA's tools
-are served to it as an MCP server over the same pipe, named `mcp__julia__Bash`
-and so on, and run and reviewed by JULIA exactly as on every other provider. A
-model is one of the CLI's aliases (`claude/opus`, `claude/sonnet`, `claude/haiku`)
-or a full model ID, as `--model` takes it; the picker lists what the CLI offers.
-`claude_binary` in the config names the CLI; unset, `claude` is found on PATH or
-where its installers put it. Anthropic's terms let a subscriber drive the
-unmodified binary for their own work this way and forbid routing other people's
-requests through a subscription, so use your own sign-in on your own machine.
-
-OpenAI-compatible endpoints are named in the config's `providers`, and each `id`
-is then a provider of its own:
-
 ```json
 {
   "providers": [
@@ -142,6 +117,8 @@ sent only to its own `base_url`; one without `api_key_env` is called keyless.
 `$XDG_CONFIG_HOME`). Flags override it. Repo-local config is never loaded, and
 keys are only referenced by env var name.
 
+Full reference:
+
 ```json
 {
   "model": "codex/gpt-6-astra",
@@ -165,7 +142,6 @@ keys are only referenced by env var name.
       "context_window": 1000000
     }
   ],
-  "skill_paths": ["~/.codex/skills/coding-assistance-style/SKILL.md"],
   "workspace_instructions": ["AGENTS.md"],
   "browser": "/Applications/Chromium.app",
   "subagents": {
@@ -184,13 +160,24 @@ keys are only referenced by env var name.
 - `enabled_models` come first in the model picker, ahead of the rest of Codex's and Claude Code's catalogs, and Ctrl+N cycles through them.
 - `model` and each `enabled_models` entry are `provider/<model-id>`, or `{"id": "provider/<model-id>", "reasoning": "<effort>", "context_window": <tokens>}` for a model that starts at that effort when you launch with it or switch to it, and has a context window of its own. Both keys are optional.
 - `context_tokens` is the assumed window for every model without a `context_window` of its own. API providers compact the history at 85% of the model's window, and the sidebar's context gauge measures against it.
-- `skill_paths` are extra instruction files added to every turn. If you omit it, JULIA loads `coding-assistance-style/SKILL.md` from `$CODEX_HOME/skills` or `~/.agents/skills`. `[]` disables skills.
 - `workspace_instructions` names files at the workspace root, such as `AGENTS.md` or `CLAUDE.md`, whose contents join every turn as the repository's own context, labelled as such and without authority over the task. Omitted, nothing is read from a repository: a cloned project's files are not trusted by default. A missing file is skipped; a symlink or a file over 64 KiB is a warning.
 - The last reasoning effort you picked for each provider is remembered in `~/.local/state/julia/preferences.json`. It applies at launch unless the model has its own `reasoning`, and `--reasoning` beats both.
 - Every model call is timed, and `~/.local/state/julia/throughput.json` keeps each model's last week of calls. The model picker (`ctrl+p`) shows each model's output tokens per second over them, with how long ago it was last used once that is more than a week. A model's old calls are dropped only when it is used again, so an idle model keeps its figures.
 - `subagents` assigns a model to each [subagent role](#subagent-roles) by name, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`. A role without one runs on the delegating agent's model. An assigned model starts at its entry's effort, else at the parent's when it is the parent's model, else at the one `model` or `enabled_models` gives it.
 - `memory` keeps notes between sessions (see [Memory](#memory)): `reflection` is `on` (the default) or `off`, `model` runs the reflection step on another model, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`, and `index_bytes` caps what the index of notes may take of the instructions (4096 to 65536; default 16 KiB). The reflection step runs at low effort unless `model` gives its own.
 - `browser` is the Chrome the Browser tool launches (an executable or `.app`); `JULIA_BROWSER` overrides it. Without either, JULIA looks for Chrome, Chromium, Chrome for Testing, Brave or Edge in `/Applications`, then in Playwright's and Puppeteer's caches. `npx playwright install chromium` provides one.
+
+### Skills
+
+JULIA offers every [Agent Skill](https://agentskills.io/specification) in
+`~/.agents/skills`: each folder there whose `SKILL.md` frontmatter gives a
+`name` matching the folder and a `description`. Every turn's instructions list
+each skill's name and description, and the model loads a skill's instructions,
+or a file beside them, with the read-only Skill tool when a task calls for it.
+A symlinked skill folder is followed; nothing outside a skill's folder can be
+read through the tool. Skills marked `disable-model-invocation: true` are left
+out, and a malformed one is left out with a warning. `julia doctor` lists what
+it finds. The old `skill_paths` key is ignored.
 
 ### Profiles
 
@@ -217,34 +204,19 @@ They contain transcripts and command output.
 `Read`, `ViewImage`, `List`, `Grep`, `Edit`, `MultiEdit`, `Write`, `Bash`,
 `Terminal`, `Browser`, `WebSearch`, `WebFetch`, `Slack` (when a bot token is set),
 `Linear` (when an access token is saved), `Mail` (when a mailbox's credentials
-are saved),
-`Subagent` (up to 3 parallel child tasks), `Memory` (see [Memory](#memory)), and
-`AskUserQuestion` (interactive only). File tools are confined to the workspace,
-refuse symlinks and credential paths, and cap output at 32 KiB.
+are saved), `Subagent` (up to 3 parallel child tasks), `Memory` (see [Memory](#memory)),
+`Skill` (see [Skills](#skills)), and `AskUserQuestion` (interactive only).
+File tools are confined to the workspace, refuse symlinks and credential paths, and cap output at 32 KiB.
 
 `ViewImage` shows the model an image from the workspace or `$JULIA_SCRATCH`,
-such as a screenshot it rendered, scaled to at most 2000 px. `Terminal` runs a
-program on a virtual terminal under the Bash sandbox, so the agent can drive a TUI,
-REPL or dev server with keys, text and mouse, and read the screen as text or, when
-the look matters, as a rendered screenshot. Up to 4 run at once. At the end of the
-turn each is hung up, as closing a terminal window does, and everything still on it
-is killed. Ctrl+O shows a terminal's screen in its card, and screenshots appear as
-thumbnails in Ghostty.
+such as a screenshot it rendered, scaled to at most 2000 px.
+
+`Terminal` runs a program on a virtual terminal under the Bash sandbox, so the agent can drive a TUI.
 
 `Browser` opens pages in JULIA's own headless Chrome, so the agent can check a
 web UI as a person would: start the dev server in a loopback terminal, then
 navigate, click, type, press keys, select, upload, scroll, drag, wait, evaluate
-JavaScript, read the console and resize or switch to dark mode. Every action
-answers, once the page has settled (the requests it started get up to 1.5 s), with
-the page's accessibility snapshot, or only the lines that changed, plus notes on
-popups, dialogs, blocked requests and console errors; a long page is shown around
-what is in view, and a screenshot shows the look. A click is refused, as a person's
-would miss, when a backdrop or banner covers its target or a container cuts it off.
-Chrome starts on the first navigate with a throwaway profile, talks to JULIA over
-a pipe rather than a debugging port, gives each subagent its own context, and is
-killed with every process it started, profile and crash dumps and all, when the
-turn ends, or by a watchdog should JULIA die first. Ctrl+O shows a page's snapshot
-in its card, its changes lit as a diff.
+JavaScript, read the console and resize or switch to dark mode.
 
 `WebSearch` and `WebFetch` use Firecrawl: search returns titles, URLs and
 snippets, and fetch returns a public page's main content as Markdown, 24 KiB at
@@ -260,39 +232,13 @@ owner in a thread and message them directly. The bot needs the scopes
 `channels:history`, `groups:history`, `im:history` and `im:write`.
 
 `Linear` appears when `~/.config/julia/linear.json` holds `{"api_key": "…"}`
-or `LINEAR_ACCESS_TOKEN` is set: list teams with their workflow states and
-labels, list projects and issues, read an issue with its comments, create or
-update an issue (labels included: an update adds to the issue's labels unless
-`replace_labels` is set), comment on one, or create a label for a team or the
-whole workspace with `create_label`. Teams, states, projects, labels and people
-are named, never given as ids. Creating, updating, labelling and commenting are
-reviewed in auto mode and approved in ask mode; reading is free. The token is an OAuth application's
-access token, sent as a Bearer token: in Linear, open Settings → API → OAuth
-applications, create an application (a callback URL is required but never
-used), and under _Developer token_ create one with the actor _Application_, so
-everything JULIA does shows as the app rather than as you. Developer tokens
-have no refresh token and may expire; when Linear answers 401, create a new one
-and replace it in the file. `julia doctor` shows where the token comes from.
+or `LINEAR_ACCESS_TOKEN` is set.
 
 `Mail` appears when `~/.config/julia/mail.json` holds a mailbox's IMAP
-credentials: list the mailboxes with their counts, list the newest messages in
-one (unread only, from, subject, text or dates), read a message as text with
-its attachments named, or archive one. Reading never marks a message read, and
-archiving is yours to approve in every mode but yolo: the card shows the
-message as the server describes it (sender, subject, date), not as the agent
-does, and the reviewer never decides it. It is made for [Proton Mail
-Bridge](https://proton.me/mail/bridge), which decrypts your account on this
-machine and serves it over IMAP on `127.0.0.1:1143` with a password of its own
-(a paid plan is needed): save `{"username": "you@proton.me", "password":
-"<the Bridge password>"}`, and JULIA connects with STARTTLS. To pin Bridge's
-certificate, export it under Settings → Advanced and add `"certificate":
-"/path/to/cert.pem"`; without that a loopback server is trusted unverified,
-and any other address (`"address": "host:port"`, with `"security"` `starttls`,
-`tls` or, to a loopback address only, `none`) must present a certificate the
-system trusts. Messages are the agent's untrusted context, never its
-instructions, and a conversation that has read mail marks the memory it saves
-as unverified, as one that read Slack does. `julia doctor` shows the mailbox
-and how its connection is verified.
+credentials. It is made for [Proton Mail Bridge](https://proton.me/mail/bridge),
+which decrypts your account on this machine and serves it over IMAP on `127.0.0.1:1143` with a password of its own
+(a paid plan is needed): save `{"username": "you@proton.me", "password": "<the Bridge password>"}`,
+and JULIA connects with STARTTLS.
 
 ### Subagent roles
 
@@ -310,16 +256,13 @@ of work, can limit the child to some tools, and can run it on its own model (see
 | `delegate`   | Anything that fits no other role                                                       | all                                            |
 
 Ctrl+F opens the fleet, a window over the conversation that lists every
-subagent the session has run down its left side; the arrow keys move through
-them, and the chosen one's transcript fills the rest: the task it was given, each
-tool call as the conversation shows one, with Ctrl+O expanding its output, and
-its report. A running agent's pane follows its newest activity; PgUp and PgDn
-scroll it. A resumed session's fleet is rebuilt from its children's saved
-transcripts.
+subagent the session has run down its left side.
 
 A role's tools are the only ones its children are offered or can run. Bash can
 still write the workspace, so the read-only roles keep to inspection by
-instruction. To change a role or add one, put a file of the same shape in an
+instruction.
+
+To change a role or add one, put a file of the same shape in an
 `agents/` directory beside your config file (`~/.config/julia/agents/` by
 default): a file named like a built-in role replaces it. Roles are never read
 from a repository.
@@ -541,7 +484,7 @@ wrote, and the run prints a table of scenario, memory on or off, result, notes
 saved, unverified notes, saves refused, and what tainted the conversations.
 The test fails when a scenario fails with memory or a verified note holds the
 poisoned instruction; the control failing the learning scenarios is the
-expected result. It uses your configured provider and personal skill
+expected result. It uses your configured provider and your skills
 (`JULIA_MEMORY_EVAL_MODEL=provider/model` overrides the model) and takes a
 minute or two; `JULIA_MEMORY_EVAL_KEEP=dir` keeps each arm's state, workspace
 and JSON events there.
@@ -556,4 +499,5 @@ and JSON events there.
 | `internal/browser`, `internal/terminal`                        | Headless Chrome over the DevTools protocol; virtual terminals                       |
 | `internal/ui`                                                  | Bubble Tea TUI                                                                      |
 | `internal/memory`                                              | Notes kept between sessions, their index, and the reflection step's prompt          |
-| `internal/session`, `internal/config`, `internal/instructions` | Persistence, settings, skill loading                                                |
+| `internal/session`, `internal/config`, `internal/instructions` | Persistence, settings, each turn's instructions                                     |
+| `internal/skills`                                              | The user's Agent Skills in `~/.agents/skills`: discovery and reading                |

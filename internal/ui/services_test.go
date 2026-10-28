@@ -128,3 +128,16 @@ func TestExpandedServiceArguments(t *testing.T) {
 		}
 	}
 }
+
+func TestSkillSummary(t *testing.T) {
+	for args, want := range map[string]string{
+		`{"name":"writing-for-agents"}`:                             `writing-for-agents`,
+		`{"name":"writing-for-agents","file":"SKILL.md"}`:           `writing-for-agents`,
+		`{"name":"writing-for-agents","file":"SKILL-MECHANICS.md"}`: `writing-for-agents/SKILL-MECHANICS.md`,
+		`{"name":"diagnosing-bugs","file":"scripts/bisect.sh"}`:     `diagnosing-bugs/scripts/bisect.sh`,
+	} {
+		if got := toolSummary(core.ToolCall{Name: "Skill", Arguments: json.RawMessage(args)}); got != want {
+			t.Errorf("%s\n got %q\nwant %q", args, got, want)
+		}
+	}
+}

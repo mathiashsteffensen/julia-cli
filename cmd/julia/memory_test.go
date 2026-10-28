@@ -252,7 +252,7 @@ func TestMemoryMarkdownForTheInterface(t *testing.T) {
 func TestMemoryFlagIsValidatedBeforeAnyProviderCall(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(`{"model":"codex/gpt-6-astra","skill_paths":[]}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"model":"codex/gpt-6-astra"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -310,7 +310,7 @@ func TestMemoryCommandConfirmClearsTheUnverifiedMark(t *testing.T) {
 func TestConsolidationOffersTheMemoryToolAlone(t *testing.T) {
 	backend := &toolListingBackend{}
 	cfg := config.Default()
-	cfg.SkillPaths, cfg.Mode = []string{}, "read-only"
+	cfg.Mode = "read-only"
 	runner := &runtimeBackend{backend: backend, cfg: cfg, timeout: time.Minute, parent: context.Background(), memory: &memory.Store{Directory: t.TempDir()}, consolidating: true, memoryMode: "yolo", headless: true}
 	s := session.New(t.TempDir(), "fake", "m")
 	if err := runner.Run(context.Background(), s, core.Prompt{Text: memory.ConsolidationPrompt}, nil, func(core.Event) {}); err != nil {

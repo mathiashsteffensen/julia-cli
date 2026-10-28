@@ -30,7 +30,6 @@ func (b *questionBackend) Run(ctx context.Context, s *core.Session, prompt core.
 
 func newQuestionRunner(backend core.Backend, ask core.Asker, subagents bool, directory string) (*runtimeBackend, *core.Session) {
 	cfg := config.Default()
-	cfg.SkillPaths = []string{}
 	cfg.Mode = "read-only"
 	runner := &runtimeBackend{backend: backend, cfg: cfg, ask: ask, timeout: 30 * time.Second, parent: context.Background()}
 	if subagents {
