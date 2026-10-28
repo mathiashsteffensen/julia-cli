@@ -33,7 +33,7 @@ var (
 	cyan        = lipgloss.Color("#92CED2")
 	green       = lipgloss.Color("#A9C9AD")
 	amber       = lipgloss.Color("#F9D399")
-	pillBG      = lipgloss.Color("#2A2536") // a raised chip: a tool name, a starter
+	pillBG      = lipgloss.Color("#2A2536") // a raised chip: a tool name
 	pillText    = lipgloss.Color("#D9D1E6")
 	coralStyle  = lipgloss.NewStyle().Foreground(coral)
 	violetStyle = lipgloss.NewStyle().Foreground(violet)
@@ -737,18 +737,14 @@ func (m *model) View() tea.View {
 	contentWidth := m.width - 2*m.margin()
 	// The masthead: the brand's wave as a ribbon across the top, the name set
 	// in the same gradient, and the workspace and mode at the right.
-	brand := ribbon("JULIA")
-	caption := mutedStyle.Render("  your personal agent")
+	header := ribbon("JULIA")
 	right := violetStyle.Render("● " + sanitize(m.cfg.Mode))
 	if m.cfg.Demo {
 		right = violetStyle.Render("◈ PREVIEW")
 	}
-	if m.width < 65 {
-		caption = ""
-	} else if m.cfg.Session != nil && m.cfg.Session.Directory != "" {
+	if m.width >= 65 && m.cfg.Session != nil && m.cfg.Session.Directory != "" {
 		right = mutedStyle.Render(ansi.Truncate(sanitize(filepath.Base(filepath.Clean(m.cfg.Session.Directory))), 24, "…")+"  ·  ") + right
 	}
-	header := brand + caption
 	header += strings.Repeat(" ", max(1, contentWidth-ansi.StringWidth(header)-ansi.StringWidth(right))) + right
 	header = ribbon(strings.Repeat("▀", contentWidth)) + "\n" + ansi.Truncate(header, contentWidth, "") + "\n"
 	body := m.withActivity(m.highlightSelection(m.viewport.View()))
@@ -785,7 +781,7 @@ func (m *model) View() tea.View {
 	v.AltScreen = true
 	v.BackgroundColor = background
 	v.ForegroundColor = cream
-	v.WindowTitle = "JULIA — personal agent"
+	v.WindowTitle = "JULIA"
 	v.MouseMode = tea.MouseModeCellMotion
 	v.ReportFocus = true // for notify, which speaks only while the terminal is in the background
 	return v
@@ -892,14 +888,6 @@ func (m *model) bottomLayout() ([]string, int) {
 // heroGap is the number of cells between the hero's letters.
 const heroGap = 2
 
-// welcomeStarters are the three suggestions: a title, shown as a pill on the
-// welcome, and what each is for.
-var welcomeStarters = [][2]string{
-	{"Explore a codebase", "and explain the moving parts"},
-	{"Investigate a question", "and follow the evidence"},
-	{"Make a change", "verify it, and report back"},
-}
-
 // hairline is a faint rule, width cells wide, with a small amber ornament at
 // its centre.
 func hairline(width int, ornament string) string {
@@ -949,59 +937,54 @@ func heroMark() []string {
 	return rows
 }
 
-// jewelLockup is the small-terminal mark: the quadrant lettering with the
-// caption under it.
-func jewelLockup() []string {
-	return append(logoLettering(), "", mutedStyle.Render("your personal agent"))
+// tagline is the welcome's caption: what the name stands for, give or take.
+const tagline = "Just Using Language Intelligently, Apparently"
+
+// taglineRows sets the tagline on one row when it fits in width, else on two,
+// broken after "Language" so each half still reads as a phrase.
+func taglineRows(width int) []string {
+	lines := []string{tagline}
+	if ansi.StringWidth(tagline) > width {
+		lines = []string{"Just Using Language", "Intelligently, Apparently"}
+	}
+
+	rows := make([]string, len(lines))
+	for i, line := range lines {
+		rows[i] = mutedStyle.Render(ansi.Truncate(line, width, "…"))
+	}
+	return rows
 }
 
-// starterRows sets the starters as pills: on one row when they fit in width,
-// else one under another.
-func starterRows(width int) []string {
-	pills := make([]string, len(welcomeStarters))
-	for i, s := range welcomeStarters {
-		pills[i] = ink(pillBG, pillText).Render(" " + s[0] + " ")
-	}
-	if row := strings.Join(pills, "   "); ansi.StringWidth(row) <= width {
-		return []string{row}
-	}
-	return pills
+// jewelLockup is the small-terminal mark: the quadrant lettering with the
+// tagline under it.
+func jewelLockup(width int) []string {
+	return append(append(logoLettering(), ""), taglineRows(width)...)
 }
 
 // welcome is the body before the first message: the wordmark with its
-// caption, and the starters beneath when there is room. With less room the
-// quadrant jewel, and at the last resort two lines of text. The block is
+// tagline. With less room the quadrant jewel, and at the last resort two lines of text. The block is
 // centred, and never starts on the row under the masthead.
 func (m *model) welcome() string {
 	w, h := m.mainWidth, m.bodyHeight
 	var rows []string
 	switch {
 	case h >= 7 && w >= heroWidth(heroGap)+6:
-		rows = welcomePage(w, h)
-	case h >= 5 && w >= 24:
-		rows = jewelLockup()
+		rows = welcomePage(w)
+	case w >= 24 && h >= len(jewelLockup(w)):
+		rows = jewelLockup(w)
 	default:
-		rows = []string{ribbon("J U L I A"), mutedStyle.Render("your personal agent")}
-		if h < 2 {
-			rows = rows[:1]
-		}
+		rows = append([]string{ribbon("J U L I A")}, taglineRows(w)...)
+		rows = rows[:min(len(rows), max(h, 1))]
 	}
 	rows = block(rows)
 	content := strings.Repeat("\n", centred(h, len(rows))) + strings.Join(rows, "\n")
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Top, content)
 }
 
-// welcomePage is the full welcome: the wordmark with the caption set directly
-// under the shadow's feet, then, while the block still keeps a row of air at
-// each end, a row and the starter pills.
-func welcomePage(w, h int) []string {
-	rows := append(heroMark(), mutedStyle.Render("your personal agent"))
-	pills := starterRows(w - 4)
-	if len(rows)+1+len(pills) <= h-2 {
-		rows = append(rows, "")
-		rows = append(rows, pills...)
-	}
-	return rows
+// welcomePage is the full welcome: the wordmark with the tagline set directly
+// under the shadow's feet.
+func welcomePage(w int) []string {
+	return append(heroMark(), taglineRows(w)...)
 }
 
 // showsReasoning reports whether provider takes a reasoning effort: a CLI

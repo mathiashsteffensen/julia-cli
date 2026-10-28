@@ -9,33 +9,6 @@ import (
 	"julia/internal/core"
 )
 
-// The welcome's starters are pills: each title on its chip, all three on one
-// row at the README size, and one under another in a pane too narrow for the
-// row, with none of the descriptions, which are for the help text.
-func TestWelcomeStartersArePills(t *testing.T) {
-	for _, size := range [][2]int{{140, 44}, {90, 30}, {70, 26}} {
-		lines := strings.Split(ansi.Strip(RenderWelcome(size[0], size[1])), "\n")
-		var rows []int
-		for i, line := range lines {
-			for _, s := range welcomeStarters {
-				if strings.Contains(line, " "+s[0]+" ") {
-					rows = append(rows, i)
-				}
-				if strings.Contains(line, s[1]) {
-					t.Errorf("%v: the welcome spells out %q", size, s[1])
-				}
-			}
-		}
-		if len(rows) != 3 {
-			t.Fatalf("%v: %d starters shown", size, len(rows))
-		}
-		oneRow := rows[0] == rows[1] && rows[1] == rows[2]
-		if wide := size[0] >= 90; oneRow != wide {
-			t.Errorf("%v: starters on rows %v", size, rows)
-		}
-	}
-}
-
 // Headings are set by weight and color, never by their Markdown markers.
 func TestHeadingsDropTheirMarkers(t *testing.T) {
 	m := testModel(t, Config{})
