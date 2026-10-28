@@ -113,3 +113,17 @@ func TestEncodeTaskIsAReadableJSONList(t *testing.T) {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 }
+
+func TestSystemPromptPlacesTheUsersOwnPrompt(t *testing.T) {
+	if strings.Contains(SystemPrompt, customPromptPlaceholder) || strings.Contains(SystemPrompt, "JULIA.\n\n\n") || !strings.Contains(SystemPrompt, "You are JULIA.\n\n## Working behavior") {
+		t.Fatalf("without a custom prompt the placeholder must leave nothing, not even a blank line:\n%.200s", SystemPrompt)
+	}
+	if SystemPromptWith("  \n") != SystemPrompt {
+		t.Fatal("a blank custom prompt must be no custom prompt")
+	}
+
+	custom := SystemPromptWith("\nYou assist Ada. Call her captain.\n\n")
+	if !strings.Contains(custom, "You are JULIA.\n\nYou assist Ada. Call her captain.\n\n## Working behavior") || strings.Contains(custom, customPromptPlaceholder) {
+		t.Fatalf("custom prompt not in place:\n%.300s", custom)
+	}
+}

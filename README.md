@@ -11,7 +11,7 @@ they run.
 
 Note: This harness is designed to be opinionated. Underlying models are highly configurable but tools, workflows and the TUI are fixed. If you do not like it, this harness is not for you and I would highly recommend you give something like [Pi](https://pi.dev) a try.
 
-Also note: This harness is largely slop. The codebase is a mess and should not be viewed by the faint of heart. However, it works and is a joy to use. The sandboxing limits and auto-approvals are however very well-tested. Running this harness in auto mode should be considered as safe as using auto mode in a harness like Codex or Claude Code, possibly safer as it is quite conservative comparatively in my experience.
+Also note: This harness is largely slop (just as Codex and Claude is). The codebase is a mess and should not be viewed by the faint of heart. However, it works and is a joy to use. The sandboxing limits and auto-approvals are however very well-tested. Running this harness in auto mode should be considered as safe as using auto mode in a harness like Codex or Claude Code, possibly safer as it is quite conservative comparatively in my experience.
 
 ## Principle: it should be gorgeous
 
@@ -168,6 +168,14 @@ Full reference:
 - `subagents` assigns a model to each [subagent role](#subagent-roles) by name, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`. A role without one runs on the delegating agent's model. An assigned model starts at its entry's effort, else at the parent's when it is the parent's model, else at the one `model` or `enabled_models` gives it.
 - `memory` keeps notes between sessions (see [Memory](#memory)): `reflection` is `on` (the default) or `off`, `model` runs the reflection step on another model, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`, and `index_bytes` caps what the index of notes may take of the instructions (4096 to 65536; default 16 KiB). The reflection step runs at low effort unless `model` gives its own.
 - `browser` is the Chrome the Browser tool launches (an executable or `.app`); `JULIA_BROWSER` overrides it. Without either, JULIA looks for Chrome, Chromium, Chrome for Testing, Brave or Edge in `/Applications`, then in Playwright's and Puppeteer's caches. `npx playwright install chromium` provides one.
+
+### Custom system prompt
+
+`system.md` beside `config.json`, usually `~/.config/julia/system.md`, is your
+own part of the system prompt: who you are, how JULIA should address you, how it
+should answer. Its text goes right after JULIA's opening lines, ahead of the
+working rules, for every agent and subagent. It is read again each turn, so an
+edit applies to the next message.
 
 ### Skills
 

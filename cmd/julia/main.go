@@ -307,7 +307,7 @@ func run() error {
 		ask, triage, questions = ui.NewBridge()
 	}
 	duration, _ := time.ParseDuration(cfg.Timeout)
-	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, triage: triage, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path), linearToken: linearToken, mail: mailConfig, memory: memoryStore, memoryReadOnly: memoryFlag == "read", consolidating: consolidate}
+	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, triage: triage, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path), linearToken: linearToken, mail: mailConfig, memory: memoryStore, memoryReadOnly: memoryFlag == "read", consolidating: consolidate, configDir: configDir}
 	if consolidate {
 		// The pass rewrites notes and nothing else: no one is asked, and a
 		// note it rewrites keeps its unverified mark, as a yolo save would.
@@ -604,6 +604,9 @@ type runtimeBackend struct {
 	roles []agents.Role
 	// skillsDir is where the user's skills are found; empty is ~/.agents/skills.
 	skillsDir string
+	// configDir holds the configuration and system.md, the user's own system
+	// prompt, read again every turn; empty reads none.
+	configDir string
 }
 
 // skillCatalog is every skill in the user's skills folder, those only the
@@ -825,6 +828,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		Directory: s.Directory, Provider: s.Provider, Model: s.Model, Reasoning: selected.Reasoning, Mode: cfg.Mode,
 		Sandbox: executor.SandboxInfo(), Timeout: timeout.String(), Headless: r.headless,
 		SkillsDir:       r.skillsDir,
+		ConfigDir:       r.configDir,
 		BashEnvironment: bashEnvironment, WorkspaceInstructions: cfg.WorkspaceInstructions,
 		Memory: memoryIndex,
 	})

@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -391,7 +392,24 @@ type QuestionResult struct {
 	Note    string `json:"note,omitempty"`
 }
 
-// SystemPrompt is the shared baseline for every executing provider.
+// systemTemplate is the system prompt with customPromptPlaceholder where the
+// user's own prompt goes.
 //
 //go:embed system.md
-var SystemPrompt string
+var systemTemplate string
+
+const customPromptPlaceholder = "<CUSTOM_SYSTEM_PROMPT>"
+
+// SystemPrompt is the shared baseline for every executing provider, without
+// a custom prompt of the user's.
+var SystemPrompt = SystemPromptWith("")
+
+// SystemPromptWith is the baseline with custom, the user's own system prompt,
+// in its place. An empty custom leaves nothing there, not even a blank line.
+func SystemPromptWith(custom string) string {
+	custom = strings.TrimSpace(custom)
+	if custom == "" {
+		return strings.Replace(systemTemplate, customPromptPlaceholder+"\n\n", "", 1)
+	}
+	return strings.Replace(systemTemplate, customPromptPlaceholder, custom, 1)
+}

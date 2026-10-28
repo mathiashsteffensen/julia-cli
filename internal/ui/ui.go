@@ -11,6 +11,13 @@ import (
 	"sync"
 	"time"
 
+	"julia/internal/config"
+	"julia/internal/core"
+	"julia/internal/images"
+	sessions "julia/internal/session"
+	"julia/internal/skills"
+	"julia/internal/throughput"
+
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -19,12 +26,6 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
-	"julia/internal/config"
-	"julia/internal/core"
-	"julia/internal/images"
-	sessions "julia/internal/session"
-	"julia/internal/skills"
-	"julia/internal/throughput"
 )
 
 // ApprovalRequest bridges the permission engine to the terminal. Reply should
@@ -261,7 +262,7 @@ func Run(cfg Config) error {
 func newModel(cfg Config) *model {
 	ctx, stop := context.WithCancel(context.Background())
 	input := textarea.New()
-	input.Placeholder = "What shall we work on, sir?"
+	input.Placeholder = "What shall we work on?"
 	input.Prompt = "› "
 	input.SetPromptFunc(2, func(info textarea.PromptInfo) string {
 		if info.LineNumber == 0 {

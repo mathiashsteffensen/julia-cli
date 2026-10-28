@@ -169,3 +169,42 @@ func TestAnUnreadableSkillsFolderWarnsInsteadOfFailing(t *testing.T) {
 		t.Fatalf("got %v, warnings %v", err, bundle.Warnings)
 	}
 }
+
+// system.md in the configuration directory is read again every turn and
+// replaces the system prompt's placeholder; a subagent's instructions keep it.
+func TestCustomSystemPromptFromTheConfigDirectory(t *testing.T) {
+	home, configDir := t.TempDir(), t.TempDir()
+	options := Options{HomeDir: home, Directory: "/work", ConfigDir: configDir}
+	none, err := Build(options)
+	if err != nil || len(none.Warnings) != 0 || !strings.HasPrefix(none.Text, core.SystemPrompt) {
+		t.Fatalf("a missing system.md must add nothing: %v %v", err, none.Warnings)
+	}
+
+	// The user's own file may be a symlink, such as one into their dotfiles.
+	dotfiles := filepath.Join(t.TempDir(), "system.md")
+	writeSkill(t, dotfiles, "You assist Ada. Call her captain.\n")
+	if err := os.Symlink(dotfiles, filepath.Join(configDir, "system.md")); err != nil {
+		t.Fatal(err)
+	}
+	custom, err := Build(options)
+	if err != nil || len(custom.Warnings) != 0 {
+		t.Fatalf("system.md not loaded: %v %v", err, custom.Warnings)
+	}
+	if !strings.HasPrefix(custom.Text, core.SystemPromptWith("You assist Ada. Call her captain.")) || strings.Contains(custom.Text, "<CUSTOM_SYSTEM_PROMPT>") {
+		t.Fatalf("custom prompt not in place:\n%.300s", custom.Text)
+	}
+	if child, err := custom.For("compatible", "vendor/m", ""); err != nil || !strings.Contains(child, "Call her captain.") {
+		t.Fatalf("a subagent lost the custom prompt: %v", err)
+	}
+
+	writeSkill(t, dotfiles, " \n")
+	if blank, err := Build(options); err != nil || len(blank.Warnings) != 0 || !strings.HasPrefix(blank.Text, core.SystemPrompt) {
+		t.Fatalf("a blank system.md must add nothing: %v %v", err, blank.Warnings)
+	}
+
+	writeSkill(t, dotfiles, strings.Repeat("x", maxInstructionBytes+1))
+	oversized, err := Build(options)
+	if err != nil || len(oversized.Warnings) != 1 || !strings.Contains(oversized.Warnings[0], "Custom system prompt not loaded") || !strings.HasPrefix(oversized.Text, core.SystemPrompt) {
+		t.Fatalf("an oversized system.md must be a warning and add nothing: %v %v", err, oversized.Warnings)
+	}
+}
