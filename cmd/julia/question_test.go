@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -253,12 +255,15 @@ func TestRuntimeDefinitionsMatchExecutorChain(t *testing.T) {
 		name      string
 		asker     bool
 		subagents bool
+		skills    bool
 		wantTail  []string
 	}{
-		{"interactive", true, true, []string{"Subagent", core.QuestionTool}},
-		{"interactive without subagents", true, false, []string{"WebFetch", core.QuestionTool}},
-		{"headless", false, true, []string{"Subagent"}},
-		{"headless without subagents", false, false, []string{"WebFetch"}},
+		{"interactive", true, true, false, []string{"Subagent", core.QuestionTool}},
+		{"interactive without subagents", true, false, false, []string{"WebFetch", core.QuestionTool}},
+		{"interactive with skills", true, true, true, []string{"Subagent", "Skill", core.QuestionTool}},
+		{"headless", false, true, false, []string{"Subagent"}},
+		{"headless without subagents", false, false, false, []string{"WebFetch"}},
+		{"headless with skills", false, false, true, []string{"WebFetch", "Skill"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var chain []core.ToolDefinition
@@ -271,6 +276,12 @@ func TestRuntimeDefinitionsMatchExecutorChain(t *testing.T) {
 				ask = func(context.Context, core.Question) (core.Answer, error) { return core.Answer{Skipped: true}, nil }
 			}
 			runner, s := newQuestionRunner(backend, ask, tc.subagents, t.TempDir())
+			runner.skillsDir = t.TempDir()
+			if tc.skills {
+				writeSkill(t, runner.skillsDir, "style", "")
+				writeSkill(t, runner.skillsDir, "deploy", "disable-model-invocation: true\n")
+			}
+
 			if err := runQuestionBackend(runner, s); err != nil {
 				t.Fatal(err)
 			}
@@ -286,6 +297,18 @@ func TestRuntimeDefinitionsMatchExecutorChain(t *testing.T) {
 				t.Fatalf("registry ends with %v, want %v (all: %v)", tail, tc.wantTail, names)
 			}
 		})
+	}
+}
+
+// writeSkill adds the skill name to dir, with extra frontmatter lines.
+func writeSkill(t *testing.T, dir, name, extra string) {
+	t.Helper()
+	content := "---\nname: " + name + "\ndescription: The " + name + " skill.\n" + extra + "---\nDo the " + name + " work."
+	if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name, "SKILL.md"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
 	}
 }
 

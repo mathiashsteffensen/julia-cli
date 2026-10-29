@@ -207,7 +207,7 @@ func (st *browserState) decide(r browser.Request) browser.Decision {
 			return browser.Decision{Reason: "a page from " + originOf(r.From) + " may not reach local servers"}
 		}
 		if st.terminalServer(r.URL) || st.approved(origin) {
-			return allow
+			return st.allowSigned(r, origin)
 		}
 		return browser.Decision{Reason: origin + " is not a server your terminals started and is not approved for this turn; Browser allow asks for it"}
 	}
@@ -215,7 +215,7 @@ func (st *browserState) decide(r browser.Request) browser.Decision {
 		return browser.Decision{Reason: host + " is not an address to browse; use localhost"}
 	}
 	if st.approved(origin) {
-		return allow
+		return st.allowSigned(r, origin)
 	}
 	return browser.Decision{Reason: origin + " is not approved for this turn; Browser allow asks for it"}
 }

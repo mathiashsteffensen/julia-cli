@@ -16,7 +16,7 @@ import (
 )
 
 func settingsSession() *core.Session {
-	return &core.Session{ID: "0123456789abcdef01234567", Directory: "/workspace", Provider: "codex", Model: "first-model", Reasoning: "medium", RemoteID: "remote-thread", State: json.RawMessage(`{"continuation":"keep"}`), PendingTool: &core.ToolCall{ID: "pending", Name: "Read", Arguments: json.RawMessage(`{"path":"README.md"}`)}, Messages: []core.Message{{Role: "user", Content: "Keep this conversation"}}, Audit: []core.AuditEntry{{At: time.Unix(1, 0), Event: core.Event{Kind: "status", Text: "keep audit"}}}}
+	return &core.Session{ID: "0123456789abcdef01234567", Directory: "/workspace", Provider: "codex", Model: "first-model", Reasoning: "medium", RemoteID: "remote-thread", State: json.RawMessage(`{"continuation":"keep"}`), PendingTool: &core.ToolCall{ID: "pending", Name: "Read", Arguments: json.RawMessage(`{"path":"README.md"}`)}, Messages: []core.Message{{Role: "user", Content: "Keep this conversation"}}, Audit: []core.AuditEntry{{At: time.Unix(1, 0).UTC(), Event: core.Event{Kind: "status", Text: "keep audit"}}}}
 }
 func TestApplySessionSettingsSaveFailureIsAtomic(t *testing.T) {
 	current := settingsSession()

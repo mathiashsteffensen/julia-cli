@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -54,6 +55,10 @@ type Request struct {
 type Decision struct {
 	Allow  bool
 	Reason string
+	// Headers are sent with an allowed request, each replacing any header of
+	// the same name the page set. They go with this request only: a redirect
+	// it answers with is a request of its own, which the policy decides again.
+	Headers map[string]string
 }
 
 // Policy decides whether a request may proceed. It runs on the connection's
@@ -458,11 +463,40 @@ func (c *Context) intercept(s *session, p *Page, params jsontext.Value) {
 		return
 	}
 	if d.Allow {
-		s.send(fetch.CommandContinueRequest, fetch.ContinueRequestParams{RequestID: ev.RequestID})
+		params := fetch.ContinueRequestParams{RequestID: ev.RequestID}
+		if len(d.Headers) > 0 {
+			params.Headers = withHeaders(ev.Request.Headers, d.Headers)
+		}
+		s.send(fetch.CommandContinueRequest, params)
 		return
 	}
 	s.send(fetch.CommandFailRequest, fetch.FailRequestParams{RequestID: ev.RequestID, ErrorReason: "BlockedByClient"})
 	c.blocked(p, r.Method, raw, r.Type, d.Reason, s.kind)
+}
+
+// withHeaders is a request's headers with extra ones added, each replacing
+// the request's own of the same name. Continuing a request with headers
+// replaces all of them, so the request's own are carried over.
+func withHeaders(own network.Headers, extra map[string]string) []*fetch.HeaderEntry {
+	replaced := func(name string) bool {
+		for n := range extra {
+			if strings.EqualFold(n, name) {
+				return true
+			}
+		}
+		return false
+	}
+
+	var entries []*fetch.HeaderEntry
+	for name, value := range own {
+		if text, ok := value.(string); ok && !replaced(name) {
+			entries = append(entries, &fetch.HeaderEntry{Name: name, Value: text})
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(extra)) {
+		entries = append(entries, &fetch.HeaderEntry{Name: name, Value: extra[name]})
+	}
+	return entries
 }
 
 var escapeHTML = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&#34;")

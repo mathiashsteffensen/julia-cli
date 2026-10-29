@@ -146,6 +146,11 @@ Full reference:
   ],
   "workspace_instructions": ["AGENTS.md"],
   "browser": "/Applications/Chromium.app",
+  "browser_auth": {
+    "https://grafana.example.com": {
+      "Authorization": "Bearer $(gcloud secrets versions access latest --secret=grafana-token --project=example)"
+    }
+  },
   "subagents": {
     "scout": "openrouter/vendor/fast-model",
     "reviewer": { "id": "openrouter/vendor/model-b", "reasoning": "high" },
@@ -168,6 +173,7 @@ Full reference:
 - `subagents` assigns a model to each [subagent role](#subagent-roles) by name, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`. A role without one runs on the delegating agent's model. An assigned model starts at its entry's effort, else at the parent's when it is the parent's model, else at the one `model` or `enabled_models` gives it.
 - `memory` keeps notes between sessions (see [Memory](#memory)): `reflection` is `on` (the default) or `off`, `model` runs the reflection step on another model, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`, and `index_bytes` caps what the index of notes may take of the instructions (4096 to 65536; default 16 KiB). The reflection step runs at low effort unless `model` gives its own.
 - `browser` is the Chrome the Browser tool launches (an executable or `.app`); `JULIA_BROWSER` overrides it. Without either, JULIA looks for Chrome, Chromium, Chrome for Testing, Brave or Edge in `/Applications`, then in Playwright's and Puppeteer's caches. `npx playwright install chromium` provides one.
+- `browser_auth` signs the Browser tool in to sites that take a token, such as a Grafana service-account token. For each origin (`https://host` or `https://host:port`, as the browser writes it), it gives the headers that origin's requests carry. Each value is expanded by `/bin/bash` the way it would expand a double-quoted string, so `$VAR` and `$(command)` work, and a command that fails stops the expansion. It runs on the host, outside the sandbox, the first time a turn may reach the origin: once it is approved, or when it is a server the agent's terminals started. The agent sees which headers were sent, never their values. They go with the origin's own requests and with top-level GET navigations to it, not with other sites' requests to it, and not across a redirect to another origin.
 
 ### Custom system prompt
 

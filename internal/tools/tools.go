@@ -48,6 +48,10 @@ type Config struct {
 	// Browser is the Chrome the Browser tool launches, from configuration or
 	// JULIA_BROWSER; empty finds one (see browser.Find).
 	Browser string
+	// BrowserAuth is the browser_auth configuration: for each origin, the
+	// headers its requests carry, each value expanded by bash; see
+	// browser_auth.go.
+	BrowserAuth map[string]map[string]string
 	// SlackToken is the bot token from SLACK_BOT_TOKEN; without it there is
 	// no Slack tool. SlackOwner is the user ID from SLACK_OWNER_USER_ID, the
 	// person the bot works for.

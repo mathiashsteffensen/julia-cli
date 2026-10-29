@@ -680,6 +680,14 @@ func headlessTriager(context.Context, core.Review) (core.Answer, error) {
 
 func (r *runtimeBackend) Definitions() []core.ToolDefinition {
 	definitions := tools.Definitions(r.subagentRoles(), r.linearToken != "", r.mail.Enabled())
+
+	// As in Run: the skills offered to the model, and none when the folder
+	// cannot be read.
+	catalog, _, _ := r.skillCatalog()
+	if offered := catalog.Offered(); len(offered.Skills) > 0 {
+		definitions = append(definitions, tools.SkillDefinition(offered))
+	}
+
 	if r.ask != nil {
 		definitions = append(definitions, tools.QuestionDefinition())
 	}
@@ -773,7 +781,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		invoked = &skill
 	}
 	task := newTaskContext(s.Messages, prompt.Text)
-	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: cfg.BrowserPath(), SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv), LinearToken: r.linearToken, Mail: r.mail})
+	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: cfg.BrowserPath(), BrowserAuth: cfg.BrowserAuth, SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv), LinearToken: r.linearToken, Mail: r.mail})
 	if err != nil {
 		return err
 	}

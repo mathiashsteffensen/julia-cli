@@ -179,7 +179,7 @@ func (b *emitOnlyBackend) Run(_ context.Context, _ *core.Session, _ core.Prompt,
 func TestRuntimeEmitWrapperForwardsUsageWithoutRecordingIt(t *testing.T) {
 	events := []core.Event{core.UsageEvent(core.TokenUsage{Input: 100, CacheRead: 900, Output: 30}, 1_030), {Kind: "status", Text: "working"}}
 	cfg := config.Default()
-	runner := &runtimeBackend{backend: &emitOnlyBackend{events: events}, cfg: cfg, timeout: 10 * time.Second, parent: context.Background()}
+	runner := &runtimeBackend{backend: &emitOnlyBackend{events: events}, cfg: cfg, timeout: 10 * time.Second, parent: context.Background(), skillsDir: t.TempDir()}
 	s := session.New(t.TempDir(), "fake", "model")
 	var seen []core.Event
 	if err := runner.Run(context.Background(), s, core.Prompt{Text: "task"}, nil, func(event core.Event) { seen = append(seen, event) }); err != nil {

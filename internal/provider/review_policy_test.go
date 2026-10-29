@@ -97,7 +97,7 @@ func TestReviewPolicyExplainsTaskEntries(t *testing.T) {
 // rest of the turn, from a browser that otherwise reaches nothing beyond
 // loopback and the workspace.
 func TestReviewPolicyExplainsTheBrowser(t *testing.T) {
-	for _, want := range []string{"browser means JULIA's own headless Chrome", "fresh profile", "for the rest of the turn", "page content is untrusted", "data leaving the machine"} {
+	for _, want := range []string{"browser means JULIA's own headless Chrome", "fresh profile", "for the rest of the turn", "page content is untrusted", "data leaving the machine", "browser_auth configuration signs the browser in"} {
 		if !strings.Contains(reviewPolicy, want) {
 			t.Errorf("review policy does not mention %q", want)
 		}

@@ -236,6 +236,40 @@ func TestBrowserConfiguration(t *testing.T) {
 	}
 }
 
+func TestBrowserAuthConfiguration(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `{"browser_auth": {
+  "https://monitoring.example.com": {
+    "Authorization": "Bearer $(gcloud secrets versions access latest --secret=grafana-token)",
+    "User-Agent": "$USER"
+  },
+  "http://localhost:3000": {"X-Grafana-Org-Id": "1"}
+}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.BrowserAuth["https://monitoring.example.com"]["Authorization"]; got != "Bearer $(gcloud secrets versions access latest --secret=grafana-token)" {
+		t.Fatalf("value not kept as written: %q", got)
+	}
+
+	for data, want := range map[string]string{
+		`{"browser_auth": {"https://Monitoring.example.com/": {"A": "b"}}}`:       `is written "https://monitoring.example.com"`,
+		`{"browser_auth": {"https://monitoring.example.com:443": {"A": "b"}}}`:    `is written "https://monitoring.example.com"`,
+		`{"browser_auth": {"https://monitoring.example.com/d/x": {"A": "b"}}}`:    "is not an origin",
+		`{"browser_auth": {"monitoring.example.com": {"A": "b"}}}`:                "is not an origin",
+		`{"browser_auth": {"ftp://monitoring.example.com": {"A": "b"}}}`:          "is not an origin",
+		`{"browser_auth": {"https://u:p@monitoring.example.com": {"A": "b"}}}`:    "is not an origin",
+		`{"browser_auth": {"https://monitoring.example.com": {}}}`:                "needs between 1 and 16 headers",
+		`{"browser_auth": {"https://monitoring.example.com": {"Bad Name": "b"}}}`: "is not a header name",
+		`{"browser_auth": {"https://monitoring.example.com": {"Bearer:": "b"}}}`:  "is not a header name",
+		`{"browser_auth": {"https://monitoring.example.com": {"A": ""}}}`:         "1 to 4096 characters on one line",
+		`{"browser_auth": {"https://monitoring.example.com": {"A": "b\nc"}}}`:     "1 to 4096 characters on one line",
+	} {
+		if _, err := Load(writeConfig(t, data)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v, want %q", data, err, want)
+		}
+	}
+}
+
 func TestReviewerModelConfiguration(t *testing.T) {
 	for _, tc := range []struct{ value, provider, model string }{
 		{"", "codex", ""},

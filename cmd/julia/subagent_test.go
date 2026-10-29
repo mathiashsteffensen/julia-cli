@@ -178,7 +178,7 @@ func TestRuntimeSubagentRolesRunOnTheirModels(t *testing.T) {
 		{"role":"oracle","task":"judge it"}]}`}
 	var mu sync.Mutex
 	made := map[string]config.Config{} // by provider/model
-	runner := &runtimeBackend{backend: backend, cfg: cfg, roles: agents.Builtin(), timeout: 5 * time.Second, parent: context.Background(),
+	runner := &runtimeBackend{backend: backend, cfg: cfg, roles: agents.Builtin(), timeout: 5 * time.Second, parent: context.Background(), skillsDir: t.TempDir(),
 		makeBackend: func(_ context.Context, selected config.Config) (core.Backend, core.Approver, error) {
 			mu.Lock()
 			defer mu.Unlock()

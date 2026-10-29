@@ -73,6 +73,12 @@ type Config struct {
 	// executable or a macOS .app bundle. Empty finds one; JULIA_BROWSER
 	// overrides it.
 	Browser string `json:"browser,omitempty"`
+	// BrowserAuth signs the Browser tool in to sites: for each origin, such as
+	// https://grafana.example.com, the headers its own requests carry. Each
+	// value is expanded by bash as a double-quoted string, so
+	// "Bearer $(gcloud secrets versions access …)" sends the secret, and runs
+	// on the host the first time a turn uses the origin.
+	BrowserAuth map[string]map[string]string `json:"browser_auth,omitempty"`
 	// ReviewerModel is the model that reviews risky actions, as
 	// provider/<model-id>: codex/gpt-6-luna, claude/sonnet, or <id>/<model-id>
 	// for a model served through a named provider's Decisions API. Empty is
@@ -424,6 +430,9 @@ func (c Config) Validate() error {
 	if len(c.Browser) > 4096 || c.Browser != strings.TrimSpace(c.Browser) || strings.IndexFunc(c.Browser, unicode.IsControl) >= 0 {
 		return errors.New("browser must be a path to a Chrome or Chromium executable or .app, without surrounding whitespace or control characters")
 	}
+	if err := c.validateBrowserAuth(); err != nil {
+		return err
+	}
 	switch c.Memory.Reflection {
 	case "", "on", "off":
 	default:
@@ -465,6 +474,75 @@ func (c Config) validateModel(field string, entry ModelEntry) error {
 		return fmt.Errorf("%s %q: context_window must be at least %d, or left out to assume context_tokens", field, id, MinContextTokens)
 	}
 	return nil
+}
+
+// Bounds for browser_auth.
+const (
+	maxBrowserAuthOrigins = 32
+	maxBrowserAuthHeaders = 16
+	maxBrowserAuthValue   = 4096
+)
+
+// validateBrowserAuth checks the "browser_auth" entry: origins written as
+// the browser names them, header names HTTP allows, and values bash can be
+// given on one line.
+func (c Config) validateBrowserAuth() error {
+	if len(c.BrowserAuth) > maxBrowserAuthOrigins {
+		return fmt.Errorf("browser_auth may name at most %d origins", maxBrowserAuthOrigins)
+	}
+	for _, origin := range slices.Sorted(maps.Keys(c.BrowserAuth)) {
+		if canonical, ok := CanonicalOrigin(origin); !ok {
+			return fmt.Errorf("browser_auth %q is not an origin such as https://grafana.example.com", origin)
+		} else if canonical != origin {
+			return fmt.Errorf("browser_auth %q is written %q", origin, canonical)
+		}
+
+		headers := c.BrowserAuth[origin]
+		if len(headers) == 0 || len(headers) > maxBrowserAuthHeaders {
+			return fmt.Errorf("browser_auth %q needs between 1 and %d headers", origin, maxBrowserAuthHeaders)
+		}
+		for _, name := range slices.Sorted(maps.Keys(headers)) {
+			if !validHeaderName(name) {
+				return fmt.Errorf("browser_auth %q: %q is not a header name", origin, name)
+			}
+			value := headers[name]
+			if value == "" || len(value) > maxBrowserAuthValue || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+				return fmt.Errorf("browser_auth %q %s must be 1 to %d characters on one line", origin, name, maxBrowserAuthValue)
+			}
+		}
+	}
+	return nil
+}
+
+// CanonicalOrigin writes an http or https origin as the browser names it:
+// scheme and host in lowercase, without a default port or a trailing slash.
+// ok is false for anything that is not an origin.
+func CanonicalOrigin(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return "", false
+	}
+	scheme, host := strings.ToLower(u.Scheme), strings.ToLower(u.Hostname())
+	if scheme != "http" && scheme != "https" || host == "" {
+		return "", false
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port := u.Port(); port != "" && !(scheme == "http" && port == "80" || scheme == "https" && port == "443") {
+		host += ":" + port
+	}
+	return scheme + "://" + host, true
+}
+
+// validHeaderName reports whether name is an HTTP field name: a token.
+func validHeaderName(name string) bool {
+	if name == "" || len(name) > 256 {
+		return false
+	}
+	return strings.IndexFunc(name, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("!#$%&'*+-.^_`|~", r))
+	}) < 0
 }
 
 // validateProviders checks the "providers" entries: each a distinct id that
