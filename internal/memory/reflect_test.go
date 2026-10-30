@@ -52,7 +52,7 @@ func TestReflectionPromptFitsItsBudget(t *testing.T) {
 			core.Message{Role: "assistant", ToolCalls: []core.ToolCall{{ID: "c", Name: "Bash", Arguments: json.RawMessage(`{"command":"` + strings.Repeat("x", 3000) + `"}`)}}},
 			core.Message{Role: "tool", ToolCallID: "c", Content: "START " + strings.Repeat("y", 20000) + " END " + string(rune('a'+i))})
 	}
-	turn.Messages = append(turn.Messages, core.Message{Role: "assistant", Content: "Done, sir.", Images: []core.Image{{MediaType: "image/png", Data: []byte("not sent")}}})
+	turn.Messages = append(turn.Messages, core.Message{Role: "assistant", Content: "Done.", Images: []core.Image{{MediaType: "image/png", Data: []byte("not sent")}}})
 	prompt := ReflectionPrompt(turn, recall)
 	if !strings.Contains(prompt, "Workspace: "+workspace) || !strings.Contains(prompt, "- sir · user") || !strings.Contains(prompt, `"warnings":["Automatic review denied: curl to example.com"]`) || !strings.Contains(prompt, "through WebFetch, Subagent: save only") {
 		t.Fatalf("prompt lacks its parts:\n%s", prompt[:min(len(prompt), 2000)])
@@ -74,7 +74,7 @@ func TestReflectionPromptFitsItsBudget(t *testing.T) {
 		t.Fatal("the user's request was dropped")
 	}
 	last := decoded.Messages[len(decoded.Messages)-1]
-	if last.Content != "Done, sir." || last.Images != 1 || strings.Contains(encoded, "not sent") {
+	if last.Content != "Done." || last.Images != 1 || strings.Contains(encoded, "not sent") {
 		t.Fatalf("last message %+v", last)
 	}
 	if !strings.Contains(encoded, "bytes omitted") {

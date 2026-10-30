@@ -229,12 +229,12 @@ func TestLinearWritesResolveNamesAndAreReviewed(t *testing.T) {
 	if want := `{"action":"update_issue","identifier":"QUA-14","state":"done","priority":"low","assignee":"none"}`; string(reviewed[1].Call.Arguments) != want || !strings.HasPrefix(reviewed[1].Reason, "Change this Linear issue's state, priority and assignee as the app?") {
 		t.Fatalf("update review %s: %s", reviewed[1].Call.Arguments, reviewed[1].Reason)
 	}
-	r = invoke(e, "Linear", map[string]any{"action": "add_comment", "identifier": "QUA-14", "body": "Done, sir."})
+	r = invoke(e, "Linear", map[string]any{"action": "add_comment", "identifier": "QUA-14", "body": "Done."})
 	if r.IsError || r.Content != "Commented on QUA-14: https://linear.app/q/issue/QUA-14#comment-1" {
 		t.Fatalf("comment: %+v", r)
 	}
 	input, _ = json.Marshal((*calls)[len(*calls)-1].variables["input"])
-	if string(input) != `{"body":"Done, sir.","issueId":"I14"}` {
+	if string(input) != `{"body":"Done.","issueId":"I14"}` {
 		t.Fatalf("comment input %s", input)
 	}
 	if len(reviewed) != 3 {

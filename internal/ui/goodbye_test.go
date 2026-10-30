@@ -4,8 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/x/ansi"
 	"julia/internal/core"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestGoodbyeReportsUsageAndResume(t *testing.T) {
@@ -14,7 +15,7 @@ func TestGoodbyeReportsUsageAndResume(t *testing.T) {
 		Messages: []core.Message{{Role: "user"}, {Role: "assistant"}, {Role: "user"}}}
 	resume := "julia --resume " + s.ID + " --dir /a/rather/long/workspace/path"
 	out := ansi.Strip(RenderGoodbye(s, resume, 60))
-	for _, want := range []string{"Until next time, sir.", "Tidy the store", "1M in · 48.2k out", "80% from cache", "codex · gpt-5.5 · high", s.ID + " · 2 turns", "› " + resume} {
+	for _, want := range []string{"Until next time.", "Tidy the store", "1M in · 48.2k out", "80% from cache", "codex · gpt-5.5 · high", s.ID + " · 2 turns", "› " + resume} {
 		if !strings.Contains(out, want) {
 			t.Errorf("goodbye lacks %q:\n%s", want, out)
 		}

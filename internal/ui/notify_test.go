@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"julia/internal/core"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // finishTurn ends the turn under way with err and returns what its end writes
@@ -46,9 +47,9 @@ func TestFocusedTerminalIsNotNotified(t *testing.T) {
 func TestTurnThatSettlesInTheBackgroundNotifies(t *testing.T) {
 	m, b := busyModel(t, false)
 	m.Update(tea.BlurMsg{})
-	m.entries = append(m.entries, entry{role: "assistant", text: "\n**The build is fixed, sir.**\n\nThe linker flag was stale."})
+	m.entries = append(m.entries, entry{role: "assistant", text: "\n**The build is fixed.**\n\nThe linker flag was stale."})
 	out := finishTurn(t, m, b, nil)
-	if want := "\x1b]9;JULIA is done · The build is fixed, sir.\x07\x07"; out != want {
+	if want := "\x1b]9;JULIA is done · The build is fixed.\x07\x07"; out != want {
 		t.Fatalf("notification = %q, want %q", out, want)
 	}
 }

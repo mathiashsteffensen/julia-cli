@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/x/ansi"
 	"julia/internal/core"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // RenderGoodbye is what stays in the scrollback once the interface closes: the
@@ -26,7 +27,7 @@ func RenderGoodbye(s *core.Session, resume string, width int) string {
 	}
 	fit := func(s string, w int) string { return ansi.Truncate(sanitize(s), w, "…") }
 
-	rows := append(logoLettering(), "", creamStyle.Bold(true).Render("Until next time, sir."))
+	rows := append(logoLettering(), "", creamStyle.Bold(true).Render("Until next time."))
 	turns := 0
 	for _, m := range s.Messages {
 		if m.Role == "user" {

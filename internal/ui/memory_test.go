@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/x/ansi"
 	"julia/internal/core"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // /memory is answered by the hook: alone it lists, a name shows that note and
@@ -94,7 +95,7 @@ func TestHelpMentionsMemory(t *testing.T) {
 func TestReflectionCardsAreMarked(t *testing.T) {
 	call := core.ToolCall{ID: "reflection-0-1", Name: "Memory", Arguments: json.RawMessage(`{"action":"save","scope":"workspace","name":"make-check","type":"feedback","description":"Run make check"}`)}
 	s := &core.Session{ID: "r", Directory: "/tmp/julia", Provider: "fake", Messages: []core.Message{
-		{Role: "user", Content: "Fix the build"}, {Role: "assistant", Content: "Done, sir."},
+		{Role: "user", Content: "Fix the build"}, {Role: "assistant", Content: "Done."},
 		{Role: "assistant", ToolCalls: []core.ToolCall{call}}, {Role: "tool", ToolCallID: call.ID, Content: "Saved workspace note make-check"},
 	}}
 	m := testModel(t, Config{Session: s})

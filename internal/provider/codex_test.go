@@ -865,6 +865,36 @@ func TestCodexReviewPassesActualExecutionBoundary(t *testing.T) {
 	}
 }
 
+// The policy calls task a JSON array, so the reviewer must receive one rather
+// than a string holding its encoding, with shell operators left readable.
+func TestReviewPayloadEmbedsTaskList(t *testing.T) {
+	task := core.EncodeTask([]core.TaskEntry{{UserMessage: "run make > log 2>&1 && cat <log"}})
+	payload, err := reviewPayload(core.Approval{Task: task, Call: core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"make && ls"}`)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Task []core.TaskEntry `json:"task"`
+	}
+	if err := json.Unmarshal(payload, &request); err != nil {
+		t.Fatalf("task is not a JSON array: %v\n%s", err, payload)
+	}
+	if len(request.Task) != 1 || request.Task[0].UserMessage != "run make > log 2>&1 && cat <log" {
+		t.Fatalf("task list changed: %+v", request.Task)
+	}
+	if !strings.Contains(string(payload), `"make && ls"`) || !strings.Contains(string(payload), `cat <log`) {
+		t.Fatalf("payload escaped shell operators: %s", payload)
+	}
+
+	plain, err := reviewPayload(core.Approval{Task: "Research example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plain), `"task":"Research example.com"`) {
+		t.Fatalf("plain task text changed: %s", plain)
+	}
+}
+
 func TestProviderInstructionsFallback(t *testing.T) {
 	for _, session := range []*core.Session{nil, {}, {Instructions: "  \n"}} {
 		if sessionInstructions(session) != core.SystemPrompt {

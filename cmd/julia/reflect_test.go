@@ -73,7 +73,7 @@ func reflectionRunner(t *testing.T, backend core.Backend, mode string) (*runtime
 }
 
 func TestReflectionSavesWhatTheTurnTaught(t *testing.T) {
-	backend := &reflectingBackend{reply: "Done, sir.", answer: reflectionAnswer, spent: core.TokenUsage{Input: 900, Output: 40}}
+	backend := &reflectingBackend{reply: "Done.", answer: reflectionAnswer, spent: core.TokenUsage{Input: 900, Output: 40}}
 	runner, store, s := reflectionRunner(t, backend, "auto")
 	var events []core.Event
 	emit := func(e core.Event) { events = append(events, e) }
@@ -84,7 +84,7 @@ func TestReflectionSavesWhatTheTurnTaught(t *testing.T) {
 		t.Fatalf("reflection ran %d times", len(backend.completions))
 	}
 	c := backend.completions[0]
-	if c.instructions != memory.ReflectionInstructions || c.schema == nil || !strings.Contains(c.prompt, "## The turn, as JSON") || !strings.Contains(c.prompt, "always run make check first") || !strings.Contains(c.prompt, "Done, sir.") || strings.Contains(c.prompt, "outside the user's own words") {
+	if c.instructions != memory.ReflectionInstructions || c.schema == nil || !strings.Contains(c.prompt, "## The turn, as JSON") || !strings.Contains(c.prompt, "always run make check first") || !strings.Contains(c.prompt, "Done.") || strings.Contains(c.prompt, "outside the user's own words") {
 		t.Fatalf("reflection prompt:\n%s", c.prompt)
 	}
 	note, err := store.Load(memory.Scope{Kind: memory.ScopeWorkspace, Workspace: s.Directory}, "make-check")
@@ -326,7 +326,7 @@ func (b *gatedBackend) Complete(ctx context.Context, instructions, prompt string
 // followups it announces collected in order.
 func afterTurnRunner(t *testing.T, mode string) (*runtimeBackend, *gatedBackend, *memory.Store, *core.Session, chan ui.Followup) {
 	t.Helper()
-	backend := &gatedBackend{reflectingBackend: &reflectingBackend{reply: "Done, sir.", answer: reflectionAnswer, spent: core.TokenUsage{Input: 900, Output: 40}}, gate: make(chan struct{}), entered: make(chan struct{}, 4)}
+	backend := &gatedBackend{reflectingBackend: &reflectingBackend{reply: "Done.", answer: reflectionAnswer, spent: core.TokenUsage{Input: 900, Output: 40}}, gate: make(chan struct{}), entered: make(chan struct{}, 4)}
 	runner, store, s := reflectionRunner(t, backend, mode)
 	followups := make(chan ui.Followup, 16)
 	runner.followups, runner.closed = followups, make(chan struct{})

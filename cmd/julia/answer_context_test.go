@@ -198,7 +198,7 @@ func TestJevDenialReturnsToAgentAndSeesTheUsersAnswer(t *testing.T) {
 		var request struct {
 			State struct {
 				Request struct {
-					Task string `json:"task"`
+					Task json.RawMessage `json:"task"`
 				} `json:"request"`
 			} `json:"state"`
 		}
@@ -206,11 +206,12 @@ func TestJevDenialReturnsToAgentAndSeesTheUsersAnswer(t *testing.T) {
 			t.Error("decode review request:", err)
 		}
 		mu.Lock()
-		tasks = append(tasks, request.State.Request.Task)
+		task := string(request.State.Request.Task)
+		tasks = append(tasks, task)
 		mu.Unlock()
 		// Approve only once the user's answer is in the task, as Jev would.
 		prohibited := 0.9
-		if strings.Contains(request.State.Request.Task, `"user_selected_option":"Yes, use the network"`) {
+		if strings.Contains(task, `"user_selected_option":"Yes, use the network"`) {
 			prohibited = 0.05
 		}
 		w.Header().Set("Content-Type", "application/json")

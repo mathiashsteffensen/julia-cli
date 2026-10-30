@@ -79,17 +79,17 @@ func TestSlackPostResolvesUsersAndIsReviewed(t *testing.T) {
 		reviewed = append(reviewed, a)
 		return core.Decision{Allow: true, Reason: "owner asked"}, nil
 	}
-	r := invoke(e, "Slack", map[string]any{"action": "post_message", "channel": "U0OWNER", "text": "Done, sir.", "thread_ts": "1699999999.000001"})
+	r := invoke(e, "Slack", map[string]any{"action": "post_message", "channel": "U0OWNER", "text": "Done.", "thread_ts": "1699999999.000001"})
 	if r.IsError || r.Content != "Posted to channel D0DM with ts 1700000000.000100." {
 		t.Fatalf("post: %+v", r)
 	}
-	if len(reviewed) != 1 || reviewed[0].ExecutionMode != "slack" || !reviewed[0].Network || !strings.Contains(string(reviewed[0].Call.Arguments), "Done, sir.") {
+	if len(reviewed) != 1 || reviewed[0].ExecutionMode != "slack" || !reviewed[0].Network || !strings.Contains(string(reviewed[0].Call.Arguments), "Done.") {
 		t.Fatalf("review %+v", reviewed)
 	}
 	if len(*calls) != 2 || (*calls)[0].method != "conversations.open" || (*calls)[0].form.Get("users") != "U0OWNER" {
 		t.Fatalf("calls %+v", *calls)
 	}
-	if post := (*calls)[1]; post.method != "chat.postMessage" || post.form.Get("channel") != "D0DM" || post.form.Get("thread_ts") != "1699999999.000001" || post.form.Get("text") != "Done, sir." {
+	if post := (*calls)[1]; post.method != "chat.postMessage" || post.form.Get("channel") != "D0DM" || post.form.Get("thread_ts") != "1699999999.000001" || post.form.Get("text") != "Done." {
 		t.Fatalf("post call %+v", post)
 	}
 	// The review happens before any call: a denied post never opens a DM.
