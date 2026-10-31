@@ -73,6 +73,32 @@ func TestRecordUsageAccumulatesAndTracksContext(t *testing.T) {
 	}
 }
 
+func TestReportedContextWindowIsPersistedWithoutChangingUsage(t *testing.T) {
+	s := Session{Usage: SessionUsage{Total: TokenUsage{Input: 300_000, Output: 10_000}, Context: 310_000}}
+	before := s.Usage
+	s.RecordUsage(Event{Kind: "usage", ContextWindow: 1_000_000})
+	s.RecordUsage(Event{Kind: "usage", ContextWindow: 800_000})
+	for _, event := range []Event{
+		{Kind: "usage"},
+		{Kind: "usage", ContextWindow: -1},
+		{Kind: "status", ContextWindow: 200_000},
+		{Kind: "usage", Aggregate: true, ContextWindow: 200_000, ContextTokens: 99},
+	} {
+		s.RecordUsage(event)
+	}
+	if s.Usage.ContextWindow != 800_000 || s.Usage.Total != before.Total || s.Usage.Context != before.Context {
+		t.Fatalf("window metadata corrupted usage: %+v", s.Usage)
+	}
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resumed Session
+	if err := json.Unmarshal(data, &resumed); err != nil || resumed.Usage != s.Usage {
+		t.Fatalf("reported window did not survive resume: %+v (%v)", resumed.Usage, err)
+	}
+}
+
 func TestSessionWithoutUsageStillLoads(t *testing.T) {
 	var s Session
 	if err := json.Unmarshal([]byte(`{"id":"abc","title":"old","messages":[]}`), &s); err != nil {

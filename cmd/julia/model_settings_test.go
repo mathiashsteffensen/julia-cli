@@ -67,6 +67,37 @@ func TestApplySessionSettingsPersistsSelectionAndPreservesCodexContinuation(t *t
 		t.Fatal("saved continuation state changed")
 	}
 }
+func TestModelSettingsInvalidateOnlyTheReportedWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name, provider, model string
+		window                int
+	}{
+		{"reasoning only", "codex", "first-model", 1_000_000},
+		{"model switch", "codex", "second-model", 0},
+		{"provider switch", "claude", "first-model", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// An empty transcript also needs invalidation, without a new session.
+			current := &core.Session{Provider: "codex", Model: "first-model", Usage: core.SessionUsage{
+				Total: core.TokenUsage{Input: 123}, Context: 100, ContextWindow: 1_000_000,
+			}}
+			before := current.Usage
+			var saved core.SessionUsage
+			if err := applySessionSettings(config.Default(), current, tc.provider, tc.model, "high", func(s *core.Session) error {
+				saved = s.Usage
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			want := before
+			want.ContextWindow = tc.window
+			if current.Usage != want || saved != want {
+				t.Fatalf("model settings kept a stale window or changed usage: current %+v, saved %+v, want %+v", current.Usage, saved, want)
+			}
+		})
+	}
+}
+
 func TestApplySessionSettingsValidationDoesNotPersist(t *testing.T) {
 	for _, tt := range []struct{ name, provider, model, effort string }{{"surrounding model whitespace", "codex", " model", "high"}, {"model control character", "codex", "model\n", "high"}, {"invalid effort", "codex", "model", "BAD effort"}, {"API effort unsupported", "openai", "model", "high"}, {"API empty model", "openai", "", ""}, {"unconfigured named provider", "openrouter", "model", ""}} {
 		t.Run(tt.name, func(t *testing.T) {

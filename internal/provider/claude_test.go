@@ -765,3 +765,140 @@ func TestClaudeClientQueuesTurnMessagesDuringCalls(t *testing.T) {
 		t.Fatal("cancellation not honored", err)
 	}
 }
+
+func TestClaudeContextWindowReporting(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		streamModel    string
+		assistantModel string
+		models         map[string]any
+		initialWindow  int
+		wantWindow     int
+		wantEvent      bool
+	}{
+		{
+			name:        "stream model resolves alias and ignores background",
+			streamModel: "claude-opus-actual", initialWindow: 100_000, wantWindow: 200_000, wantEvent: true,
+			models: map[string]any{"claude-opus-actual": map[string]any{"contextWindow": 200_000}, "claude-haiku-background": map[string]any{"contextWindow": 1_000_000}},
+		},
+		{
+			name:        "assistant model overrides init and stream",
+			streamModel: "claude-old", assistantModel: "claude-opus-actual", wantWindow: 200_000, wantEvent: true,
+			models: map[string]any{"claude-opus-actual": map[string]any{"contextWindow": 200_000}, "claude-old": map[string]any{"contextWindow": 50_000}},
+		},
+		{
+			name: "init model fallback", wantWindow: 180_000, wantEvent: true,
+			models: map[string]any{"claude-test-5": map[string]any{"contextWindow": 180_000}, "claude-haiku-background": map[string]any{"contextWindow": 1_000_000}},
+		},
+		{
+			name: "unknown model does not select another", streamModel: "unknown", initialWindow: 90_000, wantWindow: 90_000,
+			models: map[string]any{"claude-test-5": map[string]any{"contextWindow": 180_000}, "claude-haiku-background": map[string]any{"contextWindow": 1_000_000}},
+		},
+		{
+			name: "missing window", streamModel: "claude-opus-actual", initialWindow: 90_000, wantWindow: 90_000,
+			models: map[string]any{"claude-opus-actual": map[string]any{}},
+		},
+		{
+			name: "negative window", streamModel: "claude-opus-actual", initialWindow: 90_000, wantWindow: 90_000,
+			models: map[string]any{"claude-opus-actual": map[string]any{"contextWindow": -1}},
+		},
+		{
+			name: "zero window", streamModel: "claude-opus-actual", initialWindow: 90_000, wantWindow: 90_000,
+			models: map[string]any{"claude-opus-actual": map[string]any{"contextWindow": 0}},
+		},
+		{
+			name: "invalid window", streamModel: "claude-opus-actual", initialWindow: 90_000, wantWindow: 90_000,
+			models: map[string]any{"claude-opus-actual": map[string]any{"contextWindow": "unknown"}},
+		},
+		{
+			name: "missing model usage", streamModel: "claude-opus-actual", initialWindow: 90_000, wantWindow: 90_000,
+		},
+		{
+			name: "unchanged window", streamModel: "claude-opus-actual", initialWindow: 200_000, wantWindow: 200_000,
+			models: map[string]any{"claude-opus-actual": map[string]any{"contextWindow": 200_000}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newClaudeFixture(t)
+			f.turn = func(f *claudeFixture) {
+				f.push(map[string]any{"type": "stream_event", "event": map[string]any{"type": "message_start", "message": map[string]any{"id": "m", "model": tc.streamModel, "usage": map[string]any{"input_tokens": 100}}}})
+				f.push(map[string]any{"type": "stream_event", "event": map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": "hello"}}})
+				f.push(map[string]any{"type": "stream_event", "event": map[string]any{"type": "message_delta", "usage": map[string]any{"output_tokens": 7}}})
+				f.push(map[string]any{"type": "assistant", "message": map[string]any{"id": "m", "model": tc.assistantModel}})
+				f.push(map[string]any{"type": "assistant", "parent_tool_use_id": "child", "message": map[string]any{"id": "child", "model": "claude-haiku-background"}})
+				f.finish(false, "", map[string]any{"modelUsage": tc.models})
+			}
+			session := &core.Session{Directory: t.TempDir(), Model: "opus"}
+			session.Usage.ContextWindow = tc.initialWindow
+			var lastCheckpoint core.SessionUsage
+			var events []core.Event
+			backend := &Claude{start: f.start, Checkpoint: func(s *core.Session) error { lastCheckpoint = s.Usage; return nil }}
+			if err := backend.Run(context.Background(), session, core.Prompt{Text: "hi"}, nil, func(e core.Event) { events = append(events, e) }); err != nil {
+				t.Fatal(err)
+			}
+			if session.Usage.ContextWindow != tc.wantWindow || lastCheckpoint.ContextWindow != tc.wantWindow {
+				t.Errorf("window session=%d checkpoint=%d, want %d", session.Usage.ContextWindow, lastCheckpoint.ContextWindow, tc.wantWindow)
+			}
+			if session.Usage.Total.Input != 100 || session.Usage.Total.Output != 7 || session.Usage.Context != 107 {
+				t.Errorf("stream usage changed: %+v", session.Usage)
+			}
+			metadata := 0
+			for _, event := range events {
+				if event.Kind == "usage" && event.ContextWindow != 0 {
+					metadata++
+					if event.ContextWindow != tc.wantWindow || event.Usage() != (core.TokenUsage{}) || event.ContextTokens != 0 || event.Elapsed != 0 || event.Aggregate {
+						t.Errorf("metadata event carries other usage: %+v", event)
+					}
+				}
+			}
+			if (metadata == 1) != tc.wantEvent || metadata > 1 {
+				t.Errorf("metadata events=%d want event=%v", metadata, tc.wantEvent)
+			}
+		})
+	}
+}
+
+func TestClaudeContextWindowResultFallbackIsCheckpointed(t *testing.T) {
+	f := newClaudeFixture(t)
+	f.turn = func(f *claudeFixture) {
+		f.push(map[string]any{"type": "assistant", "message": map[string]any{"id": "m", "model": "claude-resolved"}})
+		f.finish(false, "", map[string]any{"modelUsage": map[string]any{"claude-resolved": map[string]any{"contextWindow": 200_000}}})
+	}
+	var checkpoint core.SessionUsage
+	session := &core.Session{Directory: t.TempDir(), Model: "sonnet"}
+	backend := &Claude{start: f.start, Checkpoint: func(s *core.Session) error { checkpoint = s.Usage; return nil }}
+	if err := backend.Run(context.Background(), session, core.Prompt{Text: "hi"}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint != session.Usage || checkpoint.ContextWindow != 200_000 || checkpoint.Total.Input != 150 || checkpoint.Total.Output != 9 || checkpoint.Context != 159 {
+		t.Fatalf("checkpoint=%+v session=%+v", checkpoint, session.Usage)
+	}
+}
+
+func TestClaudeContextWindowSideCallsAreIsolated(t *testing.T) {
+	f := newClaudeFixture(t)
+	f.turn = func(f *claudeFixture) {
+		f.push(map[string]any{"type": "assistant", "message": map[string]any{"id": "m", "model": "claude-resolved"}})
+		f.finish(false, "", map[string]any{"modelUsage": map[string]any{"claude-resolved": map[string]any{"contextWindow": 200_000}}})
+	}
+	session := &core.Session{Directory: t.TempDir()}
+	session.Usage.ContextWindow = 90_000
+	// Review and Complete both run through this isolated side-call path.
+	side := &claudeSideCall{model: "sonnet"}
+	var events []core.Event
+	backend := &Claude{start: f.start, Checkpoint: func(*core.Session) error {
+		t.Fatal("side call checkpointed")
+		return nil
+	}}
+	if err := backend.run(context.Background(), session, core.Prompt{Text: "hi"}, nil, func(e core.Event) { events = append(events, e) }, side, nil); err != nil {
+		t.Fatal(err)
+	}
+	if session.Usage.ContextWindow != 90_000 || session.Usage.Total != (core.TokenUsage{}) || side.spent.Input != 150 || side.spent.Output != 9 {
+		t.Fatalf("session usage=%+v side spend=%+v", session.Usage, side.spent)
+	}
+	for _, event := range events {
+		if event.Kind == "usage" {
+			t.Fatalf("side call emitted usage: %+v", event)
+		}
+	}
+}

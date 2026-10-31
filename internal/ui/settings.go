@@ -640,6 +640,9 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 	next := cloneSession(m.cfg.Session)
 	if m.cfg.Demo {
 		next.Provider, next.Model, next.Reasoning, next.ReasoningSet = provider, model, reasoning, true
+		if providerChanged || modelChanged {
+			next.Usage.ContextWindow = 0
+		}
 	} else {
 		if m.cfg.ApplySettings == nil {
 			return fmt.Errorf("settings are unavailable in this session")

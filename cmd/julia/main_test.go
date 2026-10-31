@@ -165,6 +165,27 @@ func TestResumeModelAndReasoningPrecedence(t *testing.T) {
 	}
 }
 
+func TestResumeModelOverrideClearsTheReportedWindow(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		for _, override := range []string{"", "saved-model", "new-model"} {
+			t.Run(provider+"/"+override, func(t *testing.T) {
+				cfg := config.Default()
+				s := &core.Session{Directory: "/workspace", Provider: provider, Model: "saved-model", Usage: core.SessionUsage{ContextWindow: 1_000_000}}
+				if err := selectSessionModel(&cfg, s, "/workspace", "", override, false, true); err != nil {
+					t.Fatal(err)
+				}
+				want := 1_000_000
+				if override == "new-model" {
+					want = 0
+				}
+				if s.Usage.ContextWindow != want {
+					t.Fatalf("resumed window = %d, want %d", s.Usage.ContextWindow, want)
+				}
+			})
+		}
+	}
+}
+
 func TestModelSettingsDescribeInheritance(t *testing.T) {
 	cfg := config.Default()
 	model, effort := modelSettings(cfg)

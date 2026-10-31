@@ -144,7 +144,9 @@ type Session struct {
 // written to, the provider's prompt cache. ContextTokens is the estimated
 // context-window occupancy once the call's output is part of the conversation;
 // zero leaves the previous estimate unchanged, so a call whose provider reported
-// no usage carries only that. An Aggregate event instead sums every call a
+// no usage carries only that. ContextWindow is the provider-reported capacity
+// of the active model; a positive value replaces the previous window, independently
+// of token counts. An Aggregate event instead sums every call a
 // finished subagent made. Summing the usage events of a run gives what the run
 // added to the session's totals.
 type Event struct {
@@ -157,6 +159,7 @@ type Event struct {
 	CacheWriteTokens  int           `json:"cache_write_tokens,omitempty"`
 	OutputTokens      int           `json:"output_tokens,omitempty"`
 	ContextTokens     int           `json:"context_tokens,omitempty"`
+	ContextWindow     int           `json:"context_window,omitempty"`
 	Elapsed           time.Duration `json:"elapsed_ns,omitempty"`
 	Aggregate         bool          `json:"aggregate,omitempty"`
 	Subagent          *Subagent     `json:"subagent,omitempty"`
@@ -170,8 +173,8 @@ type Subagent struct {
 	Model string `json:"model"`
 }
 
-// DefaultContextWindow is the context size, in tokens, assumed for every model:
-// providers rarely report one, so the harness budgets against this fixed window.
+// DefaultContextWindow is the fallback context size, in tokens, when neither
+// the provider nor the configuration supplies the model's window.
 const DefaultContextWindow = 256_000
 
 // CompactionThreshold is the estimated context size at which an API conversation
@@ -210,9 +213,12 @@ func (u *TokenUsage) Add(o TokenUsage) {
 // cumulative over every model call made for the session, including context
 // compaction and subagents. Context is the latest estimate of the live
 // conversation's size in tokens, which can shrink when history is compacted.
+// ContextWindow is the provider-reported capacity, or zero when unknown. It is
+// cleared when the selected provider or model changes, not when history shrinks.
 type SessionUsage struct {
-	Total   TokenUsage `json:"total"`
-	Context int        `json:"context"`
+	Total         TokenUsage `json:"total"`
+	Context       int        `json:"context"`
+	ContextWindow int        `json:"context_window,omitempty"`
 }
 
 // UsageEvent reports one model call's usage; context is zero when unknown.
@@ -242,8 +248,14 @@ func (s *Session) RecordUsage(e Event) {
 		return
 	}
 	s.Usage.Total.Add(e.Usage())
+	if e.Aggregate {
+		return
+	}
 	if e.ContextTokens > 0 {
 		s.Usage.Context = e.ContextTokens
+	}
+	if e.ContextWindow > 0 {
+		s.Usage.ContextWindow = e.ContextWindow
 	}
 }
 

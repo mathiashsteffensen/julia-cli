@@ -92,9 +92,9 @@ type Config struct {
 	// whenever the command menu opens or a command runs.
 	Skills        func() []skills.Skill
 	Version       string // shown in the sidebar masthead
-	ContextWindow int    // tokens the context gauge is measured against; <= 0 means core.DefaultContextWindow
+	ContextWindow int    // fallback when no provider/model window is known; <= 0 means core.DefaultContextWindow
 	// ContextWindowFor is the window of the session's model, by provider and
-	// model ID, where models have windows of their own. Nil, or a result of
+	// model ID, when the provider has not reported one. Nil, or a result of
 	// zero or less, measures against ContextWindow.
 	ContextWindowFor func(provider, model string) int
 	// Hangup ends the interface when the terminal is gone, as a closed

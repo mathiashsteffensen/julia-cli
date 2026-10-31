@@ -522,6 +522,7 @@ func selectSessionModel(cfg *config.Config, s *core.Session, directory, provider
 				return errors.New("resuming with a different API model is not supported; start a new session")
 			}
 			s.Model = modelOverride
+			s.Usage.ContextWindow = 0
 		}
 		cfg.Provider, cfg.Model = s.Provider, s.Model
 		if !reasoningOverride && (s.ReasoningSet || cfg.Reasoning == "") {

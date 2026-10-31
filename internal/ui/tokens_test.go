@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"regexp"
 	"strings"
@@ -159,6 +160,25 @@ func TestContextWindowIsConfigurable(t *testing.T) {
 	}
 }
 
+func TestProviderContextWindowReplacesTheFallback(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			session := &core.Session{ID: "window", Provider: provider, Model: "large"}
+			m := testModel(t, Config{Session: session, ContextWindow: 256_000, ContextWindowFor: func(string, string) int { return 200_000 }})
+			m.resize(128, 40)
+			m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 300_000, Output: 10_000}, 310_000))
+			// Claude reports the window separately, at the end of the turn.
+			m.applyEvent(core.Event{Kind: "usage", ContextWindow: 1_000_000})
+			if rows := sidebarText(m); !hasRow(rows, "31% · 310k / 1M") {
+				t.Fatalf("provider window was ignored:\n%s", strings.Join(rows, "\n"))
+			}
+			if m.inputTokens != 300_000 || m.outputTokens != 10_000 {
+				t.Fatal("a window-only event changed the last-call figures")
+			}
+		})
+	}
+}
+
 // The gauge follows the session's model: a model with a window of its own is
 // measured against it, and one without falls back to the configured window.
 func TestContextWindowFollowsTheSessionModel(t *testing.T) {
@@ -275,6 +295,54 @@ func TestRunUsageShowsLiveAndIsCountedOnce(t *testing.T) {
 	}
 }
 
+func TestReportedWindowSurvivesRunCompletionAndResume(t *testing.T) {
+	events := []core.Event{
+		core.UsageEvent(core.TokenUsage{Input: 300_000, Output: 10_000}, 310_000),
+		{Kind: "usage", ContextWindow: 1_000_000},
+	}
+	session := &core.Session{ID: "window", Provider: "claude", Model: "large"}
+	m := testModel(t, Config{Session: session, Backend: usageBackend{events}})
+	m.input.SetValue("go")
+	m.submit()
+	for m.busy {
+		m.Update(nextStreamMsg(t, m))
+	}
+	if m.contextWindow() != 1_000_000 || m.live != (core.SessionUsage{}) {
+		t.Fatalf("run completion lost the window: %+v / %+v", session.Usage, m.live)
+	}
+	data, err := json.Marshal(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resumed core.Session
+	if err := json.Unmarshal(data, &resumed); err != nil {
+		t.Fatal(err)
+	}
+	next := testModel(t, Config{Session: &resumed})
+	next.resize(128, 40)
+	if rows := sidebarText(next); !hasRow(rows, "31% · 310k / 1M") {
+		t.Fatalf("resumed session lost the provider window:\n%s", strings.Join(rows, "\n"))
+	}
+}
+
+func TestUnrelatedUsageDoesNotChangeTheContextWindow(t *testing.T) {
+	m := testModel(t, Config{Session: &core.Session{
+		ID: "window", Provider: "claude", Model: "large",
+		Usage: core.SessionUsage{Context: 310_000, ContextWindow: 1_000_000},
+	}})
+	for _, event := range []core.Event{
+		{Kind: "usage"},
+		{Kind: "usage", ContextWindow: -1},
+		{Kind: "usage", Aggregate: true, ContextWindow: 200_000},
+		{Kind: "usage", ContextWindow: 200_000, Subagent: &core.Subagent{ID: "child", Role: "scout"}},
+	} {
+		m.applyEvent(event)
+		if m.contextWindow() != 1_000_000 {
+			t.Fatalf("unrelated event replaced the reported window: %+v", event)
+		}
+	}
+}
+
 func TestFinishedRunWithoutSessionKeepsWhatWasShown(t *testing.T) {
 	m := testModel(t, Config{Session: &core.Session{ID: "nil", Provider: "fake", Usage: core.SessionUsage{Total: core.TokenUsage{Input: 10}, Context: 10}}})
 	m.busy = true
@@ -305,7 +373,7 @@ func TestContextShrinksAfterCompaction(t *testing.T) {
 }
 
 func TestClearResetsUsage(t *testing.T) {
-	session := &core.Session{ID: "old", Directory: "/tmp/julia", Provider: "fake", Usage: core.SessionUsage{Total: core.TokenUsage{Input: 1, CacheRead: 2, CacheWrite: 3, Output: 4}, Context: 50_000}}
+	session := &core.Session{ID: "old", Directory: "/tmp/julia", Provider: "fake", Usage: core.SessionUsage{Total: core.TokenUsage{Input: 1, CacheRead: 2, CacheWrite: 3, Output: 4}, Context: 50_000, ContextWindow: 1_000_000}}
 	m := testModel(t, Config{Session: session})
 	m.resize(128, 60)
 	m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 7, Output: 8}, 60_000))
@@ -324,15 +392,21 @@ func TestClearResetsUsage(t *testing.T) {
 
 func TestSettingsChangeInSameConversationKeepsUsage(t *testing.T) {
 	m := testModel(t, Config{Demo: true, Session: &core.Session{ID: "same", Directory: "/tmp/julia", Provider: "codex", Model: "preview-balanced"}})
+	m.cfg.Session.Usage.ContextWindow = 1_000_000
 	before := m.usage()
-	if before == (core.SessionUsage{}) {
-		t.Fatal("demo session has no usage")
+	if err := m.applySettings("codex", "preview-balanced", "high"); err != nil {
+		t.Fatal(err)
+	}
+	if m.usage() != before {
+		t.Fatal("a reasoning change discarded the model's window")
 	}
 	if err := m.applySettings("codex", "preview-deep", ""); err != nil {
 		t.Fatal(err)
 	}
-	if m.usage() != before {
-		t.Errorf("a model switch within one conversation changed usage: %+v -> %+v", before, m.usage())
+	want := before
+	want.ContextWindow = 0
+	if m.usage() != want || m.contextWindow() != core.DefaultContextWindow {
+		t.Errorf("a model switch must clear only the reported window: %+v -> %+v", before, m.usage())
 	}
 }
 

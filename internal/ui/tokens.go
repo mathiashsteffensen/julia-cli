@@ -26,13 +26,18 @@ func (m *model) usage() core.SessionUsage {
 	if m.live.Context > 0 {
 		u.Context = m.live.Context
 	}
+	if m.live.ContextWindow > 0 {
+		u.ContextWindow = m.live.ContextWindow
+	}
 	return u
 }
 
-// contextWindow is the budget the context gauge is measured against: the
-// session's model's own window when the configuration gives it one, else the
-// window every other model is assumed to have.
+// contextWindow prefers the provider's reported capacity. Configuration is a
+// fallback until the provider reports a window, or for providers that never do.
 func (m *model) contextWindow() int {
+	if window := m.usage().ContextWindow; window > 0 {
+		return window
+	}
 	if m.cfg.ContextWindowFor != nil && m.cfg.Session != nil {
 		if window := m.cfg.ContextWindowFor(m.cfg.Session.Provider, m.cfg.Session.Model); window > 0 {
 			return window
@@ -63,8 +68,14 @@ func (m *model) recordUsage(event core.Event) {
 		m.inputTokens, m.outputTokens = u.Prompt(), u.Output
 	}
 	m.live.Total.Add(u)
+	if event.Aggregate {
+		return
+	}
 	if event.ContextTokens > 0 {
 		m.live.Context = event.ContextTokens
+	}
+	if event.ContextWindow > 0 {
+		m.live.ContextWindow = event.ContextWindow
 	}
 }
 

@@ -1234,6 +1234,39 @@ func TestCodexUsageTracker(t *testing.T) {
 	}
 }
 
+func TestCodexReportsContextWindowWithoutRecountingTokens(t *testing.T) {
+	f := newCodexFixture(t)
+	f.turn = func(f *codexFixture) {
+		counts := codexCounts{300_000, 200_000, 0, 10_000}
+		push := func(window any) {
+			usage := map[string]any{"last": counts.wire(), "total": counts.wire(), "modelContextWindow": window}
+			f.push(map[string]any{"method": "thread/tokenUsage/updated", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "tokenUsage": usage}})
+		}
+		push(1_000_000)
+		push(1_000_000)
+		push(800_000) // A changed limit is useful even when the token counts repeat.
+		push(nil)
+		push(0)
+		push(-1)
+		f.finish("completed")
+	}
+	session := &core.Session{Directory: t.TempDir()}
+	var events []core.Event
+	if err := (&Codex{start: f.start}).Run(context.Background(), session, core.Prompt{Text: "Inspect"}, &codexTestExecutor{}, func(e core.Event) { events = append(events, e) }); err != nil {
+		t.Fatal(err)
+	}
+	updates := usageEvents(events)
+	if len(updates) != 2 || updates[0].ContextWindow != 1_000_000 || updates[1].ContextWindow != 800_000 {
+		t.Fatalf("context windows not reported: %+v", updates)
+	}
+	if !updates[1].Usage().IsZero() || updates[1].Elapsed != 0 || updates[1].ContextTokens != 0 {
+		t.Fatalf("window-only update repeated a call: %+v", updates[1])
+	}
+	if session.Usage.ContextWindow != 800_000 || session.Usage.Context != 310_000 || session.Usage.Total.Prompt() != 300_000 || session.Usage.Total.Output != 10_000 {
+		t.Fatalf("window updates changed token accounting: %+v", session.Usage)
+	}
+}
+
 func TestCodexRecordsEachCallOfATurnOnce(t *testing.T) {
 	f := newCodexFixture(t)
 	f.turn = func(f *codexFixture) {
@@ -1267,6 +1300,7 @@ func TestCodexRecordsEachCallOfATurnOnce(t *testing.T) {
 		t.Fatalf("usage events %+v, want %+v", got, want)
 	}
 	for i := range want {
+		want[i].ContextWindow = 1_000_000
 		// Each call is timed from the previous report; the fixture replies at once.
 		if got[i].Elapsed <= 0 {
 			t.Errorf("usage event %d was not timed: %+v", i, got[i])
@@ -1393,12 +1427,12 @@ func TestCodexReviewerNeverRecordsUsage(t *testing.T) {
 	t.Run("run", func(t *testing.T) {
 		f := newCodexFixture(t)
 		f.turn = updates
-		session := &core.Session{Directory: t.TempDir(), Usage: core.SessionUsage{Total: core.TokenUsage{Input: 7}, Context: 9}}
+		session := &core.Session{Directory: t.TempDir(), Usage: core.SessionUsage{Total: core.TokenUsage{Input: 7}, Context: 9, ContextWindow: 1_000_000}}
 		var events []core.Event
 		if err := (&Codex{start: f.start}).run(context.Background(), session, core.Prompt{Text: "{}"}, nil, func(e core.Event) { events = append(events, e) }, (&Codex{}).reviewCall(), nil); err != nil {
 			t.Fatal(err)
 		}
-		if session.Usage != (core.SessionUsage{Total: core.TokenUsage{Input: 7}, Context: 9}) {
+		if session.Usage != (core.SessionUsage{Total: core.TokenUsage{Input: 7}, Context: 9, ContextWindow: 1_000_000}) {
 			t.Fatalf("reviewer usage was recorded: %+v", session.Usage)
 		}
 		if usage := usageEvents(events); len(usage) != 0 {

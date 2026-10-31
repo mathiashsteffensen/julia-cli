@@ -361,8 +361,11 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 		journal.HistoryPending = true
 		emit(core.Event{Kind: "warning", Text: "Tool definitions changed. Continuing in a new Codex thread with the full saved JULIA transcript; previous tool actions will not be replayed."})
 	}
-	if thread.Model != "" {
+	if thread.Model != "" && thread.Model != session.Model {
 		session.Model = thread.Model
+		if !review {
+			session.Usage.ContextWindow = 0
+		}
 	}
 	checkpoint := func() error {
 		session.UpdatedAt = time.Now()
@@ -607,8 +610,9 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 				} `json:"error"`
 			} `json:"turn"`
 			TokenUsage struct {
-				Last  codexTokenBreakdown `json:"last"`
-				Total codexTokenBreakdown `json:"total"`
+				Last               codexTokenBreakdown `json:"last"`
+				Total              codexTokenBreakdown `json:"total"`
+				ModelContextWindow int                 `json:"modelContextWindow"`
 			} `json:"tokenUsage"`
 		}
 		if err = json.Unmarshal(message.Params, &notification); err != nil {
@@ -636,21 +640,28 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 				emit(core.Event{Kind: "text", Text: notification.Item.Text})
 			}
 		case "thread/tokenUsage/updated":
-			event, ok := usage.update(notification.TokenUsage.Last, notification.TokenUsage.Total)
-			if !ok {
-				continue
-			}
+			event, counted := usage.update(notification.TokenUsage.Last, notification.TokenUsage.Total)
 			if review {
 				// A side call runs on its own throwaway thread: its tokens never
 				// belong to the conversation, and go back to its caller instead.
 				side.spent.Add(event.Usage())
 				continue
 			}
-			event.Elapsed = max(time.Since(callStarted)-toolTime, 0)
-			callStarted, toolTime = time.Now(), 0
+			window := max(notification.TokenUsage.ModelContextWindow, 0)
+			if !counted {
+				if window == 0 || window == session.Usage.ContextWindow {
+					continue
+				}
+				// A replay can still report a new window, without being a new call.
+				event = core.Event{Kind: "usage"}
+			} else {
+				event.Elapsed = max(time.Since(callStarted)-toolTime, 0)
+				callStarted, toolTime = time.Now(), 0
+				// Saved with the usage it explains, so the next run counts only growth beyond it.
+				journal.Usage = &codexUsageBaseline{Thread: session.RemoteID, Total: usage.total}
+			}
+			event.ContextWindow = window
 			session.RecordUsage(event)
-			// Saved with the usage it explains, so the next run counts only growth beyond it.
-			journal.Usage = &codexUsageBaseline{Thread: session.RemoteID, Total: usage.total}
 			if err = saveCodexJournal(session, journal, nil); err != nil {
 				return err
 			}

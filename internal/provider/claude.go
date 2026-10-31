@@ -432,6 +432,9 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 	// text, which is only used when nothing streamed.
 	streamed := map[string]bool{}
 	usageSeen := false
+	// Settings can contain an alias. Prefer the latest top-level response's
+	// actual model, with the initialized model as a fallback.
+	initModel, responseModel := "", ""
 	var current struct {
 		id    string
 		usage claudeUsage
@@ -539,6 +542,7 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 				if init.SessionID != "" && init.SessionID != sessionID {
 					return refused(fmt.Errorf("Claude Code opened session %s instead of %s", init.SessionID, sessionID))
 				}
+				initModel = init.Model
 				accepted = true
 				if !review {
 					// The session keeps the model as it was chosen, which
@@ -565,6 +569,7 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 				Type    string `json:"type"`
 				Message struct {
 					ID    string      `json:"id"`
+					Model string      `json:"model"`
 					Usage claudeUsage `json:"usage"`
 				} `json:"message"`
 				Delta struct {
@@ -579,6 +584,9 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 			switch event.Type {
 			case "message_start":
 				current.id, current.usage = event.Message.ID, event.Message.Usage
+				if event.Message.Model != "" {
+					responseModel = event.Message.Model
+				}
 			case "content_block_delta":
 				if event.Delta.Type == "text_delta" && event.Delta.Text != "" {
 					streamed[current.id] = true
@@ -592,6 +600,7 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 			var assistant struct {
 				Message struct {
 					ID      string `json:"id"`
+					Model   string `json:"model"`
 					Content []struct {
 						Type string `json:"type"`
 						Text string `json:"text"`
@@ -606,6 +615,9 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 			if assistant.Error == "authentication_failed" {
 				return refused(errClaudeSignedOut)
 			}
+			if !assistant.APIError && assistant.Message.Model != "" {
+				responseModel = assistant.Message.Model
+			}
 			if assistant.APIError || streamed[assistant.Message.ID] {
 				continue
 			}
@@ -617,23 +629,38 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 			}
 		case "result":
 			var result struct {
-				Subtype          string          `json:"subtype"`
-				IsError          bool            `json:"is_error"`
-				Result           string          `json:"result"`
-				Errors           []string        `json:"errors"`
-				Queued           int             `json:"queued_turn_count"`
-				Usage            claudeUsage     `json:"usage"`
+				Subtype    string      `json:"subtype"`
+				IsError    bool        `json:"is_error"`
+				Result     string      `json:"result"`
+				Errors     []string    `json:"errors"`
+				Queued     int         `json:"queued_turn_count"`
+				Usage      claudeUsage `json:"usage"`
+				ModelUsage map[string]struct {
+					ContextWindow json.RawMessage `json:"contextWindow"`
+				} `json:"modelUsage"`
 				StructuredOutput json.RawMessage `json:"structured_output"`
 			}
 			if err = json.Unmarshal(message.raw, &result); err != nil {
 				return fmt.Errorf("decode Claude Code result: %w", err)
 			}
 			flush()
-			if err = checkpoint(); err != nil {
-				return fmt.Errorf("save completed turn: %w", err)
-			}
 			if !usageSeen && !result.Usage.zero() {
 				recordUsage(result.Usage)
+			}
+			if !review {
+				model := responseModel
+				if model == "" {
+					model = initModel
+				}
+				var window int
+				if entry, ok := result.ModelUsage[model]; ok && json.Unmarshal(entry.ContextWindow, &window) == nil && window > 0 && window != session.Usage.ContextWindow {
+					event := core.Event{Kind: "usage", ContextWindow: window}
+					session.RecordUsage(event)
+					emit(event)
+				}
+			}
+			if err = checkpoint(); err != nil {
+				return fmt.Errorf("save completed turn: %w", err)
 			}
 			if result.IsError || (result.Subtype != "" && result.Subtype != "success") {
 				reason := strings.Join(result.Errors, "; ")
