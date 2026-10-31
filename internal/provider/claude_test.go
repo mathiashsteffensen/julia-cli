@@ -575,6 +575,7 @@ func TestClaudeSubagentMessagesAreIgnored(t *testing.T) {
 
 func TestClaudeReviewIsIsolatedAndStructured(t *testing.T) {
 	f := newClaudeFixture(t)
+	f.tools = []string{"StructuredOutput"}
 	f.turn = func(f *claudeFixture) {
 		f.text("msg_1", "Looks scoped.")
 		f.finish(false, "Looks scoped.", map[string]any{"structured_output": map[string]any{"allow": true, "reason": "Scoped public research"}})
@@ -643,6 +644,7 @@ func TestClaudeReviewFailsClosed(t *testing.T) {
 
 func TestClaudeCompleteReturnsStructuredOutputAndSpend(t *testing.T) {
 	f := newClaudeFixture(t)
+	f.tools = []string{"StructuredOutput"}
 	f.turn = func(f *claudeFixture) {
 		f.text("msg_1", "thinking out loud")
 		f.finish(false, "thinking out loud", map[string]any{"structured_output": map[string]any{"notes": []any{"remember this"}}})
@@ -664,6 +666,36 @@ func TestClaudeCompleteReturnsStructuredOutputAndSpend(t *testing.T) {
 	}
 	if answer, _, err := (&Claude{start: g.start}).Complete(context.Background(), "Reflect.", "turn", nil); err != nil || answer != "plain words" {
 		t.Fatal(answer, err)
+	}
+}
+
+func TestClaudeStructuredOutputCapabilityIsScoped(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		tools  []string
+		schema any
+		run    bool
+		want   string
+	}{
+		{name: "conversation", tools: []string{"StructuredOutput"}, run: true, want: "StructuredOutput"},
+		{name: "plain side call", tools: []string{"StructuredOutput"}, want: "StructuredOutput"},
+		{name: "native tool alongside helper", tools: []string{"StructuredOutput", "Bash"}, schema: map[string]any{"type": "object"}, want: "Bash"},
+		{name: "similar name", tools: []string{"StructuredOutputExtra"}, schema: map[string]any{"type": "object"}, want: "StructuredOutputExtra"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newClaudeFixture(t)
+			f.tools = tc.tools
+			backend := &Claude{start: f.start}
+			var err error
+			if tc.run {
+				err = backend.Run(context.Background(), &core.Session{Directory: t.TempDir()}, core.Prompt{Text: "go"}, &claudeTestExecutor{}, nil)
+			} else {
+				_, _, err = backend.Complete(context.Background(), "Reflect.", "turn", tc.schema)
+			}
+			if err == nil || !strings.Contains(err.Error(), "unexpected native capability ("+tc.want+")") {
+				t.Fatalf("unexpected capability not rejected: %v", err)
+			}
+		})
 	}
 }
 

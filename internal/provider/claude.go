@@ -517,6 +517,12 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 					return refused(fmt.Errorf("decode Claude Code session: %w", err))
 				}
 				for _, tool := range init.Tools {
+					// --json-schema adds this answer-formatting tool even with
+					// native tools disabled. Only expect it on structured side calls;
+					// its validated answer comes from the result, not a tool block.
+					if review && schema != nil && tool == "StructuredOutput" {
+						continue
+					}
 					if !strings.HasPrefix(tool, claudeToolPrefix) {
 						return refused(fmt.Errorf("Claude Code exposed an unexpected native capability (%s); stopped without granting approval", tool))
 					}
