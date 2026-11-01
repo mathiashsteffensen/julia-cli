@@ -401,6 +401,35 @@ reviewer fails, you are asked instead. In headless mode the action is denied.
 
 If you have access to Jev or another decision model via API, that is highly recommended.
 
+## Session mining
+
+Mine saved sessions into a reviewed fine-tuning dataset:
+
+```sh
+RUN="${XDG_STATE_HOME:-$HOME/.local/state}/julia/mining/$(date -u +%Y%m%dT%H%M%SZ)"
+julia mine scan --all --limit 100 --output "$RUN"
+julia mine judge "$RUN"
+julia mine review "$RUN"
+```
+
+Scan is local and does not change sessions. Judge sends the shortlisted transcripts
+to your configured model, in isolated calls with no tools. Put `--model` or
+`--profile` **before** `mine` to select another judge. Inspect `report.json`, or
+use `mine review` before judging to reject sensitive examples locally.
+
+The review cards show the assessment, transcript, tool calls and results. Press
+**1–5** to accept and rank, **r** to reject, **d** to defer, and **e** to confirm
+export. Decisions persist immediately; both judging and review can resume.
+
+Export creates `dataset/training.jsonl`, `validation.jsonl`, and a provenance
+manifest. Only human-accepted examples are eligible. Missing context, sensitive
+content and examples needing correction block export. The first version exports
+original demonstrations, not model-generated repairs.
+
+See [Session mining](docs/session-mining.md) for filters, privacy, split behavior,
+and the tool-aware training format. This prepares data; it does not train or
+install a model.
+
 ## Development
 
 ```sh
@@ -445,5 +474,6 @@ and JSON events there.
 | `internal/browser`, `internal/terminal`                        | Headless Chrome over the DevTools protocol; virtual terminals                       |
 | `internal/ui`                                                  | Bubble Tea TUI                                                                      |
 | `internal/memory`                                              | Notes kept between sessions, their index, and the reflection step's prompt          |
+| `internal/miner`                                               | Read-only session selection, model judgments, review reports and training export    |
 | `internal/session`, `internal/config`, `internal/instructions` | Persistence, settings, each turn's instructions                                     |
 | `internal/skills`                                              | The user's Agent Skills in `~/.agents/skills`: discovery and reading                |

@@ -74,7 +74,7 @@ func run() error {
 	flags.BoolVar(&showVersion, "version", false, "print version")
 	flags.IntVar(&snapshot, "snapshot", 0, "render an offline demo at this terminal width")
 	flags.Usage = func() {
-		fmt.Fprint(flags.Output(), "JULIA · a quiet interface for ambitious work\n\nUsage: julia [flags]\n       julia doctor | login | sessions | config init\n")
+		fmt.Fprint(flags.Output(), "JULIA · a quiet interface for ambitious work\n\nUsage: julia [flags]\n       julia doctor | login | sessions | mine | config init\n")
 		flags.PrintDefaults()
 	}
 	if err = flags.Parse(os.Args[1:]); err != nil {
@@ -189,6 +189,8 @@ func run() error {
 			}
 			fmt.Println("Created", path)
 			return nil
+		case "mine":
+			return mineCommand(ctx, cfg, store.Directory, dir, roles, args[1:], os.Stdin, os.Stdout)
 		case "sessions":
 			list, err := store.List()
 			if err != nil {
@@ -749,8 +751,10 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		}
 		emitMu.Lock()
 		defer emitMu.Unlock()
-		// A child's events are audited in the child's session, not here.
-		if event.Subagent == nil && (event.Kind == "tool_start" || event.Kind == "tool_end" || event.Kind == "warning" || event.Kind == "status") {
+		// A child's events are audited in the child's session, not here. A
+		// steer is audited because its saved message is an ordinary user
+		// message: the audit is what tells it apart from a new turn.
+		if event.Subagent == nil && (event.Kind == "tool_start" || event.Kind == "tool_end" || event.Kind == "warning" || event.Kind == "status" || event.Kind == "steer") {
 			s.Audit = append(s.Audit, core.AuditEntry{At: time.Now(), Event: event})
 		}
 		if event.Subagent == nil && event.Kind == "warning" {
