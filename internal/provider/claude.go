@@ -417,7 +417,7 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 		}
 		return errors.Join(err, saveClaudeJournal(session, journal, checkpoint))
 	}
-	if err = client.sendUser(turnPrompt, prompt.Images, sessionID, ""); err != nil {
+	if err = client.sendUser(turnPrompt, prompt.Images, sessionID); err != nil {
 		return refused(fmt.Errorf("send prompt to Claude Code: %w", err))
 	}
 	if !review {
@@ -463,7 +463,7 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 			return nil
 		}
 		joined := core.JoinPrompts(taken)
-		if err := client.sendUser(joined.Text, joined.Images, sessionID, "now"); err != nil {
+		if err := client.sendSteer(joined.Text, joined.Images, sessionID); err != nil {
 			prompt.Steering.Return(taken)
 			steering = nil
 			return ctx.Err()
@@ -539,7 +539,10 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 						return refused(errors.New("JULIA's tools did not connect to Claude Code"))
 					}
 				}
-				if init.SessionID != "" && init.SessionID != sessionID {
+				// A conversation is saved under the session ID JULIA chose and
+				// resumed by it, so it must be the one Claude Code opened. An
+				// unsaved side call names no session, and gets an ID made up.
+				if !review && init.SessionID != "" && init.SessionID != sessionID {
 					return refused(fmt.Errorf("Claude Code opened session %s instead of %s", init.SessionID, sessionID))
 				}
 				initModel = init.Model
@@ -944,18 +947,31 @@ func (c *claudeClient) send(message any) error {
 	return nil
 }
 
-// sendUser sends one user message: its text, then each image. A priority of
-// "now" asks Claude Code to put it before the model within the turn under way.
-func (c *claudeClient) sendUser(text string, images []core.Image, sessionID, priority string) error {
+// sendUser sends the prompt that starts the turn.
+func (c *claudeClient) sendUser(text string, images []core.Image, sessionID string) error {
+	return c.send(claudeUserMessage(text, images, sessionID))
+}
+
+// sendSteer sends a message the user typed while the turn runs. Its priority
+// "next" has Claude Code give it to the model once the tool calls under way
+// finish, or start the next turn with it when the model has already answered;
+// "now" would interrupt the turn instead. Its human origin is what makes a
+// result count it in queued_turn_count while it waits, which keeps the loop
+// reading until it is answered.
+func (c *claudeClient) sendSteer(text string, images []core.Image, sessionID string) error {
+	message := claudeUserMessage(text, images, sessionID)
+	message["priority"] = "next"
+	message["origin"] = map[string]any{"kind": "human"}
+	return c.send(message)
+}
+
+// claudeUserMessage is one user message of the stream: its text, then each image.
+func claudeUserMessage(text string, images []core.Image, sessionID string) map[string]any {
 	content := []any{map[string]any{"type": "text", "text": text}}
 	for _, image := range images {
 		content = append(content, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": image.MediaType, "data": base64.StdEncoding.EncodeToString(image.Data)}})
 	}
-	message := map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil, "session_id": sessionID}
-	if priority != "" {
-		message["priority"] = priority
-	}
-	return c.send(message)
+	return map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil, "session_id": sessionID}
 }
 
 // read takes the next message from the process, past whatever waits in the

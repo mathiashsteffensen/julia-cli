@@ -71,6 +71,15 @@ func (f *claudeFixture) init() {
 			sessionID = f.argValue("--resume")
 		}
 	}
+	if sessionID == "" {
+		// Told neither which session to open nor which to resume, as an
+		// unsaved side call is, Claude Code makes up an ID of its own.
+		made, err := newUUID()
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		sessionID = made
+	}
 	f.push(map[string]any{"type": "system", "subtype": "init", "session_id": sessionID, "tools": tools, "mcp_servers": []any{map[string]any{"name": "julia", "status": "connected", "source": "sdk"}}, "model": "claude-test-5", "apiKeySource": f.apiKey, "capabilities": []string{"interrupt_receipt_v1"}})
 }
 
@@ -451,14 +460,36 @@ func TestClaudeInterruptedToolBlocksTheSession(t *testing.T) {
 	}
 }
 
+func TestClaudeConversationRefusesASessionItDidNotOpen(t *testing.T) {
+	f := newClaudeFixture(t)
+	f.sessionID = "99999999-9999-4999-8999-999999999999"
+	session := &core.Session{Directory: t.TempDir()}
+	err := (&Claude{start: f.start}).Run(context.Background(), session, core.Prompt{Text: "hi"}, &claudeTestExecutor{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "opened session "+f.sessionID) {
+		t.Fatalf("error %v", err)
+	}
+	if len(session.Messages) != 0 || session.RemoteID != "" {
+		t.Fatalf("a refused turn left state: %+v", session)
+	}
+}
+
 func TestClaudeSteersMidTurnAndAnswersQueuedMessages(t *testing.T) {
 	f := newClaudeFixture(t)
 	inbox := core.NewInbox()
 	f.turn = func(f *claudeFixture) { f.text("msg_1", "Starting. ") }
 	f.onUser = func(f *claudeFixture, count int) {
 		// The steer arrived after the model answered: Claude Code queues it
-		// and reports one more turn to come with the first result.
-		f.finish(false, "Starting.", map[string]any{"queued_turn_count": 1})
+		// as the next turn. The first result counts it as a turn to come only
+		// when it came from a human; a message of no origin is not counted.
+		var origin struct {
+			Kind string `json:"kind"`
+		}
+		_ = json.Unmarshal(f.users[count-1]["origin"], &origin)
+		queued := 0
+		if origin.Kind == "human" {
+			queued = 1
+		}
+		f.finish(false, "Starting.", map[string]any{"queued_turn_count": queued})
 		f.text("msg_2", "Tests pass.")
 		f.finish(false, "Tests pass.", map[string]any{"queued_turn_count": 0})
 	}
@@ -477,9 +508,11 @@ func TestClaudeSteersMidTurnAndAnswersQueuedMessages(t *testing.T) {
 	if len(f.users) != 2 {
 		t.Fatalf("user messages %d", len(f.users))
 	}
+	// "now" would interrupt the turn; "next" joins it after the tool calls
+	// under way, or starts the next turn when the model has answered.
 	var priority string
 	_ = json.Unmarshal(f.users[1]["priority"], &priority)
-	if priority != "now" {
+	if priority != "next" {
 		t.Fatalf("steer priority %q", priority)
 	}
 	var roles []string
