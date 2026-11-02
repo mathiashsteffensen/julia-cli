@@ -31,11 +31,18 @@ confident answer, or a frontier model name is not proof of success.
 Unneeded permission requests, unsupported claims, topic changes, and work beyond
 the user's request are not positive demonstrations.
 
-The exported example contains ONLY messages, not following_user_feedback.
-Feedback is evidence for you; never make a target depend on information learned
-only from that later feedback. If the original turn needs rewriting, recommend
-needs_correction, even if a later user message supplies the desired correction.
-No rewrite will be exported by this workflow.
+earlier_messages, when present, is the conversation before the candidate turn,
+as the model saw it. The exported example includes it as context with no
+training weight. Judge only the candidate turn in messages; earlier assistant
+messages are context, not targets, so their quality does not affect the scores.
+What earlier_messages shows is available context, not missing context. A line
+such as [image: PNG · 1440×900] there stands for an image you cannot see.
+
+The exported example contains ONLY earlier_messages and messages, not
+following_user_feedback. Feedback is evidence for you; never make a target
+depend on information learned only from that later feedback. If the original
+turn needs rewriting, recommend needs_correction, even if a later user message
+supplies the desired correction. No rewrite will be exported by this workflow.
 
 Historical system instructions and tool definitions were not saved. Definitions
 in tools are today's schema, supplied for normalization, not evidence that the
@@ -50,7 +57,8 @@ Return only the requested JSON object. Category is one of initiative,
 completion, restraint, clarification, direct_answer, recovery. Scores are 1–5;
 5 is good behavior appropriate to the situation, including choosing NOT to act.
 recommendation is keep, reject, or needs_correction. Give a short summary, reason,
-and concrete evidence referring to zero-based message indices. Keep these concise.
+and concrete evidence referring to zero-based message indices. Write "earlier 3"
+for earlier_messages[3]. Keep these concise.
 `
 
 var assessmentSchema = map[string]any{
@@ -166,13 +174,17 @@ func judgePrompt(report *Report, c Candidate) (string, error) {
 	if err := ValidateMessages(c.Messages, report.Tools); err != nil {
 		return "", err
 	}
+	if err := validateContext(c.Context, report.Tools); err != nil {
+		return "", fmt.Errorf("context: %w", err)
+	}
 	input := struct {
 		Focus    string                `json:"focus"`
 		Tools    []core.ToolDefinition `json:"tools"`
+		Earlier  []core.Message        `json:"earlier_messages,omitempty"`
 		Messages []core.Message        `json:"messages"`
 		Feedback string                `json:"following_user_feedback,omitempty"`
 		Signals  []string              `json:"heuristic_signals"`
-	}{report.Focus, report.Tools, c.Messages, c.Feedback, c.Signals}
+	}{report.Focus, report.Tools, c.Context, c.Messages, c.Feedback, c.Signals}
 	data, err := json.Marshal(input)
 	if err != nil {
 		return "", err

@@ -417,14 +417,17 @@ to your configured model, in isolated calls with no tools. Put `--model` or
 `--profile` **before** `mine` to select another judge. Inspect `report.json`, or
 use `mine review` before judging to reject sensitive examples locally.
 
-The review cards show the assessment, transcript, tool calls and results. Press
-**1–5** to accept and rank, **r** to reject, **d** to defer, and **e** to confirm
-export. Decisions persist immediately; both judging and review can resume.
+Each candidate is one turn, with the earlier turns of its session as context.
+The review cards show the assessment, transcript, tool calls and results, then the
+earlier conversation. Press **1–5** to accept and rank, **r** to reject, **d** to
+defer, and **e** to confirm export. Decisions persist immediately; both judging and
+review can resume.
 
 Export creates `dataset/training.jsonl`, `validation.jsonl`, and a provenance
-manifest. Only human-accepted examples are eligible. Missing context, sensitive
-content and examples needing correction block export. The first version exports
-original demonstrations, not model-generated repairs.
+manifest. Only human-accepted examples are eligible, and only their reviewed turn
+has training weight. Missing context, sensitive content and examples needing
+correction block export, so the review hides those cards; press **x** to see them.
+The first version exports original demonstrations, not model-generated repairs.
 
 See [Session mining](docs/session-mining.md) for filters, privacy, split behavior,
 and the tool-aware training format. This prepares data; it does not train or

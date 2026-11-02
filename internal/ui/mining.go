@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"julia/internal/core"
 	"julia/internal/miner"
 
 	"charm.land/bubbles/v2/viewport"
@@ -55,16 +56,15 @@ type miningReview struct {
 	selected   int
 	confirming bool
 	notice     string
+
+	// Cards the judge's flags exclude cannot be accepted, so the review
+	// hides them unless the reviewer asks to see them.
+	showExcluded bool
 }
 
 func newMiningReview(cfg MiningReviewConfig) *miningReview {
 	m := &miningReview{cfg: cfg, viewport: viewport.New(), width: 80, height: 24}
-	for i, candidate := range m.candidates() {
-		if candidate.Review.Decision == "" {
-			m.selected = i
-			break
-		}
-	}
+	m.selectOpenCard(-1)
 	m.refresh()
 	return m
 }
@@ -145,6 +145,8 @@ func (m *miningReview) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.decide(miner.Review{Decision: "defer"})
 		case "u":
 			m.decide(miner.Review{})
+		case "x":
+			m.toggleExcluded()
 		}
 	}
 	return m, nil
@@ -157,23 +159,75 @@ func (m *miningReview) candidates() []miner.Candidate {
 	return m.cfg.Report.Candidates
 }
 
-func (m *miningReview) selectRelative(delta int) {
-	n := len(m.candidates())
-	if n == 0 {
-		return
+// shown reports whether card i is in the review's rotation.
+func (m *miningReview) shown(i int) bool {
+	return m.showExcluded || !miner.Excluded(m.candidates()[i])
+}
+
+// current returns the selected card, or nil when no card is shown.
+func (m *miningReview) current() *miner.Candidate {
+	candidates := m.candidates()
+	if m.selected < 0 || m.selected >= len(candidates) || !m.shown(m.selected) {
+		return nil
 	}
-	m.selected = (m.selected + delta + n) % n
+	return &candidates[m.selected]
+}
+
+// nextShown returns the first shown card after from, stepping by step and
+// wrapping, that matches want. It can return from itself, or -1 for none.
+func (m *miningReview) nextShown(from, step int, want func(miner.Candidate) bool) int {
+	candidates := m.candidates()
+	n := len(candidates)
+	for k := 1; k <= n; k++ {
+		i := ((from+step*k)%n + n) % n
+		if m.shown(i) && want(candidates[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+func undecided(c miner.Candidate) bool { return c.Review.Decision == "" }
+func anyCard(miner.Candidate) bool     { return true }
+
+// selectOpenCard moves to the first undecided card after from, or else to any
+// shown card. It leaves the selection alone when no card is shown.
+func (m *miningReview) selectOpenCard(from int) {
+	if i := m.nextShown(from, 1, undecided); i >= 0 {
+		m.selected = i
+	} else if i := m.nextShown(from, 1, anyCard); i >= 0 {
+		m.selected = i
+	}
+}
+
+func (m *miningReview) selectRelative(delta int) {
+	if i := m.nextShown(m.selected, delta, anyCard); i >= 0 {
+		m.selected = i
+	}
 	m.notice = ""
 	m.refresh()
 	m.viewport.GotoTop()
 }
 
+func (m *miningReview) toggleExcluded() {
+	m.showExcluded = !m.showExcluded
+	if m.current() == nil {
+		m.selectOpenCard(m.selected)
+	}
+
+	m.notice = "Excluded cards hidden."
+	if m.showExcluded {
+		m.notice = "Showing excluded cards. Their flags block acceptance."
+	}
+	m.refresh()
+	m.viewport.GotoTop()
+}
+
 func (m *miningReview) decide(review miner.Review) {
-	candidates := m.candidates()
-	if len(candidates) == 0 {
+	candidate := m.current()
+	if candidate == nil {
 		return
 	}
-	candidate := &candidates[m.selected]
 	if review.Decision == "keep" {
 		if reason := miner.ExportBlock(*candidate); reason != "" {
 			m.notice = "Cannot accept: " + reason
@@ -201,32 +255,31 @@ func (m *miningReview) decide(review miner.Review) {
 	// Clearing a decision leaves this card open. Other decisions move to the
 	// next undecided card, wrapping only when one actually exists.
 	if review.Decision != "" {
-		for step := 1; step < len(candidates); step++ {
-			i := (m.selected + step) % len(candidates)
-			if candidates[i].Review.Decision == "" {
-				m.selected = i
-				break
-			}
+		if i := m.nextShown(m.selected, 1, undecided); i >= 0 {
+			m.selected = i
 		}
 	}
 	m.refresh()
 	m.viewport.GotoTop()
 }
 
-type miningCounts struct{ keep, reject, deferCount, undecided int }
+// An undecided card is open, or excluded when the judge's flags block it.
+type miningCounts struct{ keep, reject, deferCount, open, excluded int }
 
 func (m *miningReview) counts() miningCounts {
 	var counts miningCounts
 	for _, candidate := range m.candidates() {
-		switch candidate.Review.Decision {
-		case "keep":
+		switch {
+		case candidate.Review.Decision == "keep":
 			counts.keep++
-		case "reject":
+		case candidate.Review.Decision == "reject":
 			counts.reject++
-		case "defer":
+		case candidate.Review.Decision == "defer":
 			counts.deferCount++
+		case miner.Excluded(candidate):
+			counts.excluded++
 		default:
-			counts.undecided++
+			counts.open++
 		}
 	}
 	return counts
@@ -260,7 +313,7 @@ func (m *miningReview) refresh() {
 	var content string
 	if m.confirming {
 		counts := m.counts()
-		content = fmt.Sprintf("CONFIRM EXPORT\n\nAccepted: %d  Rejected: %d  Deferred: %d  Undecided: %d\n\nOnly explicitly accepted examples are eligible for export. Historical system instructions and tool definitions are missing; the report uses current tool definitions. Following user feedback is NOT EXPORTED.\n\nPress y to export, n to cancel, or q to quit.", counts.keep, counts.reject, counts.deferCount, counts.undecided)
+		content = fmt.Sprintf("CONFIRM EXPORT\n\nAccepted: %d  Rejected: %d  Deferred: %d  Open: %d  Excluded by judge: %d\n\nOnly explicitly accepted examples are eligible for export. Historical system instructions and tool definitions are missing; the report uses current tool definitions. Following user feedback is NOT EXPORTED.\n\nPress y to export, n to cancel, or q to quit.", counts.keep, counts.reject, counts.deferCount, counts.open, counts.excluded)
 	} else {
 		content = m.cardContent()
 	}
@@ -271,15 +324,24 @@ func (m *miningReview) refresh() {
 }
 
 func (m *miningReview) cardContent() string {
-	candidates := m.candidates()
-	if len(candidates) == 0 {
+	if len(m.candidates()) == 0 {
 		return "No candidates to review."
 	}
-	c := candidates[m.selected]
+	selected := m.current()
+	if selected == nil {
+		return fmt.Sprintf("No cards to review. The judge's flags exclude all %d remaining cards.\n\nPress x to show them.", m.counts().excluded)
+	}
+	c := *selected
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s · %s/%s\n", c.Source.Title, c.Source.Provider, c.Source.Model)
+	if reason := miner.ExportBlock(c); reason != "" {
+		fmt.Fprintf(&b, "\nCANNOT ACCEPT: %s\n", reason)
+	}
 	if len(c.Messages) > 0 && c.Messages[0].Role == "user" {
 		fmt.Fprintf(&b, "\nREQUEST\n%s\n", c.Messages[0].Content)
+	}
+	if len(c.Context) > 0 {
+		fmt.Fprintf(&b, "Context: %d earlier messages, shown after the transcript.\n", len(c.Context))
 	}
 	b.WriteString("\nLLM ASSESSMENT\n")
 	if a := c.Assessment; a != nil {
@@ -308,18 +370,10 @@ func (m *miningReview) cardContent() string {
 	if len(c.Messages) == 0 {
 		b.WriteString("(empty)\n")
 	}
-	for i, message := range c.Messages {
-		fmt.Fprintf(&b, "\n[%d] %s", i, message.Role)
-		if message.ToolCallID != "" {
-			fmt.Fprintf(&b, " · tool call ID: %s", message.ToolCallID)
-		}
-		fmt.Fprintf(&b, "\n%s\n", message.Content)
-		for _, call := range message.ToolCalls {
-			fmt.Fprintf(&b, "\nTool call: %s\nID: %s\nArguments:\n%s\n", call.Name, call.ID, string(call.Arguments))
-		}
-		for _, image := range message.Images {
-			fmt.Fprintf(&b, "[Image: %s, %d×%d; image data not displayed]\n", image.MediaType, image.Width, image.Height)
-		}
+	writeMiningMessages(&b, c.Messages, "")
+	if len(c.Context) > 0 {
+		b.WriteString("\nEARLIER CONVERSATION — EXPORTED AS CONTEXT, NOT TRAINED\n")
+		writeMiningMessages(&b, c.Context, "earlier ")
 	}
 	b.WriteString("\nFOLLOWING USER FEEDBACK — NOT EXPORTED\n")
 	if c.Feedback == "" {
@@ -332,24 +386,47 @@ func (m *miningReview) cardContent() string {
 	return b.String()
 }
 
+// writeMiningMessages writes each message under its index, such as "[earlier
+// 3] user", with every tool call and its arguments in full.
+func writeMiningMessages(b *strings.Builder, messages []core.Message, label string) {
+	for i, message := range messages {
+		fmt.Fprintf(b, "\n[%s%d] %s", label, i, message.Role)
+		if message.ToolCallID != "" {
+			fmt.Fprintf(b, " · tool call ID: %s", message.ToolCallID)
+		}
+		fmt.Fprintf(b, "\n%s\n", message.Content)
+		for _, call := range message.ToolCalls {
+			fmt.Fprintf(b, "\nTool call: %s\nID: %s\nArguments:\n%s\n", call.Name, call.ID, string(call.Arguments))
+		}
+		for _, image := range message.Images {
+			fmt.Fprintf(b, "[Image: %s, %d×%d; image data not displayed]\n", image.MediaType, image.Width, image.Height)
+		}
+	}
+}
+
 func (m *miningReview) View() tea.View {
 	width, height := m.width, m.height
 	counts := m.counts()
-	title := fmt.Sprintf("MINING REVIEW · %d cards · %d kept · %d rejected · %d deferred · %d open", len(m.candidates()), counts.keep, counts.reject, counts.deferCount, counts.undecided)
+	title := fmt.Sprintf("MINING REVIEW · %d cards · %d kept · %d rejected · %d deferred · %d open · %d excluded", len(m.candidates()), counts.keep, counts.reject, counts.deferCount, counts.open, counts.excluded)
 	selection := "No candidate selected"
-	if len(m.candidates()) > 0 {
-		r := m.candidates()[m.selected].Review
-		decision := r.Decision
+	if c := m.current(); c != nil {
+		decision := c.Review.Decision
 		if decision == "" {
 			decision = "undecided"
 		}
 		selection = fmt.Sprintf("Card %d/%d · %s", m.selected+1, len(m.candidates()), decision)
-		if r.Decision == "keep" {
-			selection += fmt.Sprintf(" · rank %d/5", r.Rank)
+		if c.Review.Decision == "keep" {
+			selection += fmt.Sprintf(" · rank %d/5", c.Review.Rank)
+		}
+		if miner.Excluded(*c) {
+			selection += " · excluded by judge"
 		}
 	}
 	footer := "←/→ p/n card · ↑/↓ pgup/pgdown scroll · 1–5 keep (1 low, 5 best)"
-	footer2 := "r reject · d defer · u clear · e export · q/esc quit"
+	footer2 := "r reject · d defer · u clear · x show excluded · e export · q/esc quit"
+	if m.showExcluded {
+		footer2 = "r reject · d defer · u clear · x hide excluded · e export · q/esc quit"
+	}
 	if m.confirming {
 		footer = "y confirm export · n cancel · q/esc quit"
 		footer2 = "↑/↓ pgup/pgdown scroll"

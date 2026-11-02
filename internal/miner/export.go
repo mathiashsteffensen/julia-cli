@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"julia/internal/core"
 )
 
 // TrainingInstructions is a normalized deployment policy, not a reconstruction
@@ -55,6 +57,10 @@ type trainingMessage struct {
 	Content    string         `json:"content"`
 	ToolCalls  []trainingCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
+
+	// Weight is set on every assistant message: 1 for the reviewed turn, 0
+	// for earlier turns, which are context and were never reviewed.
+	Weight *int `json:"weight,omitempty"`
 }
 
 type trainingExample struct {
@@ -123,6 +129,9 @@ func Export(report *Report, directory string, options ExportOptions) (ExportResu
 		if err := ValidateMessages(c.Messages, report.Tools); err != nil {
 			return result, fmt.Errorf("candidate %s: %w", c.ID, err)
 		}
+		if err := validateContext(c.Context, report.Tools); err != nil {
+			return result, fmt.Errorf("candidate %s context: %w", c.ID, err)
+		}
 		if c.Source.GroupID == "" {
 			return result, fmt.Errorf("candidate %s has no source group", c.ID)
 		}
@@ -141,7 +150,7 @@ func Export(report *Report, directory string, options ExportOptions) (ExportResu
 	manifest := exportManifest{
 		Version: Version, CreatedAt: time.Now().UTC(), Judge: report.Judge, Focus: report.Focus,
 		ToolSchemaOrigin: "Current JULIA definitions captured at scan time; historical schemas and instructions were not saved.",
-		Format:           "OpenAI-style messages and tools; function.arguments is a JSON-encoded string. Use the target model's tool-aware chat template and assistant-only loss.",
+		Format:           "OpenAI-style messages and tools; function.arguments is a JSON-encoded string. Every assistant message has weight 1 for the reviewed turn or 0 for earlier context. Use the target model's tool-aware chat template and loss on weight-1 assistant messages only.",
 		TrainingPolicy:   TrainingInstructions, ValidationPercent: options.ValidationPercent,
 	}
 	var training, validation [][]byte
@@ -216,21 +225,31 @@ func trainingRow(report *Report, c Candidate) trainingExample {
 		row.Tools = append(row.Tools, trainingTool{Type: "function", Function: coreTool{tool.Name, tool.Description, tool.Parameters}})
 	}
 	ids := make(map[string]string)
-	for _, message := range c.Messages {
-		out := trainingMessage{Role: message.Role, Content: message.Content}
-		for _, call := range message.ToolCalls {
-			id := fmt.Sprintf("call_%d", len(ids)+1)
-			ids[call.ID] = id
-			// Canonical arguments and IDs make repeated traces deduplicate even
-			// when the provider generated different opaque call identifiers.
-			data, _ := canonicalArguments(call.Arguments) // Validated before export.
-			out.ToolCalls = append(out.ToolCalls, trainingCall{id, "function", trainingFunction{call.Name, string(data)}})
+	calls := 0
+	appendMessages := func(messages []core.Message, weight int) {
+		for _, message := range messages {
+			out := trainingMessage{Role: message.Role, Content: message.Content}
+			for _, call := range message.ToolCalls {
+				calls++
+				id := fmt.Sprintf("call_%d", calls)
+				ids[call.ID] = id
+				// Canonical arguments and IDs make repeated traces deduplicate even
+				// when the provider generated different opaque call identifiers.
+				data, _ := canonicalArguments(call.Arguments) // Validated before export.
+				out.ToolCalls = append(out.ToolCalls, trainingCall{id, "function", trainingFunction{call.Name, string(data)}})
+			}
+			switch message.Role {
+			case "tool":
+				out.ToolCallID = ids[message.ToolCallID]
+			case "assistant":
+				out.Weight = &weight
+			}
+			row.Messages = append(row.Messages, out)
 		}
-		if message.Role == "tool" {
-			out.ToolCallID = ids[message.ToolCallID]
-		}
-		row.Messages = append(row.Messages, out)
 	}
+
+	appendMessages(c.Context, 0)
+	appendMessages(c.Messages, 1)
 	return row
 }
 

@@ -146,6 +146,37 @@ func TestParseAssessmentRequiresCompleteBoundedSchema(t *testing.T) {
 	}
 }
 
+func TestJudgeSeesEarlierTurnsAsContext(t *testing.T) {
+	c := judgedCandidate("later")
+	c.Source.Start, c.Source.End = 2, 4
+	c.Context = []core.Message{{Role: "user", Content: "Remember the number 7."}, {Role: "assistant", Content: "Noted."}}
+	c.Messages[0].Content = "What is that number plus 1?"
+	report := &Report{Version: Version, Focus: DefaultFocus, Candidates: []Candidate{c}}
+	valid, _ := json.Marshal(judgedAssessment())
+	model := &miningTestCompleter{run: func(_ context.Context, instructions, prompt string, _ any) (string, core.TokenUsage, error) {
+		var input struct {
+			Earlier  []core.Message `json:"earlier_messages"`
+			Messages []core.Message `json:"messages"`
+		}
+		if err := json.Unmarshal([]byte(prompt), &input); err != nil || len(input.Earlier) != 2 || input.Earlier[0].Content != "Remember the number 7." || len(input.Messages) != 2 {
+			t.Fatalf("judge did not get the context apart from the turn: %v %s", err, prompt)
+		}
+		if !strings.Contains(instructions, "earlier_messages") {
+			t.Fatal("judge instructions do not explain the context")
+		}
+		return string(valid), core.TokenUsage{}, nil
+	}}
+	if err := Judge(context.Background(), report, model, time.Second, func() error { return nil }, nil); err != nil || model.calls != 1 {
+		t.Fatalf("judge: %v, calls %d", err, model.calls)
+	}
+
+	report.Candidates[0].Assessment = nil
+	report.Candidates[0].Context[1].Content = "Noted. password=abc12345"
+	if err := Judge(context.Background(), report, model, time.Second, func() error { return nil }, nil); err == nil || model.calls != 1 {
+		t.Fatalf("a secret in the context reached the model: %v, calls %d", err, model.calls)
+	}
+}
+
 func TestJudgeDoesNotSendRejectedOrDeferredCards(t *testing.T) {
 	for _, decision := range []string{"reject", "defer"} {
 		c := judgedCandidate(decision)

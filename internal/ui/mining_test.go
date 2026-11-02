@@ -106,11 +106,69 @@ func TestMiningBlockedKeep(t *testing.T) {
 			report.Candidates[0].Assessment = test.assessment
 			calls := 0
 			m := newMiningReview(MiningReviewConfig{Report: report, Save: func() error { calls++; return nil }})
+			m.showExcluded, m.selected = true, 0 // Excluded cards are hidden by default.
 			miningKey(m, '5')
 			if calls != 0 || m.selected != 0 || report.Candidates[0].Review.Decision != "" || !strings.Contains(m.notice, "Cannot accept") {
 				t.Fatalf("blocked keep was applied: calls %d, candidate %+v, notice %q", calls, report.Candidates[0], m.notice)
 			}
 		})
+	}
+}
+
+func TestMiningReviewSkipsExcludedCards(t *testing.T) {
+	report := miningTestReport()
+	report.Candidates = append(report.Candidates, miner.Candidate{ID: "four"})
+	report.Candidates[0].Assessment.MissingContext = true
+	report.Candidates[2].Assessment.Sensitive = true
+	saves := 0
+	m := newMiningReview(MiningReviewConfig{Report: report, Save: func() error { saves++; return nil }})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	if m.selected != 1 {
+		t.Fatalf("opened on card %d, want the first card that is not excluded", m.selected)
+	}
+	if title := ansi.Strip(m.View().Content); !strings.Contains(title, "2 open · 2 excluded") {
+		t.Fatalf("counts do not split open and excluded cards: %s", title)
+	}
+
+	miningKey(m, tea.KeyRight)
+	if m.selected != 3 || !strings.Contains(ansi.Strip(m.viewport.View()), "CANNOT ACCEPT: Judge this example") {
+		t.Fatalf("next did not skip to the unjudged card with its reason: %d", m.selected)
+	}
+	miningKey(m, tea.KeyRight)
+	if m.selected != 1 {
+		t.Fatalf("next did not wrap past excluded cards: %d", m.selected)
+	}
+	miningKey(m, '4')
+	if saves != 1 || m.selected != 3 {
+		t.Fatalf("a decision did not advance to the next open card: saves %d, card %d", saves, m.selected)
+	}
+
+	miningKey(m, 'x')
+	miningKey(m, tea.KeyRight)
+	if m.selected != 0 || !strings.Contains(ansi.Strip(m.viewport.View()), "CANNOT ACCEPT: The example needs context") {
+		t.Fatalf("x did not show the excluded card with its reason: %d", m.selected)
+	}
+	miningKey(m, 'x')
+	if m.selected != 3 {
+		t.Fatalf("hiding excluded cards left an excluded card selected: %d", m.selected)
+	}
+}
+
+func TestMiningReviewWithOnlyExcludedCards(t *testing.T) {
+	report := miningTestReport()
+	for i := range report.Candidates {
+		report.Candidates[i].Assessment.Recommendation = "needs_correction"
+	}
+	saves := 0
+	m := newMiningReview(MiningReviewConfig{Report: report, Save: func() error { saves++; return nil }})
+	if !strings.Contains(ansi.Strip(m.viewport.View()), "exclude all 3 remaining cards") {
+		t.Fatalf("empty rotation not explained: %s", m.viewport.View())
+	}
+	for _, key := range []rune{'1', 'r', 'd', 'u', tea.KeyRight} {
+		miningKey(m, key)
+	}
+	if saves != 0 {
+		t.Fatalf("a decision was saved for a hidden card: %d", saves)
 	}
 }
 
@@ -171,9 +229,28 @@ func TestMiningTranscriptScrollsWithoutClipping(t *testing.T) {
 	if !m.viewport.AtBottom() {
 		t.Fatal("did not reach bottom")
 	}
+	if strings.Contains(seen.String(), "EARLIER CONVERSATION") {
+		t.Fatal("a card without context shows an earlier conversation")
+	}
 	miningKey(m, tea.KeyPgUp)
 	if m.viewport.AtBottom() {
 		t.Fatal("page up did not scroll")
+	}
+}
+
+func TestMiningCardShowsEarlierConversation(t *testing.T) {
+	report := miningTestReport()
+	report.Candidates[0].Context = []core.Message{{Role: "user", Content: "context-request-sentinel"}, {Role: "assistant", Content: "context-reply-sentinel"}}
+	report.Candidates[0].Messages = []core.Message{{Role: "user", Content: "Go ahead."}, {Role: "assistant", Content: "turn-reply-sentinel"}}
+	m := newMiningReview(MiningReviewConfig{Report: report})
+	card := m.cardContent()
+	for _, want := range []string{"Context: 2 earlier messages", "[1] assistant\nturn-reply-sentinel", "EXPORTED AS CONTEXT, NOT TRAINED", "[earlier 0] user\ncontext-request-sentinel", "[earlier 1] assistant\ncontext-reply-sentinel"} {
+		if !strings.Contains(card, want) {
+			t.Errorf("card misses %q", want)
+		}
+	}
+	if strings.Index(card, "turn-reply-sentinel") > strings.Index(card, "context-request-sentinel") {
+		t.Error("the turn under review is not shown before its context")
 	}
 }
 

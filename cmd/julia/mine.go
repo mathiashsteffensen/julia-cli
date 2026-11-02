@@ -284,6 +284,18 @@ func (c miningCommand) judge(ctx context.Context, path string, report *miner.Rep
 	err = miner.Judge(ctx, report, modelClient, timeout, save, func(done, total int) {
 		fmt.Fprintf(c.output, "Judged %d/%d\n", done, total)
 	})
+
+	open, excluded := 0, 0
+	for _, candidate := range report.Candidates {
+		switch {
+		case candidate.Review.Decision != "":
+		case miner.Excluded(candidate):
+			excluded++
+		default:
+			open++
+		}
+	}
+	fmt.Fprintf(c.output, "Open for review: %d. Excluded by the judge's flags, hidden in review: %d.\n", open, excluded)
 	fmt.Fprintf(c.output, "Report: %s\nJudge usage: %d input, %d output tokens.\nNext: julia mine review %q\n", safe(path), report.Usage.Prompt(), report.Usage.Output, path)
 	return err
 }

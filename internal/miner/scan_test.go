@@ -3,6 +3,7 @@ package miner
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -127,15 +128,17 @@ func TestScanDedupGroupFeedbackAndReadOnly(t *testing.T) {
 
 func TestScanRejectsUnsafeAndOversizedTurns(t *testing.T) {
 	dir := t.TempDir()
-	messages := []core.Message{
-		{Role: "user", Content: "secret"}, {Role: "assistant", Content: "password=abc12345"},
-		{Role: "user", Content: "image"}, {Role: "assistant", Content: "[image: PNG]"},
-		{Role: "user", Content: "orphan"}, {Role: "tool", ToolCallID: "x"}, {Role: "assistant", Content: "done"},
-		{Role: "user", Content: "large"}, {Role: "assistant", Content: strings.Repeat("x", 1000)},
-		{Role: "user", Content: "good"}, {Role: "assistant", Content: "done"},
-		{Role: "user", Content: "No, password=abc12345"}, {Role: "assistant", Content: "done"},
+	// One session each: an unusable turn would otherwise also make every turn
+	// after it unusable as context.
+	for i, messages := range [][]core.Message{
+		{{Role: "user", Content: "secret"}, {Role: "assistant", Content: "password=abc12345"}},
+		{{Role: "user", Content: "image"}, {Role: "assistant", Content: "[image: PNG]"}},
+		{{Role: "user", Content: "orphan"}, {Role: "tool", ToolCallID: "x"}, {Role: "assistant", Content: "done"}},
+		{{Role: "user", Content: "large"}, {Role: "assistant", Content: strings.Repeat("x", 1000)}},
+		{{Role: "user", Content: "good"}, {Role: "assistant", Content: "done"}, {Role: "user", Content: "No, password=abc12345"}, {Role: "assistant", Content: "done"}},
+	} {
+		writeSession(t, dir, sessionFor(id(fmt.Sprint(i+1)), messages))
 	}
-	writeSession(t, dir, sessionFor(id("a"), messages))
 	r, err := Scan(context.Background(), dir, ScanOptions{MaxBytes: 300}, testTools)
 	if err != nil {
 		t.Fatal(err)
@@ -196,24 +199,145 @@ func TestScanSkipsSteeredTurnsWhole(t *testing.T) {
 	if kept := report.Candidates[0]; kept.Source.Start != 6 || kept.Messages[0].Content != "What is 2 + 2?" {
 		t.Fatalf("wrong turn kept: %+v", kept)
 	}
+	// The steered turn is no target, but the next turn's model saw it.
+	if prior := report.Candidates[0].Context; len(prior) != 6 || prior[4].Content != steer {
+		t.Fatalf("steered turn missing from context: %+v", prior)
+	}
 }
 
-func TestScanChecksTextAsJudgeAndExportEncodeIt(t *testing.T) {
+func TestScanCarriesEarlierTurnsAsContext(t *testing.T) {
 	dir := t.TempDir()
-	messages := []core.Message{
-		{Role: "user", Content: "What does export token=$1\nexec ./run do?"}, {Role: "assistant", Content: "It runs ./run."},
-		{Role: "user", Content: "What is 2 + 2?"}, {Role: "assistant", Content: "4."},
-		{Role: "user", Content: "No, use token=$1\ninstead."}, {Role: "assistant", Content: "Understood."},
-		{Role: "user", Content: "And 3 + 3?"}, {Role: "assistant", Content: "6."},
-	}
-	writeSession(t, dir, sessionFor(id("8"), messages))
+	messages := append(turn("Read parser.go", "read", `{"path":"parser.go"}`),
+		core.Message{Role: "assistant", ToolCalls: []core.ToolCall{{ID: "reflection-0-1", Name: "Memory", Arguments: json.RawMessage(`{"action":"save"}`)}}},
+		core.Message{Role: "tool", ToolCallID: "reflection-0-1", Content: "Saved a note."},
+		core.Message{Role: "user", Content: "Summarize the parser."},
+		core.Message{Role: "assistant", Content: "It tokenizes, then\n\n[Response interrupted]"},
+		core.Message{Role: "user", Content: "Go ahead and fix the bug you found."},
+		core.Message{Role: "assistant", Content: "Fixed."})
+	writeSession(t, dir, sessionFor(id("1"), messages))
+	// The same final turn without the conversation before it is another example.
+	writeSession(t, dir, sessionFor(id("2"), messages[8:]))
 
 	report, err := Scan(context.Background(), dir, ScanOptions{}, testTools)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The first and third turns carry the secret; the second is followed by it.
-	if report.Stats.Skipped["invalid_turn"] != 2 || report.Stats.Skipped["sensitive_feedback"] != 1 || len(report.Candidates) != 1 {
+	if report.Stats.Duplicates != 0 || report.Stats.Skipped["invalid_turn"] != 1 || len(report.Candidates) != 3 {
+		t.Fatalf("stats/candidates: %+v %+v", report.Stats, report.Candidates)
+	}
+	var later *Candidate
+	for i, c := range report.Candidates {
+		if c.Source.Start == 0 && len(c.Context) != 0 {
+			t.Fatalf("a first turn has context: %+v", c)
+		}
+		if c.Source.Start == 8 {
+			later = &report.Candidates[i]
+		}
+	}
+	if later == nil || later.Source.End != 10 || len(later.Messages) != 2 {
+		t.Fatalf("later turn missing or misplaced: %+v", later)
+	}
+	// The interrupted reply is no target, but it is what the model saw; the
+	// reflection bookkeeping is not.
+	if len(later.Context) != 6 || later.Context[0].Content != "Read parser.go" || !strings.Contains(later.Context[5].Content, "[Response interrupted]") {
+		t.Fatalf("wrong context: %+v", later.Context)
+	}
+
+	// The bound counts the context: here the turn fits alone, not with it.
+	turnJSON, _ := json.Marshal(messages[8:])
+	bounded, err := Scan(context.Background(), dir, ScanOptions{MaxBytes: len(turnJSON) + len(`""`)}, testTools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range bounded.Candidates {
+		if len(c.Context) != 0 {
+			t.Fatalf("context exceeded the byte bound: %+v", c)
+		}
+	}
+	if len(bounded.Candidates) != 1 || bounded.Stats.Skipped["too_large"] != 2 {
+		t.Fatalf("bounded stats: %+v", bounded.Stats)
+	}
+}
+
+func TestScanKeepsImagesOutOfContext(t *testing.T) {
+	dir := t.TempDir()
+	const imageBytes = "image-bytes-sentinel"
+	attached := core.Image{MediaType: "image/png", Width: 4, Height: 2, Data: []byte(imageBytes)}
+	screenshot := turn("Open the page.", "shot", `{"path":"page.png"}`)
+	screenshot[0].Images = []core.Image{attached}
+	screenshot[2].Content = "[image: PNG · 1440×900 · 312 KB]"
+	messages := append(screenshot,
+		core.Message{Role: "user", Images: []core.Image{attached}},
+		core.Message{Role: "assistant", Content: "A chart."},
+		core.Message{Role: "user", Content: "What is 2 + 2?"},
+		core.Message{Role: "assistant", Content: "4."})
+	writeSession(t, dir, sessionFor(id("1"), messages))
+
+	report, err := Scan(context.Background(), dir, ScanOptions{}, testTools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A turn with an image is no target, only context.
+	if report.Stats.Skipped["invalid_turn"] != 2 || report.Stats.Skipped["invalid_context"] != 0 || len(report.Candidates) != 1 {
+		t.Fatalf("stats/candidates: %+v %+v", report.Stats, report.Candidates)
+	}
+	prior := report.Candidates[0].Context
+	if len(prior) != 6 || prior[0].Content != "Open the page.\n[image: PNG · 4×2 · 20 B]" || prior[2].Content != screenshot[2].Content || prior[4].Content != "[image: PNG · 4×2 · 20 B]" {
+		t.Fatalf("images not elided to markers: %+v", prior)
+	}
+
+	data, _ := json.Marshal(report)
+	encoded, _ := json.Marshal([]byte(imageBytes))
+	if strings.Contains(string(data), strings.Trim(string(encoded), `"`)) {
+		t.Fatal("image bytes reached the report")
+	}
+	var prompt string
+	model := &miningTestCompleter{run: func(_ context.Context, _, input string, _ any) (string, core.TokenUsage, error) {
+		prompt = input
+		answer, _ := json.Marshal(judgedAssessment())
+		return string(answer), core.TokenUsage{}, nil
+	}}
+	if err := Judge(context.Background(), report, model, time.Second, func() error { return nil }, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "[image: PNG") || strings.Contains(prompt, strings.Trim(string(encoded), `"`)) {
+		t.Fatalf("judge prompt: %s", prompt)
+	}
+
+	// The bound counts the marker, not the bytes it replaced.
+	huge := attached
+	huge.Data = make([]byte, 1<<20)
+	messages[0].Images = []core.Image{huge}
+	writeSession(t, dir, sessionFor(id("1"), messages))
+	bounded, err := Scan(context.Background(), dir, ScanOptions{MaxBytes: 4096}, testTools)
+	if err != nil || len(bounded.Candidates) != 1 {
+		t.Fatalf("image bytes counted against the bound: %v %+v", err, bounded.Stats)
+	}
+}
+
+func TestScanChecksTextAsJudgeAndExportEncodeIt(t *testing.T) {
+	dir := t.TempDir()
+	secret := func() []core.Message {
+		return []core.Message{{Role: "user", Content: "What does export token=$1\nexec ./run do?"}, {Role: "assistant", Content: "It runs ./run."}}
+	}
+	clean := func() []core.Message {
+		return []core.Message{{Role: "user", Content: "And 3 + 3?"}, {Role: "assistant", Content: "6."}}
+	}
+	writeSession(t, dir, sessionFor(id("8"), secret()))
+	writeSession(t, dir, sessionFor(id("9"), []core.Message{
+		{Role: "user", Content: "What is 2 + 2?"}, {Role: "assistant", Content: "4."},
+		{Role: "user", Content: "No, use token=$1\ninstead."}, {Role: "assistant", Content: "Understood."},
+	}))
+	writeSession(t, dir, sessionFor(id("7"), clean()))
+	writeSession(t, dir, sessionFor(id("6"), append(secret(), clean()...)))
+
+	report, err := Scan(context.Background(), dir, ScanOptions{}, testTools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Three turns carry the secret, and one is followed by it. The clean turn
+	// after a secret would carry it as context.
+	if report.Stats.Skipped["invalid_turn"] != 3 || report.Stats.Skipped["sensitive_feedback"] != 1 || report.Stats.Skipped["invalid_context"] != 1 || len(report.Candidates) != 1 {
 		t.Fatalf("escaped secrets reached the report: %+v", report.Stats)
 	}
 	// Every candidate a scan keeps must reach the model: one the judge's own

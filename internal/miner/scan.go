@@ -81,68 +81,120 @@ func canonicalArguments(raw json.RawMessage) ([]byte, error) {
 // This is dataset hygiene, not a guarantee that content is safe or context-complete.
 func ValidateMessages(messages []core.Message, definitions []core.ToolDefinition) error {
 	if len(messages) < 2 || messages[0].Role != "user" || messages[len(messages)-1].Role != "assistant" {
-		return errors.New("turn must start with a user and end with an assistant")
+		return invalidTranscript("incomplete_turn", "turn must start with a user and end with an assistant")
 	}
+	for i, m := range messages {
+		if m.Role == "user" && i != 0 {
+			return invalidTranscript("unexpected_user", "invalid user message")
+		}
+		if imagePattern.MatchString(m.Content) {
+			return invalidTranscript("image", "image in turn")
+		}
+		if strings.Contains(strings.ToLower(m.Content), "[response interrupted]") {
+			return invalidTranscript("interrupted", "interrupted turn")
+		}
+	}
+	return validateTranscript(messages, definitions)
+}
+
+// validateContext checks the earlier turns a candidate carries as context.
+// They are not training targets, so a steer, an interrupted reply or an image's
+// marker line stays as the model saw it. The hygiene and tool schema checks
+// still apply, and image bytes stay refused: see elideImages.
+func validateContext(messages []core.Message, definitions []core.ToolDefinition) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	if messages[0].Role != "user" {
+		return invalidTranscript("invalid_context_start", "context must start with a user message")
+	}
+	return validateTranscript(messages, definitions)
+}
+
+// elideImages returns a turn as a candidate's context carries it: each image
+// becomes the marker line transcripts already use. Its bytes stay out of the
+// report, the judge's prompt and the dataset, while the judge can still see that
+// an image was there and flag a turn that depends on it.
+func elideImages(messages []core.Message) []core.Message {
+	elided := make([]core.Message, len(messages))
+	for i, m := range messages {
+		for _, image := range m.Images {
+			if m.Content != "" {
+				m.Content += "\n"
+			}
+			m.Content += core.ImageMarker(image.Info())
+		}
+		m.Images = nil
+		elided[i] = m
+	}
+	return elided
+}
+
+// validateTranscript checks the messages, tool calls and results of one or
+// more turns: no image bytes or secrets, known public tools with valid
+// arguments, and every call answered before the conversation moves on.
+func validateTranscript(messages []core.Message, definitions []core.ToolDefinition) error {
 	defs := make(map[string]core.ToolDefinition, len(definitions))
 	for _, d := range definitions {
 		if d.Name == "" {
-			return errors.New("empty tool name")
+			return invalidTranscript("invalid_tool_definitions", "empty tool name")
 		}
 		if _, ok := defs[d.Name]; ok {
-			return errors.New("duplicate tool definition")
+			return invalidTranscript("invalid_tool_definitions", "duplicate tool definition")
 		}
 		defs[d.Name] = d
 	}
 	pending := map[string]bool{}
 	seen := map[string]bool{}
-	for i, m := range messages {
-		if len(m.Images) != 0 || imagePattern.MatchString(m.Content) {
-			return errors.New("image in turn")
+	for _, m := range messages {
+		if len(m.Images) != 0 {
+			return invalidTranscript("image", "image in turn")
 		}
 		if SensitiveText(m.Content) || SensitiveText(m.ToolCallID) {
-			return errors.New("sensitive text")
-		}
-		if strings.Contains(strings.ToLower(m.Content), "[response interrupted]") {
-			return errors.New("interrupted turn")
+			return invalidTranscript("secret_text", "sensitive text")
 		}
 		switch m.Role {
 		case "user":
-			if i != 0 || len(m.ToolCalls) != 0 || m.ToolCallID != "" || strings.TrimSpace(m.Content) == "" {
-				return errors.New("invalid user message")
+			if len(pending) > 0 || len(m.ToolCalls) != 0 || m.ToolCallID != "" || strings.TrimSpace(m.Content) == "" {
+				return invalidTranscript("unexpected_user", "invalid user message")
 			}
 		case "assistant":
 			if len(pending) > 0 || m.ToolCallID != "" {
-				return errors.New("unresolved tool calls")
+				return invalidTranscript("unresolved_call", "unresolved tool calls")
 			}
 			if len(m.ToolCalls) == 0 && strings.TrimSpace(m.Content) == "" {
-				return errors.New("invalid assistant final")
+				return invalidTranscript("empty_assistant", "invalid assistant final")
 			}
 			for _, call := range m.ToolCalls {
 				if SensitiveText(call.ID) || SensitiveText(call.Name) {
-					return errors.New("sensitive tool metadata")
+					return invalidTranscript("secret_metadata", "sensitive tool metadata")
 				}
 				if call.ID == "" || seen[call.ID] {
-					return errors.New("missing or duplicate tool call ID")
+					return invalidTranscript("invalid_call_id", "missing or duplicate tool call ID")
 				}
 				d, ok := defs[call.Name]
 				if !ok || sensitiveTool(call.Name) {
-					return fmt.Errorf("unknown or private tool: %s", call.Name)
+					reason := "unknown_tool"
+					if sensitiveTool(call.Name) {
+						reason = "private_tool"
+					}
+					return invalidTranscript(reason, fmt.Sprintf("unknown or private tool: %s", call.Name))
 				}
 				if SensitiveText(string(call.Arguments)) {
-					return errors.New("sensitive tool arguments")
+					return invalidTranscript("secret_arguments", "sensitive tool arguments")
 				}
 				var args any
 				if err := json.Unmarshal(call.Arguments, &args); err != nil {
-					return errors.New("invalid tool arguments")
+					return invalidTranscript("invalid_arguments_json", "invalid tool arguments")
 				}
 				// An exported row carries the arguments as a JSON string, so they
 				// are checked encoded once more as well.
 				canonical, err := canonicalArguments(call.Arguments)
 				if err != nil || SensitiveText(string(canonical)) || sensitiveJSON(string(canonical)) {
-					return errors.New("sensitive tool arguments")
+					return invalidTranscript("secret_arguments", "sensitive tool arguments")
 				}
 				if _, ok := args.(map[string]any); !ok {
-					return errors.New("tool arguments must be an object")
+					return invalidTranscript("arguments_not_object", "tool arguments must be an object")
 				}
 				if err := validateSchema(args, d.Parameters); err != nil {
 					return fmt.Errorf("tool %s: %w", call.Name, err)
@@ -151,18 +203,18 @@ func ValidateMessages(messages []core.Message, definitions []core.ToolDefinition
 			}
 		case "tool":
 			if !pending[m.ToolCallID] || len(m.ToolCalls) != 0 {
-				return errors.New("orphan or duplicate tool result")
+				return invalidTranscript("orphan_result", "orphan or duplicate tool result")
 			}
 			delete(pending, m.ToolCallID)
 		default:
-			return errors.New("unexpected message role")
+			return invalidTranscript("unexpected_role", "unexpected message role")
 		}
 	}
 	if len(pending) != 0 || len(messages[len(messages)-1].ToolCalls) != 0 {
-		return errors.New("dangling tool calls")
+		return invalidTranscript("dangling_call", "dangling tool calls")
 	}
 	if sensitiveJSON(messages) {
-		return errors.New("sensitive text")
+		return invalidTranscript("secret_text", "sensitive text")
 	}
 	return nil
 }
@@ -203,7 +255,7 @@ func validateSchema(value any, schema map[string]any) error {
 			}
 		}
 		if !matched {
-			return errors.New("value outside enum")
+			return invalidTranscript("argument_enum", "value outside enum")
 		}
 	}
 	if enums, ok := schema["enum"].([]string); ok {
@@ -216,7 +268,7 @@ func validateSchema(value any, schema map[string]any) error {
 			}
 		}
 		if !matched {
-			return errors.New("value outside enum")
+			return invalidTranscript("argument_enum", "value outside enum")
 		}
 	}
 	if typ, ok := schema["type"].(string); ok {
@@ -239,10 +291,10 @@ func validateSchema(value any, schema map[string]any) error {
 		case "null":
 			valid = value == nil
 		default:
-			return fmt.Errorf("unsupported schema type %q", typ)
+			return invalidTranscript("unsupported_schema", fmt.Sprintf("unsupported schema type %q", typ))
 		}
 		if !valid {
-			return fmt.Errorf("expected %s", typ)
+			return invalidTranscript("argument_type", fmt.Sprintf("expected %s", typ))
 		}
 	}
 	if obj, ok := value.(map[string]any); ok {
@@ -250,7 +302,7 @@ func validateSchema(value any, schema map[string]any) error {
 			for _, r := range req {
 				if key, ok := r.(string); ok {
 					if _, exists := obj[key]; !exists {
-						return fmt.Errorf("missing required property %s", key)
+						return invalidTranscript("missing_argument", fmt.Sprintf("missing required property %s", key))
 					}
 				}
 			}
@@ -258,12 +310,19 @@ func validateSchema(value any, schema map[string]any) error {
 		if req, ok := schema["required"].([]string); ok {
 			for _, key := range req {
 				if _, exists := obj[key]; !exists {
-					return fmt.Errorf("missing required property %s", key)
+					return invalidTranscript("missing_argument", fmt.Sprintf("missing required property %s", key))
 				}
 			}
 		}
 		props, _ := schema["properties"].(map[string]any)
-		for key, v := range obj {
+		// Report the same first failure when several properties are invalid.
+		keys := make([]string, 0, len(obj))
+		for key := range obj {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			v := obj[key]
 			if raw, exists := props[key]; exists {
 				if sub, ok := raw.(map[string]any); ok {
 					if err := validateSchema(v, sub); err != nil {
@@ -273,7 +332,7 @@ func validateSchema(value any, schema map[string]any) error {
 				continue
 			}
 			if allowed, ok := schema["additionalProperties"].(bool); ok && !allowed {
-				return fmt.Errorf("unexpected property %s", key)
+				return invalidTranscript("unexpected_argument", fmt.Sprintf("unexpected property %s", key))
 			}
 			if sub, ok := schema["additionalProperties"].(map[string]any); ok {
 				if err := validateSchema(v, sub); err != nil {
@@ -388,7 +447,18 @@ func Scan(ctx context.Context, directory string, options ScanOptions, definition
 	if err != nil {
 		return nil, err
 	}
-	r := &Report{Version: Version, CreatedAt: time.Now(), SourceDirectory: directory, Workspace: options.Workspace, Focus: options.Focus, Tools: definitions, Stats: ScanStats{Skipped: map[string]int{}}}
+	settings := &ScanSettings{
+		Limit: options.Limit, MaxBytes: options.MaxBytes,
+		SourceProvider: options.Provider, SourceModel: options.Model,
+	}
+	if !options.Since.IsZero() {
+		settings.Since = options.Since.Format(time.RFC3339Nano)
+	}
+	r := &Report{
+		Version: Version, CreatedAt: time.Now(), SourceDirectory: directory,
+		Workspace: options.Workspace, Focus: options.Focus, Tools: definitions,
+		Scan: settings, Stats: ScanStats{Skipped: map[string]int{}},
+	}
 	if err := validateReport(r); err != nil {
 		return nil, err
 	}
@@ -401,12 +471,12 @@ func Scan(ctx context.Context, directory string, options ScanOptions, definition
 			continue
 		}
 		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
-			r.Stats.Skipped["non_regular"]++
+			r.reject(Rejection{Stage: "non_regular", Reason: "non_regular"})
 			continue
 		}
 		id := strings.TrimSuffix(entry.Name(), ".json")
 		if !sessionIDPattern.MatchString(id) {
-			r.Stats.Skipped["invalid_session"]++
+			r.reject(Rejection{Stage: "invalid_session", Reason: "invalid_session_id"})
 			continue
 		}
 		var indexed indexedSession
@@ -414,7 +484,7 @@ func Scan(ctx context.Context, directory string, options ScanOptions, definition
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			r.Stats.Skipped["invalid_session"]++
+			r.reject(Rejection{SessionID: id, Stage: "invalid_session", Reason: "unreadable_or_invalid_session"})
 			continue
 		}
 		indexed.sessionMeta.private = indexed.hasPrivateContent()
@@ -450,11 +520,11 @@ func Scan(ctx context.Context, directory string, options ScanOptions, definition
 		}
 		group, ok := rootGroup(m.ID, metas)
 		if !ok {
-			r.Stats.Skipped["cyclic_parent"]++
+			r.reject(Rejection{SessionID: m.ID, Stage: "cyclic_parent", Reason: "invalid_parent_chain"})
 			continue
 		}
 		if SensitiveText(m.Title) || SensitiveText(m.Directory) || SensitiveText(m.Provider) || SensitiveText(m.Model) {
-			r.Stats.Skipped["sensitive"]++
+			r.reject(Rejection{SessionID: m.ID, Stage: "sensitive", Reason: "secret_metadata"})
 			continue
 		}
 		var s core.Session
@@ -462,23 +532,30 @@ func Scan(ctx context.Context, directory string, options ScanOptions, definition
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			r.Stats.Skipped["changed_or_invalid_session"]++
+			r.reject(Rejection{SessionID: m.ID, Stage: "changed_or_invalid_session", Reason: "unreadable_or_invalid_session"})
 			continue
 		}
 		r.Stats.Sessions++
 		// A child can return private correspondence through Subagent. Exclude
 		// its whole root group, even when the child fails the source filters.
 		if privateGroups[group] || privateSession(s.Messages) {
-			r.Stats.Skipped["private_session"]++
+			r.reject(Rejection{SessionID: m.ID, Stage: "private_session", Reason: "private_group"})
 			continue
 		}
 		steers := steeredMessages(s.Audit)
+
+		// Each candidate carries the turns before it, as the model saw them,
+		// so a later turn keeps the conversation it answers. One unusable
+		// earlier turn makes every turn after it in the session unusable.
+		var earlier []core.Message
+		var earlierBytes int
+		var earlierErr error
 		for start := 0; start < len(s.Messages); {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
 			if s.Messages[start].Role != "user" {
-				r.Stats.Skipped["orphan_message"]++
+				r.reject(Rejection{SessionID: m.ID, Start: start, End: start + 1, Stage: "orphan_message", Reason: "orphan_message"})
 				start++
 				continue
 			}
@@ -496,20 +573,47 @@ func Scan(ctx context.Context, directory string, options ScanOptions, definition
 				end++
 			}
 			r.Stats.Turns++
+			messages := trimReflection(s.Messages[start:end], start)
+			candidateEnd := start + len(messages)
+			asContext := elideImages(messages)
+
+			// A turn valid as a target has no images, so this is its size too.
+			encoded, encodeErr := json.Marshal(asContext)
+
+			// The cap stops a later append from writing into this candidate's
+			// context.
+			prior, priorBytes, priorErr := earlier[:len(earlier):len(earlier)], earlierBytes, earlierErr
+			earlier = append(earlier, asContext...)
+			earlierBytes += len(encoded)
+			if earlierErr == nil {
+				earlierErr = errors.Join(encodeErr, validateContext(asContext, definitions))
+			}
+
+			rejection := Rejection{
+				SessionID: m.ID, Start: start, End: candidateEnd,
+				ContextBytes: priorBytes, TurnBytes: len(encoded),
+			}
 			if steered {
-				r.Stats.Skipped["steered_turn"]++
+				rejection.Stage, rejection.Reason = "steered_turn", "steered_turn"
+				r.reject(rejection)
 				start = end
 				continue
 			}
-			messages := trimReflection(s.Messages[start:end], start)
-			candidateEnd := start + len(messages)
 			if end == len(s.Messages) && s.PendingTool != nil {
-				r.Stats.Skipped["invalid_turn"]++
+				rejection.Stage, rejection.Reason = "invalid_turn", "pending_tool"
+				r.reject(rejection)
 				start = end
 				continue
 			}
 			if err := ValidateMessages(messages, definitions); err != nil {
-				r.Stats.Skipped["invalid_turn"]++
+				rejection.Stage, rejection.Reason = "invalid_turn", rejectionReason(err)
+				r.reject(rejection)
+				start = end
+				continue
+			}
+			if priorErr != nil {
+				rejection.Stage, rejection.Reason = "invalid_context", rejectionReason(priorErr)
+				r.reject(rejection)
 				start = end
 				continue
 			}
@@ -517,20 +621,31 @@ func Scan(ctx context.Context, directory string, options ScanOptions, definition
 			if end < len(s.Messages) && isFeedback(s.Messages[end].Content) {
 				f := s.Messages[end]
 				if len(f.Images) > 0 || imagePattern.MatchString(f.Content) || SensitiveText(f.Content) || sensitiveJSON(f.Content) {
-					r.Stats.Skipped["sensitive_feedback"]++
+					rejection.Stage, rejection.Reason = "sensitive_feedback", "secret_text"
+					if len(f.Images) > 0 || imagePattern.MatchString(f.Content) {
+						rejection.Reason = "image"
+					}
+					r.reject(rejection)
 					start = end
 					continue
 				}
 				feedback = f.Content
 			}
-			b, err := json.Marshal(messages)
+			// The context counts as the sum of its turns' encoded sizes. That is
+			// a byte or so per turn more than one array, so the bound errs toward
+			// skipping.
 			feedbackJSON, feedbackErr := json.Marshal(feedback)
-			if err != nil || feedbackErr != nil || len(b)+len(feedbackJSON) > options.MaxBytes {
-				r.Stats.Skipped["too_large"]++
+			if encodeErr != nil || feedbackErr != nil || priorBytes+len(encoded)+len(feedbackJSON) > options.MaxBytes {
+				rejection.Stage, rejection.Reason = "too_large", "size_limit"
+				rejection.FeedbackBytes = len(feedbackJSON)
+				if encodeErr != nil || feedbackErr != nil {
+					rejection.Reason = "encoding_error"
+				}
+				r.reject(rejection)
 				start = end
 				continue
 			}
-			hash := transcriptHash(messages)
+			hash := transcriptHash(append(prior, messages...))
 			if seen[hash] {
 				r.Stats.Duplicates++
 				start = end
@@ -539,7 +654,15 @@ func Scan(ctx context.Context, directory string, options ScanOptions, definition
 			seen[hash] = true
 			unique++
 			signals, priority, category := classify(messages, feedback)
-			c := Candidate{ID: hash, Source: Source{SessionID: m.ID, GroupID: group, Title: m.Title, Directory: m.Directory, Provider: m.Provider, Model: m.Model, Start: start, End: candidateEnd, UpdatedAt: m.UpdatedAt}, Messages: append([]core.Message(nil), messages...), Feedback: feedback, Signals: signals, Priority: priority}
+			c := Candidate{
+				ID:       hash,
+				Source:   Source{SessionID: m.ID, GroupID: group, Title: m.Title, Directory: m.Directory, Provider: m.Provider, Model: m.Model, Start: start, End: candidateEnd, UpdatedAt: m.UpdatedAt},
+				Context:  prior,
+				Messages: append([]core.Message(nil), messages...),
+				Feedback: feedback,
+				Signals:  signals,
+				Priority: priority,
+			}
 			bucket := append(buckets[category], c)
 			sortCandidates(bucket)
 			if len(bucket) > options.Limit {

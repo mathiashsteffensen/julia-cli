@@ -131,6 +131,57 @@ func TestExportToolCallsAndDeduplication(t *testing.T) {
 	}
 }
 
+func TestExportTrainsOnlyTheReviewedTurn(t *testing.T) {
+	report := exportTestReport()
+	report.Tools = []core.ToolDefinition{{Name: "Read", Parameters: map[string]any{"type": "object"}}}
+	c := &report.Candidates[0]
+	c.Source.Start, c.Source.End = 4, 8
+	// The same provider call ID in two turns must still pair each result
+	// with its own call.
+	c.Context = []core.Message{
+		{Role: "user", Content: "Read notes.txt."},
+		{Role: "assistant", ToolCalls: []core.ToolCall{{ID: "toolu_1", Name: "Read", Arguments: json.RawMessage(`{"path":"notes.txt"}`)}}},
+		{Role: "tool", ToolCallID: "toolu_1", Content: "Remember 7."},
+		{Role: "assistant", Content: "It says to remember 7."},
+	}
+	c.Messages = []core.Message{
+		{Role: "user", Content: "Read it again."},
+		{Role: "assistant", ToolCalls: []core.ToolCall{{ID: "toolu_1", Name: "Read", Arguments: json.RawMessage(`{"path":"notes.txt"}`)}}},
+		{Role: "tool", ToolCallID: "toolu_1", Content: "Remember 7."},
+		{Role: "assistant", Content: "It still says 7."},
+	}
+	out := filepath.Join(t.TempDir(), "dataset")
+	if _, err := Export(report, out, ExportOptions{MinRank: 1}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(out, "training.jsonl"))
+	var row trainingExample
+	if err := json.Unmarshal(data, &row); err != nil {
+		t.Fatal(err)
+	}
+	if len(row.Messages) != 9 || row.Messages[1].Content != "Read notes.txt." || row.Messages[5].Content != "Read it again." {
+		t.Fatalf("context and turn out of order: %s", data)
+	}
+	for i, message := range row.Messages {
+		want := map[int]int{2: 0, 4: 0, 6: 1, 8: 1}
+		weight, isAssistant := want[i]
+		switch {
+		case !isAssistant && message.Weight != nil:
+			t.Errorf("message %d (%s) has a weight", i, message.Role)
+		case isAssistant && (message.Weight == nil || *message.Weight != weight):
+			t.Errorf("message %d weight = %v, want %d", i, message.Weight, weight)
+		}
+	}
+	if row.Messages[2].ToolCalls[0].ID != row.Messages[3].ToolCallID || row.Messages[6].ToolCalls[0].ID != row.Messages[7].ToolCallID || row.Messages[2].ToolCalls[0].ID == row.Messages[6].ToolCalls[0].ID {
+		t.Fatalf("tool results not paired with their own calls: %s", data)
+	}
+
+	c.Context[3].Content = "password=abc12345"
+	if _, err := Export(report, filepath.Join(t.TempDir(), "dataset"), ExportOptions{MinRank: 1}); err == nil {
+		t.Fatal("exported a secret from the context")
+	}
+}
+
 func TestExportSplitsWholeConversationGroups(t *testing.T) {
 	group := func(validation bool) string {
 		for i := 0; ; i++ {

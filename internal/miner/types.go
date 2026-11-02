@@ -23,16 +23,44 @@ type Report struct {
 	Focus           string                `json:"focus"`
 	Tools           []core.ToolDefinition `json:"tools"`
 	Stats           ScanStats             `json:"stats"`
+	Scan            *ScanSettings         `json:"scan,omitempty"`
+	Rejections      []Rejection           `json:"rejections,omitempty"`
 	Candidates      []Candidate           `json:"candidates"`
 	Usage           core.TokenUsage       `json:"usage"`
 }
 
 type ScanStats struct {
-	Sessions   int            `json:"sessions"`
-	Turns      int            `json:"turns"`
-	Duplicates int            `json:"duplicates"`
-	Omitted    int            `json:"omitted_by_limit"`
-	Skipped    map[string]int `json:"skipped"`
+	Sessions          int            `json:"sessions"`
+	Turns             int            `json:"turns"`
+	Duplicates        int            `json:"duplicates"`
+	Omitted           int            `json:"omitted_by_limit"`
+	Skipped           map[string]int `json:"skipped"`
+	RejectionReasons  map[string]int `json:"rejection_reasons,omitempty"`
+	RejectionsOmitted int            `json:"rejections_omitted,omitempty"`
+}
+
+// ScanSettings records effective limits and source filters. Workspace and focus
+// already live in the report header. Older reports have no settings or diagnostics.
+type ScanSettings struct {
+	Limit          int    `json:"limit"`
+	MaxBytes       int    `json:"max_bytes"`
+	SourceProvider string `json:"source_provider,omitempty"`
+	SourceModel    string `json:"source_model,omitempty"`
+	Since          string `json:"since,omitempty"`
+}
+
+// Rejection records only a source reference, fixed reason codes and byte counts.
+// Never add transcript excerpts, tool arguments, filenames or raw errors here.
+// Start/End is a half-open message range; both are zero for a session-level skip.
+type Rejection struct {
+	SessionID     string `json:"session_id,omitempty"`
+	Start         int    `json:"start"`
+	End           int    `json:"end"`
+	Stage         string `json:"stage"`
+	Reason        string `json:"reason"`
+	ContextBytes  int    `json:"context_bytes,omitempty"`
+	TurnBytes     int    `json:"turn_bytes,omitempty"`
+	FeedbackBytes int    `json:"feedback_bytes,omitempty"`
 }
 
 type Source struct {
@@ -47,9 +75,13 @@ type Source struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// Candidate is one reviewable turn. Messages is the turn itself, the only
+// training target. Context is the session's earlier turns, which the model saw
+// before it; an export trains none of it.
 type Candidate struct {
 	ID         string         `json:"id"`
 	Source     Source         `json:"source"`
+	Context    []core.Message `json:"context,omitempty"`
 	Messages   []core.Message `json:"messages"`
 	Feedback   string         `json:"following_user_feedback,omitempty"`
 	Signals    []string       `json:"signals"`
@@ -98,4 +130,10 @@ func ExportBlock(c Candidate) string {
 		return "This example needs a corrected target; original failures are not training targets."
 	}
 	return ""
+}
+
+// Excluded reports a judged card that no review decision can export. An
+// unjudged card is not excluded: it can still be judged.
+func Excluded(c Candidate) bool {
+	return c.Assessment != nil && ExportBlock(c) != ""
 }

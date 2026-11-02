@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -155,6 +156,38 @@ func validateReport(r *Report) error {
 			return errors.New("invalid skipped statistics")
 		}
 	}
+	if r.Scan != nil {
+		if r.Scan.Limit < 1 || r.Scan.Limit > maxCandidates || r.Scan.MaxBytes < 1 || r.Scan.MaxBytes > maxTurnBytes {
+			return errors.New("invalid scan limits")
+		}
+		if r.Scan.Since != "" {
+			if _, err := time.Parse(time.RFC3339Nano, r.Scan.Since); err != nil {
+				return errors.New("invalid scan date")
+			}
+		}
+		for _, filter := range []string{r.Scan.SourceProvider, r.Scan.SourceModel} {
+			if SensitiveText(filter) || sensitiveJSON(filter) {
+				return errors.New("sensitive scan filter")
+			}
+		}
+	}
+	if len(r.Rejections) > maxRejections || r.Stats.RejectionsOmitted < 0 {
+		return errors.New("invalid rejection statistics")
+	}
+	for key, count := range r.Stats.RejectionReasons {
+		if !validRejectionKey(key) || count < 0 {
+			return errors.New("invalid rejection statistics")
+		}
+	}
+	for _, rejection := range r.Rejections {
+		validID := sessionIDPattern.MatchString(rejection.SessionID)
+		missingID := rejection.SessionID == "" && (rejection.Stage == "non_regular" || rejection.Stage == "invalid_session" && rejection.Reason == "invalid_session_id")
+		if (!validID && !missingID) || rejection.Start < 0 || rejection.End < rejection.Start || (rejection.Start > 0 && rejection.End == rejection.Start) ||
+			!validRejectionStage(rejection.Stage) || !validRejectionReason(rejection.Reason) ||
+			rejection.ContextBytes < 0 || rejection.TurnBytes < 0 || rejection.FeedbackBytes < 0 {
+			return errors.New("invalid rejection reference")
+		}
+	}
 	if r.Usage.Input < 0 || r.Usage.Output < 0 || r.Usage.CacheRead < 0 || r.Usage.CacheWrite < 0 {
 		return errors.New("negative token usage")
 	}
@@ -177,7 +210,7 @@ func validateReport(r *Report) error {
 	}
 	ids := map[string]bool{}
 	for _, c := range r.Candidates {
-		if c.ID == "" || ids[c.ID] || !sessionIDPattern.MatchString(c.Source.SessionID) || !sessionIDPattern.MatchString(c.Source.GroupID) || c.Source.Start < 0 || c.Source.End-c.Source.Start != len(c.Messages) || c.Source.UpdatedAt.IsZero() {
+		if c.ID == "" || ids[c.ID] || !sessionIDPattern.MatchString(c.Source.SessionID) || !sessionIDPattern.MatchString(c.Source.GroupID) || c.Source.Start < 0 || c.Source.End-c.Source.Start != len(c.Messages) || len(c.Context) > c.Source.Start || c.Source.UpdatedAt.IsZero() {
 			return errors.New("invalid candidate source")
 		}
 		ids[c.ID] = true
@@ -193,12 +226,16 @@ func validateReport(r *Report) error {
 			return errors.New("sensitive candidate metadata")
 		}
 		b, err := json.Marshal(c.Messages)
+		contextJSON, contextErr := json.Marshal(c.Context)
 		feedbackJSON, feedbackErr := json.Marshal(c.Feedback)
-		if err != nil || feedbackErr != nil || len(b)+len(feedbackJSON) > maxTurnBytes {
+		if err != nil || contextErr != nil || feedbackErr != nil || len(contextJSON)+len(b)+len(feedbackJSON) > maxTurnBytes {
 			return errors.New("candidate too large")
 		}
 		if err := ValidateMessages(c.Messages, r.Tools); err != nil {
 			return fmt.Errorf("invalid candidate %s: %w", c.ID, err)
+		}
+		if err := validateContext(c.Context, r.Tools); err != nil {
+			return fmt.Errorf("invalid candidate %s context: %w", c.ID, err)
 		}
 		for _, s := range c.Signals {
 			if s == "" || SensitiveText(s) {
@@ -235,6 +272,9 @@ func Markdown(r *Report) string {
 	fmt.Fprintf(&b, "# Mining report\n\nCreated: %s  \nSource: %s  \nWorkspace: %s\n\n", r.CreatedAt.Format("2006-01-02 15:04:05 MST"), markdownText(r.SourceDirectory), markdownText(r.Workspace))
 	fmt.Fprintf(&b, "Focus: %s\n\nJudge: %s\n\nHistorical instructions and tool schemas are unavailable. Export uses a normalized policy and the tool definitions captured at scan time.\n\n", markdownText(r.Focus), markdownText(r.Judge))
 	fmt.Fprintf(&b, "Sessions: %d · Turns: %d · Candidates: %d · Duplicates: %d · Omitted: %d\n\n", r.Stats.Sessions, r.Stats.Turns, len(r.Candidates), r.Stats.Duplicates, r.Stats.Omitted)
+	if r.Scan != nil {
+		fmt.Fprintf(&b, "Scan: limit %d · max bytes %d · provider %s · model %s · since %s\n\n", r.Scan.Limit, r.Scan.MaxBytes, markdownText(r.Scan.SourceProvider), markdownText(r.Scan.SourceModel), markdownText(r.Scan.Since))
+	}
 	keys := make([]string, 0, len(r.Stats.Skipped))
 	for k := range r.Stats.Skipped {
 		keys = append(keys, k)
@@ -243,10 +283,47 @@ func Markdown(r *Report) string {
 	for _, k := range keys {
 		fmt.Fprintf(&b, "- Skipped %s: %d\n", markdownText(k), r.Stats.Skipped[k])
 	}
+	if len(r.Stats.RejectionReasons) > 0 {
+		b.WriteString("\nRejection reasons:\n\n")
+		keys = keys[:0]
+		for k := range r.Stats.RejectionReasons {
+			if validRejectionKey(k) {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(&b, "- %s: %d\n", markdownText(k), r.Stats.RejectionReasons[k])
+		}
+	}
+	if len(r.Rejections) > 0 || r.Stats.RejectionsOmitted > 0 {
+		b.WriteString("\nRejection references:\n\n")
+		const markdownRejectionLimit = 20
+		for i, rejection := range r.Rejections {
+			if i == markdownRejectionLimit {
+				break
+			}
+			sessionID, stage, reason := rejection.SessionID, rejection.Stage, rejection.Reason
+			if sessionID != "" && !sessionIDPattern.MatchString(sessionID) {
+				sessionID = "invalid session ID"
+			}
+			if !validRejectionStage(stage) {
+				stage = "invalid stage"
+			}
+			if !validRejectionReason(reason) {
+				reason = "invalid reason"
+			}
+			fmt.Fprintf(&b, "- %s · messages [%d, %d) · %s/%s · bytes: context %d, turn %d, feedback %d\n", markdownText(sessionID), rejection.Start, rejection.End, markdownText(stage), markdownText(reason), rejection.ContextBytes, rejection.TurnBytes, rejection.FeedbackBytes)
+		}
+		if len(r.Rejections) > markdownRejectionLimit || r.Stats.RejectionsOmitted > 0 {
+			hidden := max(0, len(r.Rejections)-markdownRejectionLimit)
+			fmt.Fprintf(&b, "\nStored rejection references not shown: %d; references not stored: %d.\n", hidden, r.Stats.RejectionsOmitted)
+		}
+	}
 	fmt.Fprintf(&b, "\nJudge usage: input %d, cache read %d, cache write %d, output %d tokens. Cost: not recorded.\n", r.Usage.Input, r.Usage.CacheRead, r.Usage.CacheWrite, r.Usage.Output)
 	for i, c := range r.Candidates {
 		fmt.Fprintf(&b, "\n## %d. %s\n\n", i+1, markdownText(c.ID))
-		fmt.Fprintf(&b, "- Source: %s · group %s · messages [%d, %d) · %s\n", markdownText(c.Source.SessionID), markdownText(c.Source.GroupID), c.Source.Start, c.Source.End, c.Source.UpdatedAt.Format("2006-01-02 15:04:05 MST"))
+		fmt.Fprintf(&b, "- Source: %s · group %s · messages [%d, %d) · context %d messages · %s\n", markdownText(c.Source.SessionID), markdownText(c.Source.GroupID), c.Source.Start, c.Source.End, len(c.Context), c.Source.UpdatedAt.Format("2006-01-02 15:04:05 MST"))
 		fmt.Fprintf(&b, "- Title: %s · Directory: %s · Provider/model: %s / %s\n", markdownText(c.Source.Title), markdownText(c.Source.Directory), markdownText(c.Source.Provider), markdownText(c.Source.Model))
 		signals := make([]string, len(c.Signals))
 		for i, s := range c.Signals {
