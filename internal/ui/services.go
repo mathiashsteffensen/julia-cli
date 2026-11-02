@@ -7,6 +7,18 @@ import (
 	"strings"
 )
 
+// githubSummary identifies the API request without putting its body in the title.
+func githubSummary(arguments json.RawMessage) (string, bool) {
+	var a struct{ Method, Path string }
+	if json.Unmarshal(arguments, &a) != nil || a.Path == "" {
+		return "", false
+	}
+	if a.Method == "" {
+		a.Method = "GET"
+	}
+	return typedLine(a.Method) + " · " + typedLine(a.Path), true
+}
+
 // slackSummary is a Slack call's title row: the action, then the channel and
 // what the call says or reacts with. A read's limits follow when given.
 func slackSummary(arguments json.RawMessage) (string, bool) {
@@ -310,7 +322,7 @@ func callArguments(raw json.RawMessage) []argument {
 // only hint at, such as a message, an issue description or a note's body.
 func argumentsShown(name string) bool {
 	switch name {
-	case "Slack", "Linear", "Mail", "Memory":
+	case "Slack", "Linear", "Mail", "Memory", "GitHub":
 		return true
 	}
 	return false

@@ -160,7 +160,7 @@ func TestQuestionDefinitionSchema(t *testing.T) {
 
 func TestQuestionDefinitionsAppendedLast(t *testing.T) {
 	// Spare capacity makes an in-place append to the base slice observable.
-	baseDefs := append(make([]core.ToolDefinition, 0, 32), Definitions(agents.Builtin(), false, false)...)
+	baseDefs := append(make([]core.ToolDefinition, 0, 32), Definitions(agents.Builtin(), false, false, false)...)
 	base := &stubExecutor{defs: baseDefs}
 	executor := WithQuestions(base, (&askRecorder{}).ask)
 	defs := executor.Definitions()
@@ -183,7 +183,7 @@ func TestQuestionDefinitionsAppendedLast(t *testing.T) {
 }
 
 func TestQuestionNilAskerLeavesToolUnregistered(t *testing.T) {
-	stub := &stubExecutor{defs: Definitions(nil, false, false)}
+	stub := &stubExecutor{defs: Definitions(nil, false, false, false)}
 	if got := WithQuestions(stub, nil); got != core.ToolExecutor(stub) {
 		t.Fatal("nil asker did not return the base executor")
 	}

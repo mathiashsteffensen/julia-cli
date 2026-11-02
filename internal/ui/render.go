@@ -576,6 +576,11 @@ func toolSummary(call core.ToolCall) string {
 			return summary
 		}
 	}
+	if call.Name == "GitHub" {
+		if summary, ok := githubSummary(call.Arguments); ok {
+			return summary
+		}
+	}
 	if call.Name == "Linear" {
 		if summary, ok := linearSummary(call.Arguments); ok {
 			return summary

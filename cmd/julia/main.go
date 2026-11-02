@@ -211,6 +211,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("linear token: %w", err)
 	}
+	githubAuth, githubWarning := loadGitHubAuth()
 	mailConfig, err := tools.LoadMailConfig(mailConfigFile(path))
 	if err != nil {
 		return fmt.Errorf("mail config: %w", err)
@@ -235,7 +236,7 @@ func run() error {
 	default:
 		return errors.New("--memory must be off, read or write")
 	}
-	demoTools := append(tools.Definitions(roles, linearToken != "", mailConfig.Enabled()), tools.QuestionDefinition(), tools.ReviewDefinition())
+	demoTools := append(tools.Definitions(roles, linearToken != "", mailConfig.Enabled(), githubAuth.Enabled()), tools.QuestionDefinition(), tools.ReviewDefinition())
 	if snapshot > 0 {
 		fmt.Print(ui.RenderDemo(snapshot, 40, demoTools...))
 		return nil
@@ -309,7 +310,7 @@ func run() error {
 		ask, triage, questions = ui.NewBridge()
 	}
 	duration, _ := time.ParseDuration(cfg.Timeout)
-	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, triage: triage, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path), linearToken: linearToken, mail: mailConfig, memory: memoryStore, memoryReadOnly: memoryFlag == "read", consolidating: consolidate, configDir: configDir}
+	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, triage: triage, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path), linearToken: linearToken, github: githubAuth, githubWarning: githubWarning, mail: mailConfig, memory: memoryStore, memoryReadOnly: memoryFlag == "read", consolidating: consolidate, configDir: configDir}
 	if consolidate {
 		// The pass rewrites notes and nothing else: no one is asked, and a
 		// note it rewrites keeps its unverified mark, as a yolo save would.
@@ -578,6 +579,12 @@ type runtimeBackend struct {
 	// linearToken is the Linear access token, from the environment or the
 	// linear.json file beside the configuration; empty offers no Linear tool.
 	linearToken string
+	// github resolves the startup-selected credential source privately on use.
+	github tools.GitHubAuth
+	// githubWarning says why the GitHub tool is off, if a credential source was
+	// unusable at startup. The first turn shows it, once.
+	githubWarning string
+	githubWarned  sync.Once
 	// mail is the mailbox from the mail.json file beside the configuration;
 	// without credentials there is no Mail tool.
 	mail tools.MailConfig
@@ -682,7 +689,7 @@ func headlessTriager(context.Context, core.Review) (core.Answer, error) {
 }
 
 func (r *runtimeBackend) Definitions() []core.ToolDefinition {
-	definitions := tools.Definitions(r.subagentRoles(), r.linearToken != "", r.mail.Enabled())
+	definitions := tools.Definitions(r.subagentRoles(), r.linearToken != "", r.mail.Enabled(), r.github.Enabled())
 
 	// As in Run: the skills offered to the model, and none when the folder
 	// cannot be read.
@@ -786,11 +793,16 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		invoked = &skill
 	}
 	task := newTaskContext(s.Messages, prompt.Text)
-	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: cfg.BrowserPath(), BrowserAuth: cfg.BrowserAuth, SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv), LinearToken: r.linearToken, Mail: r.mail})
+	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: cfg.BrowserPath(), BrowserAuth: cfg.BrowserAuth, SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv), LinearToken: r.linearToken, GitHub: r.github, Mail: r.mail})
 	if err != nil {
 		return err
 	}
 	defer executor.Close()
+	r.githubWarned.Do(func() {
+		if r.githubWarning != "" {
+			emit(core.Event{Kind: "warning", Text: r.githubWarning})
+		}
+	})
 	goEnv, environmentErr := executor.EnvironmentInfo(ctx)
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -1251,6 +1263,7 @@ func doctor(ctx context.Context, c config.Config, path string, roles []agents.Ro
 	} else {
 		fmt.Printf("Linear    off; save a token in %s\n", linearTokenFile(path))
 	}
+	fmt.Println(githubSummary())
 	if mailConfig, err := tools.LoadMailConfig(mailConfigFile(path)); err != nil {
 		fmt.Printf("Mail      config unreadable: %s\n", safe(err.Error()))
 	} else if mailConfig.Enabled() {

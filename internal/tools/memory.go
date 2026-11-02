@@ -289,7 +289,7 @@ func (e *Memory) observe(call core.ToolCall, result core.ToolResult) {
 	unsandboxed := e.options.WorkspaceMode == "yolo" || e.options.WorkspaceMode == "" && e.options.Mode == "yolo"
 	source := ""
 	switch call.Name {
-	case "WebFetch", "WebSearch", "Browser", "Slack", "Linear", "Mail", "Subagent":
+	case "WebFetch", "WebSearch", "Browser", "Slack", "Linear", "GitHub", "Mail", "Subagent":
 		source = call.Name
 	case "Bash":
 		switch {

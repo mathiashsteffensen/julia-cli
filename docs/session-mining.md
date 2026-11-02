@@ -76,7 +76,7 @@ A turn you steered with a message mid-turn is skipped whole: split at the steer,
 it would give a fragment that stops mid-task and a continuation without the
 request. The scanner finds steers in the session's audit. Sessions saved before
 JULIA audited steers do not record them, so check older turns for one in review.
-Root conversation groups containing private messaging or Linear tool calls are
+Root conversation groups containing private messaging, Linear or GitHub tool calls are
 excluded entirely, even when only a subagent used them or source filters exclude
 that child. Parent results and later messages can quote private content. Recorded
 post-turn memory-reflection bookkeeping is removed from turns and their context.

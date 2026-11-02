@@ -411,29 +411,53 @@ func TestSensitiveTextCommonFormats(t *testing.T) {
 }
 
 func TestScanExcludesPrivateCorrespondenceAcrossTurns(t *testing.T) {
-	dir := t.TempDir()
-	messages := turn("read my mail", "mail-1", `{"path":"unused"}`)
-	messages[1].ToolCalls[0].Name = "Mail"
-	messages = append(messages, core.Message{Role: "user", Content: "Summarize what you just read."}, core.Message{Role: "assistant", Content: "Private content quoted without a recognizable secret."})
-	writeSession(t, dir, sessionFor(id("e"), messages))
-	report, err := Scan(context.Background(), dir, ScanOptions{}, testTools)
-	if err != nil || len(report.Candidates) != 0 || report.Stats.Skipped["private_session"] != 1 {
-		t.Fatalf("private later turn escaped filtering: %+v %v", report, err)
+	for _, tool := range []string{"Mail", "Linear", "GitHub"} {
+		t.Run(tool, func(t *testing.T) {
+			dir := t.TempDir()
+			messages := turn("read my mail", "mail-1", `{"path":"unused"}`)
+			messages[1].ToolCalls[0].Name = tool
+			messages = append(messages, core.Message{Role: "user", Content: "Summarize what you just read."}, core.Message{Role: "assistant", Content: "Private content quoted without a recognizable secret."})
+			writeSession(t, dir, sessionFor(id("e"), messages))
+			report, err := Scan(context.Background(), dir, ScanOptions{}, testTools)
+			if err != nil || len(report.Candidates) != 0 || report.Stats.Skipped["private_session"] != 1 {
+				t.Fatalf("private later turn escaped filtering: %+v %v", report, err)
+			}
+		})
+	}
+}
+
+// A compacted session can have lost the call and kept only the taint it left.
+func TestScanExcludesSessionsTaintedByPrivateTools(t *testing.T) {
+	for _, tool := range []string{"Mail", "Linear", "GitHub"} {
+		t.Run(tool, func(t *testing.T) {
+			dir := t.TempDir()
+			s := sessionFor(id("a"), turn("Read this file", "read", `{"path":"file"}`))
+			s.MemoryTaint = []string{tool}
+			writeSession(t, dir, s)
+			report, err := Scan(context.Background(), dir, ScanOptions{}, testTools)
+			if err != nil || len(report.Candidates) != 0 || report.Stats.Skipped["private_session"] != 1 {
+				t.Fatalf("tainted session escaped filtering: %+v %v", report, err)
+			}
+		})
 	}
 }
 
 func TestScanExcludesPrivateChildGroupsBeforeSourceFiltering(t *testing.T) {
-	dir := t.TempDir()
-	parent := sessionFor(id("a"), []core.Message{{Role: "user", Content: "Summarize the subagent result."}, {Role: "assistant", Content: "A quotation from private correspondence."}})
-	parent.Provider = "codex"
-	writeSession(t, dir, parent)
-	child := sessionFor(id("b"), turn("read correspondence", "private-call", `{"path":"unused"}`))
-	child.ParentID, child.Provider = parent.ID, "another-provider"
-	child.Messages[1].ToolCalls[0].Name = "Mail"
-	writeSession(t, dir, child)
-	report, err := Scan(context.Background(), dir, ScanOptions{Provider: "codex"}, testTools)
-	if err != nil || len(report.Candidates) != 0 || report.Stats.Skipped["private_session"] != 1 {
-		t.Fatalf("parent escaped child privacy filtering: %+v %v", report, err)
+	for _, tool := range []string{"Mail", "Linear", "GitHub"} {
+		t.Run(tool, func(t *testing.T) {
+			dir := t.TempDir()
+			parent := sessionFor(id("a"), []core.Message{{Role: "user", Content: "Summarize the subagent result."}, {Role: "assistant", Content: "A quotation from private correspondence."}})
+			parent.Provider = "codex"
+			writeSession(t, dir, parent)
+			child := sessionFor(id("b"), turn("read correspondence", "private-call", `{"path":"unused"}`))
+			child.ParentID, child.Provider = parent.ID, "another-provider"
+			child.Messages[1].ToolCalls[0].Name = tool
+			writeSession(t, dir, child)
+			report, err := Scan(context.Background(), dir, ScanOptions{Provider: "codex"}, testTools)
+			if err != nil || len(report.Candidates) != 0 || report.Stats.Skipped["private_session"] != 1 {
+				t.Fatalf("parent escaped child privacy filtering: %+v %v", report, err)
+			}
+		})
 	}
 }
 

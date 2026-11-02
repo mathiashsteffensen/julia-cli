@@ -60,6 +60,9 @@ type Config struct {
 	// linear.json file beside the configuration (see LoadLinearToken);
 	// without it there is no Linear tool.
 	LinearToken string
+	// GitHub resolves the user's GitHub credential inside the harness, never
+	// through a model-controlled shell. Without it there is no GitHub tool.
+	GitHub GitHubAuth
 	// Mail is the mailbox the Mail tool reads, from the mail.json file
 	// beside the configuration (see LoadMailConfig); without credentials
 	// there is no Mail tool.
@@ -156,7 +159,7 @@ func integer(description string) map[string]any {
 	return map[string]any{"type": "integer", "description": description}
 }
 func (e *Executor) Definitions() []core.ToolDefinition {
-	return definitions(nil, e.config.SlackToken != "", e.config.SlackOwner, e.config.LinearToken != "", e.config.Mail.Enabled())
+	return definitions(nil, e.config.SlackToken != "", e.config.SlackOwner, e.config.LinearToken != "", e.config.Mail.Enabled(), e.config.GitHub.Enabled())
 }
 
 // Definitions returns the same registry used by execution, without opening a
@@ -165,11 +168,13 @@ func (e *Executor) Definitions() []core.ToolDefinition {
 // bot token in SLACK_BOT_TOKEN, the Linear tool when linear is set: the
 // caller has an access token (see LoadLinearToken), and the Mail tool when
 // mail is set: the caller has a mailbox's credentials (see LoadMailConfig).
-func Definitions(roles []agents.Role, linear, mail bool) []core.ToolDefinition {
-	return definitions(roles, SlackEnabled(), os.Getenv(SlackOwnerEnv), linear, mail)
+// GitHub is offered when github is set: the caller has a token or gh installed
+// (see LoadGitHubAuth); gh resolves its signed-in account on first use.
+func Definitions(roles []agents.Role, linear, mail, github bool) []core.ToolDefinition {
+	return definitions(roles, SlackEnabled(), os.Getenv(SlackOwnerEnv), linear, mail, github)
 }
 
-func definitions(roles []agents.Role, slack bool, slackOwner string, linear, mail bool) []core.ToolDefinition {
+func definitions(roles []agents.Role, slack bool, slackOwner string, linear, mail, github bool) []core.ToolDefinition {
 	path := str("Workspace-relative path. Absolute paths, symlinks and protected credential/git paths are forbidden.")
 	edits := map[string]any{"type": "array", "minItems": 1, "maxItems": 100, "items": schema(map[string]any{"old_string": str("Nonempty exact text occurring once"), "new_string": str("Replacement text")}, "old_string", "new_string")}
 	// Reading, editing, running, then the web: the sidebar packs the names in
@@ -196,6 +201,9 @@ func definitions(roles []agents.Role, slack bool, slackOwner string, linear, mai
 	}
 	if mail {
 		definitions = append(definitions, mailDefinition())
+	}
+	if github {
+		definitions = append(definitions, githubDefinition())
 	}
 	if len(roles) > 0 {
 		definitions = append(definitions, subagentDefinition(roles))
@@ -268,6 +276,8 @@ func (e *Executor) execute(ctx context.Context, call core.ToolCall, scope int) c
 		content, err = e.slack(ctx, call)
 	case "Linear":
 		content, err = e.linear(ctx, call)
+	case "GitHub":
+		content, err = e.github(ctx, call)
 	case "Mail":
 		content, err = e.mail(ctx, call)
 	case "Write", "Edit", "MultiEdit":

@@ -103,10 +103,10 @@ func TestLinearTokenLoading(t *testing.T) {
 }
 
 func TestLinearOfferedOnlyWithToken(t *testing.T) {
-	if names := toolNames(Definitions(nil, false, false)); strings.Contains(strings.Join(names, " "), "Linear") {
+	if names := toolNames(Definitions(nil, false, false, false)); strings.Contains(strings.Join(names, " "), "Linear") {
 		t.Fatalf("Linear offered without a token: %v", names)
 	}
-	definitions := Definitions(nil, true, false)
+	definitions := Definitions(nil, true, false, false)
 	last := definitions[len(definitions)-1]
 	if last.Name != "Linear" || !strings.Contains(last.Description, "untrusted context") {
 		t.Fatalf("Linear definition %+v", last)

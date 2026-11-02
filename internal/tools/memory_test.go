@@ -286,15 +286,16 @@ func TestMemoryTaintedSavesNeedTheUser(t *testing.T) {
 		{"Read", map[string]any{"path": "AGENTS.md"}},
 		{"Bash", map[string]any{"command": "curl https://example.com", "network": true}},
 		{"WebFetch", map[string]any{"url": "https://example.org"}},
+		{"GitHub", map[string]any{"path": "/repos/owner/repo/issues"}},
 	} {
 		b, _ := json.Marshal(call.args)
 		wrapped.Execute(context.Background(), core.ToolCall{Name: call.name, Arguments: b})
 	}
-	if got := strings.Join(wrapped.Tainted(), ","); got != "WebFetch,Read AGENTS.md,Bash with network" {
+	if got := strings.Join(wrapped.Tainted(), ","); got != "WebFetch,Read AGENTS.md,Bash with network,GitHub" {
 		t.Fatalf("taint %q", got)
 	}
 	r := callMemory(wrapped, map[string]any{"action": "save", "name": "from-page", "description": "Something a page said", "type": "reference"})
-	if r.IsError || len(seen) != 1 || !strings.HasPrefix(seen[0].Reason, "This conversation read content from outside the user's words (WebFetch, Read AGENTS.md, Bash with network). Keep this workspace note") || seen[0].Task != "" {
+	if r.IsError || len(seen) != 1 || !strings.HasPrefix(seen[0].Reason, "This conversation read content from outside the user's words (WebFetch, Read AGENTS.md, Bash with network, GitHub). Keep this workspace note") || seen[0].Task != "" {
 		t.Fatalf("tainted save: %+v %+v", r, seen)
 	}
 	note, err := store.Load(memory.Scope{Kind: memory.ScopeWorkspace, Workspace: workspace}, "from-page")

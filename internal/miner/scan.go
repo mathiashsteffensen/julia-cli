@@ -232,7 +232,7 @@ func privateSession(messages []core.Message) bool {
 
 func sensitiveTool(name string) bool {
 	n := strings.ToLower(name)
-	for _, part := range []string{"mail", "slack", "discord", "telegram", "whatsapp", "messag", "email", "linear"} {
+	for _, part := range []string{"mail", "slack", "discord", "telegram", "whatsapp", "messag", "email", "linear", "github"} {
 		if strings.Contains(n, part) {
 			return true
 		}

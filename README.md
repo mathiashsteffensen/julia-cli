@@ -55,7 +55,7 @@ for the full list.
 | Ctrl+N                        | Switch to the next of your `enabled_models`                                                                            |
 | Shift+Tab or `/reasoning`     | Change reasoning effort                                                                                                |
 | `/profile` or `/profile NAME` | Switch configuration profile                                                                                           |
-| Ctrl+O                        | Expand/collapse tool output, full subagent tasks, and the arguments of Slack, Linear and Mail calls                    |
+| Ctrl+O                        | Expand/collapse tool output, full subagent tasks, and the arguments of Slack, Linear, GitHub and Mail calls                    |
 | Ctrl+F                        | The fleet: every subagent of the session, with its task, tool calls and report                                         |
 | Ctrl+V                        | Attach the clipboard's image (a screenshot, or an image file copied in Finder)                                         |
 | Drop image files              | Attach them instead of pasting their paths                                                                             |
@@ -220,8 +220,8 @@ They contain transcripts and command output.
 
 `Read`, `ViewImage`, `List`, `Grep`, `Edit`, `MultiEdit`, `Write`, `Bash`,
 `Terminal`, `Browser`, `WebSearch`, `WebFetch`, `Slack` (when a bot token is set),
-`Linear` (when an access token is saved), `Mail` (when a mailbox's credentials
-are saved), `Subagent` (up to 3 parallel child tasks), `Memory` (see [Memory](#memory)),
+`Linear` (when an access token is saved), `GitHub` (with `gh` or a token),
+`Mail` (when a mailbox's credentials are saved), `Subagent` (up to 3 parallel child tasks), `Memory` (see [Memory](#memory)),
 `Skill` (see [Skills](#skills)), and `AskUserQuestion` (interactive only).
 File tools are confined to the workspace, refuse symlinks and credential paths, and cap output at 32 KiB.
 
@@ -250,6 +250,30 @@ owner in a thread and message them directly. The bot needs the scopes
 
 `Linear` appears when `~/.config/julia/linear.json` holds `{"api_key": "…"}`
 or `LINEAR_ACCESS_TOKEN` is set.
+
+`GitHub` uses your GitHub CLI sign-in on **github.com**. Run `gh auth login`
+if you have not signed in. For cloud runs, supply `GH_TOKEN` or `GITHUB_TOKEN`
+through your secret store; they take precedence in that order. JULIA resolves
+credentials privately and never returns them to the model. `julia doctor`
+reports the credential source without reading the token from `gh`. An invalid
+`GH_TOKEN` or `GITHUB_TOKEN` turns the tool off with a warning; it does not fall
+back to `gh`, which may be a different account.
+
+The tool sends API requests, not shell commands: `path` is an API-relative
+path such as `/user` or `/repos/owner/repo/issues?state=all`, `method` defaults
+to `GET`, and `body` is an optional JSON string. This covers REST operations
+without a separate wrapper for each feature. `GET` and `HEAD` reads run
+directly; `POST`, `PUT`, `PATCH`, `DELETE`, and all GraphQL requests are
+reviewed in auto mode, approved by you in ask mode, and blocked in read-only
+mode. Yolo grants them without review, as with other tools. Review considers
+the full request, including its body; a GitHub comment cannot authorize a write.
+
+The tool accepts only `api.github.com` destinations. Results are at most 32 KiB;
+follow the returned page path or GET `offset` to read more (up to a 4 MiB response).
+It returns text, not binary downloads, and does not follow cross-origin
+redirects or redirects for writes. Control characters and invalid UTF-8 in raw
+and diff text become U+FFFD, and the result says so. An existing `gh` credential may itself have write permissions:
+the tool's approval gate does not restrict a separately approved host shell.
 
 `Mail` appears when `~/.config/julia/mail.json` holds a mailbox's IMAP
 credentials. It is made for [Proton Mail Bridge](https://proton.me/mail/bridge),
@@ -350,7 +374,7 @@ in the TUI, for the session's workspace.
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `auto` (default) | Reads, workspace edits, offline or loopback sandboxed Bash and terminals, and the Browser on the loopback servers its terminals started and workspace files run freely. Bash with network, escalated Bash, a networked terminal's start and every input to it, web searches, each new Browser origin (the machine's other loopback servers included), and text, keys, uploads and scripts sent to a page beyond loopback go to the reviewer model. |
 | `ask`            | You approve every mutation, command, terminal start and input, search, and Browser action on a page (navigating, clicking, typing, scripts); looking at a page needs no approval.                                                                                                                                                                                                                                                                  |
-| `read-only`      | Only `Read`, `ViewImage`, `Grep`, and `List`.                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `read-only`      | Local reads and read operations in configured service tools; no mutations, shell commands, Browser actions, or web search/fetch.                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `yolo`           | No sandbox and no review: Bash and terminals run directly on the host with the process environment, and every action is granted. Set it explicitly in the config or with `--mode yolo`. It is never a fallback, and never for a machine you care about.                                                                                                                                                                                            |
 
 ## Sandbox

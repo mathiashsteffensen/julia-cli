@@ -172,10 +172,10 @@ func mailTestCert(t *testing.T) (tls.Certificate, *x509.Certificate) {
 }
 
 func TestMailOfferedOnlyWithConfig(t *testing.T) {
-	if names := toolNames(Definitions(nil, false, false)); strings.Contains(strings.Join(names, " "), "Mail") {
+	if names := toolNames(Definitions(nil, false, false, false)); strings.Contains(strings.Join(names, " "), "Mail") {
 		t.Fatalf("Mail offered without credentials: %v", names)
 	}
-	definitions := Definitions(nil, false, true)
+	definitions := Definitions(nil, false, true, false)
 	last := definitions[len(definitions)-1]
 	if last.Name != "Mail" || !strings.Contains(last.Description, "untrusted context") || !strings.Contains(last.Description, "approval in every mode") {
 		t.Fatalf("Mail definition %+v", last)

@@ -70,7 +70,7 @@ func mineCommand(ctx context.Context, cfg config.Config, sessions, workspace str
 	if len(args) > 0 && args[0] == "scan" {
 		// These are normalized deployment schemas, not claims about what a
 		// historical session saw. Private integration tools are not mined.
-		for _, definition := range tools.Definitions(roles, false, false) {
+		for _, definition := range tools.Definitions(roles, false, false, false) {
 			if definition.Name != "Slack" {
 				command.definitions = append(command.definitions, definition)
 			}
