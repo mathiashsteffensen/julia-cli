@@ -33,7 +33,7 @@ func TestSplitFences(t *testing.T) {
 
 func TestCodeBlockCardWrapsAndPreservesCode(t *testing.T) {
 	code := "git -C ~/code/quantrading worktree remove --force -- ~/Documents/a/very/long/path/that/wraps\n\tindented"
-	rows, continued := renderCodeBlock(code, "bash", 40)
+	rows, continued := renderCodeCard(code, "bash", 40, copyHint)
 	for i, row := range rows {
 		if w := ansi.StringWidth(row); w != 40 {
 			t.Errorf("row %d is %d cells wide, want a filled 40: %q", i, w, ansi.Strip(row))

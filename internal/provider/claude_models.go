@@ -103,10 +103,9 @@ func parseClaudeModels(data []byte) ([]core.ModelOption, error) {
 	return models, nil
 }
 
-// WeeklyUsage reads the subscription's seven-day window from Claude Code
-// without starting a conversation. Nil means quota is unavailable, as it is on
-// an API key or when Claude Code has not fetched it.
-func (c *Claude) WeeklyUsage(ctx context.Context) (*core.WeeklyUsage, error) {
+// AccountUsage reads the subscription windows without starting a conversation.
+// Nil means no quota is available, as with an API key or before it is fetched.
+func (c *Claude) AccountUsage(ctx context.Context) (*core.AccountUsage, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -121,31 +120,40 @@ func (c *Claude) WeeklyUsage(ctx context.Context) (*core.WeeklyUsage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read Claude Code account usage: %w", err)
 	}
-	return parseClaudeWeeklyUsage(data)
+	return parseClaudeAccountUsage(data)
 }
 
-func parseClaudeWeeklyUsage(data []byte) (*core.WeeklyUsage, error) {
+func parseClaudeAccountUsage(data []byte) (*core.AccountUsage, error) {
+	type window struct {
+		Utilization *float64 `json:"utilization"`
+		ResetsAt    string   `json:"resets_at"`
+	}
 	var response struct {
 		Available bool `json:"rate_limits_available"`
 		Limits    *struct {
-			SevenDay *struct {
-				Utilization *float64 `json:"utilization"`
-				ResetsAt    string   `json:"resets_at"`
-			} `json:"seven_day"`
+			SevenDay *window `json:"seven_day"`
+			FiveHour *window `json:"five_hour"`
 		} `json:"rate_limits"`
 	}
 	if err := json.Unmarshal(data, &response); err != nil {
 		return nil, fmt.Errorf("decode Claude Code account usage: %w", err)
 	}
-	if !response.Available || response.Limits == nil || response.Limits.SevenDay == nil || response.Limits.SevenDay.Utilization == nil {
+	if !response.Available || response.Limits == nil {
 		return nil, nil
 	}
-	window := response.Limits.SevenDay
-	usage := &core.WeeklyUsage{RemainingPercent: math.Max(0, math.Min(100, 100-*window.Utilization))}
-	if window.ResetsAt != "" {
-		if at, err := time.Parse(time.RFC3339, window.ResetsAt); err == nil {
+	parseWindow := func(limit *window) *core.UsageWindow {
+		if limit == nil || limit.Utilization == nil {
+			return nil
+		}
+		usage := &core.UsageWindow{RemainingPercent: math.Max(0, math.Min(100, 100-*limit.Utilization))}
+		if at, err := time.Parse(time.RFC3339, limit.ResetsAt); err == nil {
 			usage.ResetsAt = at
 		}
+		return usage
+	}
+	usage := &core.AccountUsage{Weekly: parseWindow(response.Limits.SevenDay), FiveHour: parseWindow(response.Limits.FiveHour)}
+	if usage.Weekly == nil && usage.FiveHour == nil {
+		return nil, nil
 	}
 	return usage, nil
 }

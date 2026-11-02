@@ -137,6 +137,13 @@ func TestHeadlessRunSummarizesSessionTokens(t *testing.T) {
 	if !strings.Contains(stdout, "All done.") {
 		t.Fatalf("stdout = %q", stdout)
 	}
+	// Written to files, the run has its rows but no colors.
+	if strings.Contains(stdout+stderr, "\x1b") {
+		t.Fatalf("a file must get no escape sequences:\nstdout %q\nstderr %q", stdout, stderr)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(stderr), " "), "List .") {
+		t.Fatalf("stderr lacks the call and its target: %q", stderr)
+	}
 	// 6000+31000+900 new, 24000 cached: 61.9k sent in all.
 	lines := strings.Split(strings.TrimSpace(stderr), "\n")
 	last2 := lines[len(lines)-2:]

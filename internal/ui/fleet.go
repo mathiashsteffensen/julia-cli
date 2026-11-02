@@ -97,7 +97,7 @@ func (m *model) applyAgentEvent(event core.Event) {
 		}
 	case "tool_end":
 		for i := len(a.entries) - 1; i >= 0; i-- {
-			if a.entries[i].role == "tool" && !a.entries[i].done && (event.Call == nil || a.entries[i].call != nil && a.entries[i].call.ID == event.Call.ID) {
+			if a.entries[i].role == "tool" && !a.entries[i].done && a.entries[i].isCall(event.Call) {
 				a.entries[i].done = true
 				a.entries[i].result = event.Result
 				a.entries[i].revision++
@@ -443,9 +443,6 @@ func (m *model) fleetPane(l fleetLayout) []string {
 	v := m.fleetView
 	a := m.fleet[max(0, min(v.selected, len(m.fleet)-1))]
 	width := l.pane
-	if m.fleetMarkdownWidth != width {
-		m.fleetMarkdown, m.fleetMarkdownWidth = markdownRenderer(width), width
-	}
 	state := agentStateStyle(a.state).Render(a.state) + mutedStyle.Render(fmt.Sprintf(" · %s · %d calls", m.elapsedAgent(a), a.calls))
 	if a.calls == 1 {
 		state = agentStateStyle(a.state).Render(a.state) + mutedStyle.Render(" · "+m.elapsedAgent(a)+" · 1 call")
@@ -458,7 +455,7 @@ func (m *model) fleetPane(l fleetLayout) []string {
 	}
 	masthead = append(masthead, fit(spend, faintStyle.Render(oneLine(a.id)), width), faintStyle.Render(strings.Repeat("─", width)))
 	var lines []string
-	in := column{width: width, markdown: m.fleetMarkdown, wordWrap: true}
+	in := column{width: width, markdown: m.fleetMarkdown.at(width), wordWrap: true}
 	for i := range a.entries {
 		layout := m.renderEntryIn(&a.entries[i], in)
 		if i > 0 && (a.entries[i].role != "tool" || a.entries[i-1].role != "tool") {

@@ -732,7 +732,7 @@ func TestClaudeStructuredOutputCapabilityIsScoped(t *testing.T) {
 	}
 }
 
-func TestClaudeModelsAndWeeklyUsage(t *testing.T) {
+func TestClaudeModelsAndAccountUsage(t *testing.T) {
 	f := newClaudeFixture(t)
 	f.models = map[string]any{"models": []any{
 		map[string]any{"value": "default", "resolvedModel": "claude-opus-5-5", "displayName": "Default (recommended)", "description": "Use the default model", "supportedEffortLevels": []string{"low", "medium", "high", "xhigh", "max"}},
@@ -755,15 +755,76 @@ func TestClaudeModelsAndWeeklyUsage(t *testing.T) {
 	if !slices.Contains(f.args, "--no-session-persistence") || len(f.users) != 0 {
 		t.Fatal("catalog lookup started a conversation", f.args)
 	}
-	usage, err := backend.WeeklyUsage(context.Background())
-	if err != nil || usage == nil || usage.RemainingPercent != 60.5 || usage.ResetsAt.UTC().Format(time.RFC3339) != "2026-10-30T07:00:00Z" {
+	usage, err := backend.AccountUsage(context.Background())
+	if err != nil || usage == nil || usage.Weekly == nil || usage.FiveHour == nil {
 		t.Fatalf("usage %+v %v", usage, err)
 	}
-	if usage, err := parseClaudeWeeklyUsage([]byte(`{"rate_limits_available":false,"rate_limits":null}`)); err != nil || usage != nil {
-		t.Fatal("unavailable usage must be nil", usage, err)
+	if usage.Weekly.RemainingPercent != 60.5 || usage.Weekly.ResetsAt.UTC().Format(time.RFC3339) != "2026-10-30T07:00:00Z" ||
+		usage.FiveHour.RemainingPercent != 88 || usage.FiveHour.ResetsAt.UTC().Format(time.RFC3339) != "2026-10-27T20:00:00Z" {
+		t.Fatalf("weekly %+v, five-hour %+v", usage.Weekly, usage.FiveHour)
+	}
+	if !slices.Contains(f.args, "--no-session-persistence") || len(f.users) != 0 {
+		t.Fatal("usage lookup started a conversation", f.args)
 	}
 	if _, err := parseClaudeModels([]byte(`{"models":[]}`)); err == nil {
 		t.Fatal("empty catalog accepted")
+	}
+}
+
+func TestParseClaudeAccountUsage(t *testing.T) {
+	reset := time.Date(2026, 10, 27, 20, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name     string
+		data     string
+		weekly   *core.UsageWindow
+		fiveHour *core.UsageWindow
+		wantErr  bool
+	}{
+		{name: "unavailable even with limits", data: `{"rate_limits_available":false,"rate_limits":{"five_hour":{"utilization":20}}}`},
+		{name: "missing availability", data: `{"rate_limits":{"seven_day":{"utilization":20}}}`},
+		{name: "null limits", data: `{"rate_limits_available":true,"rate_limits":null}`},
+		{name: "no windows", data: `{"rate_limits_available":true,"rate_limits":{}}`},
+		{name: "missing utilization", data: `{"rate_limits_available":true,"rate_limits":{"seven_day":{"resets_at":"2026-10-27T20:00:00Z"},"five_hour":{"utilization":null}}}`},
+		{name: "zero utilization", data: `{"rate_limits_available":true,"rate_limits":{"seven_day":{"utilization":0},"five_hour":null}}`, weekly: &core.UsageWindow{RemainingPercent: 100}},
+		{name: "zero remaining", data: `{"rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":100}}}`, fiveHour: &core.UsageWindow{RemainingPercent: 0}},
+		{name: "independent windows", data: `{"rate_limits_available":true,"rate_limits":{"seven_day":{"utilization":null},"five_hour":{"utilization":12.5,"resets_at":"2026-10-27T22:00:00+02:00"}}}`, fiveHour: &core.UsageWindow{RemainingPercent: 87.5, ResetsAt: reset}},
+		{name: "clamped and invalid reset", data: `{"rate_limits_available":true,"rate_limits":{"seven_day":{"utilization":-10,"resets_at":"bad"},"five_hour":{"utilization":120}}}`, weekly: &core.UsageWindow{RemainingPercent: 100}, fiveHour: &core.UsageWindow{RemainingPercent: 0}},
+		{name: "malformed json", data: `{`, wantErr: true},
+		{name: "invalid utilization type", data: `{"rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":"12"}}}`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usage, err := parseClaudeAccountUsage([]byte(tc.data))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("usage %+v, error %v", usage, err)
+			}
+			if tc.weekly == nil && tc.fiveHour == nil {
+				if usage != nil {
+					t.Fatalf("expected no usage, got %+v", usage)
+				}
+				return
+			}
+			if usage == nil {
+				t.Fatal("expected account usage")
+			}
+			for _, pair := range []struct{ got, want *core.UsageWindow }{{usage.Weekly, tc.weekly}, {usage.FiveHour, tc.fiveHour}} {
+				if (pair.got == nil) != (pair.want == nil) || (pair.got != nil && (pair.got.RemainingPercent != pair.want.RemainingPercent || !pair.got.ResetsAt.Equal(pair.want.ResetsAt))) {
+					t.Fatalf("window got %+v, want %+v", pair.got, pair.want)
+				}
+			}
+		})
+	}
+}
+
+func TestClaudeAccountUsageErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if usage, err := (&Claude{}).AccountUsage(ctx); usage != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled: %+v %v", usage, err)
+	}
+	f := newClaudeFixture(t)
+	f.controlFail = map[string]string{"get_usage": "usage failed"}
+	if usage, err := (&Claude{start: f.start}).AccountUsage(context.Background()); usage != nil || err == nil || !strings.Contains(err.Error(), "usage failed") {
+		t.Fatalf("control error: %+v %v", usage, err)
 	}
 }
 

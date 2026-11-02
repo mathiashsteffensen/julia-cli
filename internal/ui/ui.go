@@ -22,7 +22,6 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/glamour/v2"
 	"github.com/charmbracelet/colorprofile"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
@@ -79,7 +78,8 @@ type Config struct {
 	Profile       string
 	Profiles      func() ([]Profile, error)
 	SwitchProfile func(*core.Session, string) (ProfileSettings, error)
-	WeeklyUsage   func(context.Context) (*core.WeeklyUsage, error)
+	// AccountUsage reads the allowance of the account behind a session's provider.
+	AccountUsage func(ctx context.Context, provider string) (*core.AccountUsage, error)
 	// Throughput reports each model's recorded speed, keyed by provider/model,
 	// read when the picker opens.
 	Throughput func() map[string]throughput.Stats
@@ -110,6 +110,7 @@ type entry struct {
 	role           string
 	text           string
 	label          string       // the heading shown instead of the role's own, such as a fleet agent's task or name
+	noSpark        bool         // a reply's later block in a transcript, which goes on from the first
 	images         []core.Image // a user message's attached images, or the image a tool returned
 	imageIDs       []int        // the Kitty image ID that draws each of images
 	call           *core.ToolCall
@@ -156,7 +157,7 @@ type model struct {
 	bodyHeight    int
 	sidebarOffset int // rows of the sidebar scrolled out of view
 	entries       []entry
-	markdown      *glamour.TermRenderer
+	markdown      markdownCache
 	lines         []string // the conversation as rendered, one per row
 	rows          []rowRef // what each of those rows shows, for copying
 	selection     *selection
@@ -170,7 +171,6 @@ type model struct {
 	clipboardImage         func(context.Context) (core.Image, error)
 	attachments            []attachment // images pasted into the draft
 	imageSeq               int          // the last [Image #N] number handed out in this draft
-	renderWidth            int
 	busy                   bool
 	activityRow            bool // the conversation ends with a row reserved for the activity
 	quitting               bool
@@ -218,10 +218,9 @@ type model struct {
 	pickerSequence         uint64
 	fleet                  []*agent    // every subagent of the session, oldest first
 	fleetView              *fleetState // the fleet window, while open
-	fleetMarkdown          *glamour.TermRenderer
-	fleetMarkdownWidth     int
+	fleetMarkdown          markdownCache
 	models                 []core.ModelOption
-	weekly                 weeklyUsageState
+	accountUsage           accountUsageState
 	throughput             map[string]throughput.Stats // each model's recorded speed, loaded when the picker opens
 	reasoningCycleSequence uint64
 	reasoningCyclePending  int
@@ -303,7 +302,8 @@ func newModel(cfg Config) *model {
 		}
 		m.notice = "Preview · offline · no tools or provider calls · try /ask or /review"
 		if config.IsCLIProvider(cfg.Session.Provider) {
-			m.weekly.value = &core.WeeklyUsage{RemainingPercent: 61, ResetsAt: m.now.Add(3 * 24 * time.Hour)}
+			m.accountUsage.weekly.value = &core.UsageWindow{RemainingPercent: 61, ResetsAt: m.now.Add(3 * 24 * time.Hour)}
+			m.accountUsage.fiveHour.value = &core.UsageWindow{RemainingPercent: 38, ResetsAt: m.now.Add(2 * time.Hour)}
 		}
 	}
 	m.resize(100, 30)
@@ -311,7 +311,7 @@ func newModel(cfg Config) *model {
 }
 
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.waitApproval(), m.waitQuestion(), m.waitFollowup(), nextTick(), m.refreshWeeklyUsage(false))
+	return tea.Batch(textarea.Blink, m.waitApproval(), m.waitQuestion(), m.waitFollowup(), nextTick(), m.refreshAccountUsage(false))
 }
 
 func nextTick() tea.Cmd {
@@ -359,8 +359,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case weeklyUsageMsg:
-		m.receiveWeeklyUsage(msg)
+	case accountUsageMsg:
+		m.receiveAccountUsage(msg)
 		return m, nil
 	case modelsMsg:
 		return m, m.receiveModels(msg)
@@ -431,7 +431,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tickMsg:
 		m.now = time.Time(msg)
-		return m, tea.Batch(nextTick(), m.refreshWeeklyUsage(false))
+		return m, tea.Batch(nextTick(), m.refreshAccountUsage(false))
 	case activityTickMsg:
 		return m, m.spinner.update(msg)
 	case approvalMsg:
@@ -502,7 +502,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.quit()
 			}
 			settled := m.notifySettled(msg.err)
-			return m, tea.Batch(m.waitApproval(), m.waitQuestion(), m.refreshWeeklyUsage(true), m.settleQueue(msg.err), settled)
+			return m, tea.Batch(m.waitApproval(), m.waitQuestion(), m.refreshAccountUsage(true), m.settleQueue(msg.err), settled)
 		}
 		if msg.event != nil {
 			return m, tea.Batch(m.applyEvent(*msg.event), waitStream(m.stream, m.lifetime))
@@ -541,7 +541,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "ctrl+c":
-			m.cancelWeeklyUsage()
+			m.cancelAccountUsage()
 			if m.busy {
 				m.quitting = true
 				m.cancelTask()
@@ -935,12 +935,12 @@ func (m *model) applyEvent(event core.Event) tea.Cmd {
 		}
 	case "tool_end":
 		for i := len(m.entries) - 1; i >= 0; i-- {
-			if m.entries[i].role == "tool" && !m.entries[i].done && (event.Call == nil || m.entries[i].call != nil && m.entries[i].call.ID == event.Call.ID) {
+			if m.entries[i].role == "tool" && !m.entries[i].done && m.entries[i].isCall(event.Call) {
 				m.entries[i].done = true
 				m.entries[i].result = event.Result
 				m.entries[i].revision++
-				if event.Result != nil && len(event.Result.Images) > 0 && len(event.Result.Images[0].Data) > 0 {
-					m.entries[i].images = event.Result.Images[:1] // a result carries one; see core.MaxToolImages
+				if images := resultImages(event.Result); images != nil {
+					m.entries[i].images = images
 					m.registerImages(&m.entries[i])
 					cmd = m.uploadThumbnails(m.entries[i].imageIDs...)
 				}
@@ -953,6 +953,21 @@ func (m *model) applyEvent(event core.Event) tea.Cmd {
 	}
 	m.refresh(false)
 	return cmd
+}
+
+// isCall reports whether a tool entry is the call an event names. An event that
+// names no call means the latest one, so every entry is a candidate for it.
+func (item entry) isCall(call *core.ToolCall) bool {
+	return call == nil || item.call != nil && item.call.ID == call.ID
+}
+
+// resultImages is what a tool entry draws of its result: a result carries one
+// image (see core.MaxToolImages), and a replayed one has no pixels to draw.
+func resultImages(result *core.ToolResult) []core.Image {
+	if result == nil || len(result.Images) == 0 || len(result.Images[0].Data) == 0 {
+		return nil
+	}
+	return result.Images[:1]
 }
 
 func (m *model) loadHistory() {

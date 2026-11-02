@@ -13,7 +13,7 @@ import (
 
 // WeeklyUsage reads account metadata without starting a conversation, consuming
 // reset credits, or opting into a reserve model. Nil means quota is unavailable.
-func (c *Codex) WeeklyUsage(ctx context.Context) (*core.WeeklyUsage, error) {
+func (c *Codex) WeeklyUsage(ctx context.Context) (*core.UsageWindow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -46,7 +46,7 @@ func (c *Codex) WeeklyUsage(ctx context.Context) (*core.WeeklyUsage, error) {
 	return parseCodexWeeklyUsage(data)
 }
 
-func parseCodexWeeklyUsage(data []byte) (*core.WeeklyUsage, error) {
+func parseCodexWeeklyUsage(data []byte) (*core.UsageWindow, error) {
 	type window struct {
 		UsedPercent        *float64 `json:"usedPercent"`
 		WindowDurationMins *int64   `json:"windowDurationMins"`
@@ -76,7 +76,7 @@ func parseCodexWeeklyUsage(data []byte) (*core.WeeklyUsage, error) {
 		if candidate == nil || candidate.UsedPercent == nil || candidate.WindowDurationMins == nil || *candidate.WindowDurationMins != 7*24*60 {
 			continue
 		}
-		usage := &core.WeeklyUsage{RemainingPercent: math.Max(0, math.Min(100, 100-*candidate.UsedPercent))}
+		usage := &core.UsageWindow{RemainingPercent: math.Max(0, math.Min(100, 100-*candidate.UsedPercent))}
 		if candidate.ResetsAt != nil && *candidate.ResetsAt > 0 {
 			usage.ResetsAt = time.Unix(*candidate.ResetsAt, 0)
 		}

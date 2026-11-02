@@ -69,7 +69,7 @@ func uploadWordmark() tea.Cmd {
 }
 
 func (m *model) quit() tea.Cmd {
-	m.cancelWeeklyUsage()
+	m.cancelAccountUsage()
 	m.quitting = true
 	if !m.wordmarkEnabled {
 		return tea.Quit

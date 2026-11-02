@@ -652,6 +652,10 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 		}
 	}
 	m.invalidateReasoningCycle()
+	// A preview's readings are all it will ever have: it reads nothing new.
+	if providerChanged && !m.cfg.Demo {
+		m.resetAccountUsage()
+	}
 	newConversation := next.ID != m.cfg.Session.ID
 	*m.cfg.Session = *next
 	if !m.cfg.Demo {

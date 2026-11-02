@@ -329,27 +329,16 @@ func run() error {
 			s.Role = "consolidation"
 		}
 		enc := json.NewEncoder(os.Stdout)
+		var transcript *ui.Transcript
+		if !jsonMode {
+			transcript = ui.NewTranscript(os.Stdout, os.Stderr)
+		}
 		emit := func(e core.Event) {
 			if jsonMode {
 				_ = enc.Encode(e)
 				return
 			}
-			if e.Subagent != nil {
-				// A child's text is its report to the parent, not output; its
-				// tool calls show as progress under the role's name.
-				if e.Kind == "tool_start" && e.Call != nil {
-					fmt.Fprintln(os.Stderr, "  ›", safe(e.Subagent.Role), "›", e.Call.Name)
-				}
-				return
-			}
-			switch e.Kind {
-			case "text":
-				fmt.Print(safe(e.Text))
-			case "tool_start":
-				fmt.Fprintln(os.Stderr, "  ›", e.Call.Name)
-			case "warning", "status":
-				fmt.Fprintln(os.Stderr, "  ·", safe(e.Text))
-			}
+			transcript.Show(e)
 		}
 		err = runner.Run(ctx, s, core.Prompt{Text: prompt}, nil, emit)
 		saveErr := store.Save(s)
@@ -360,9 +349,7 @@ func run() error {
 			}
 			_ = enc.Encode(map[string]any{"kind": "done", "status": msg, "session_id": s.ID})
 		} else {
-			fmt.Println()
-			fmt.Fprintln(os.Stderr, "Session:", s.ID)
-			fmt.Fprintln(os.Stderr, "Tokens:", tokenSummary(s.Usage.Total))
+			transcript.Finish(s.ID, tokenSummary(s.Usage.Total))
 		}
 		return errors.Join(err, saveErr)
 	}
@@ -451,20 +438,26 @@ func run() error {
 			return log.All()
 		}
 	}
-	uiConfig.WeeklyUsage = func(ctx context.Context) (*core.WeeklyUsage, error) {
+	// The session may have left the profile's provider with /model, so the
+	// session names the account and the profile only says where its CLI is.
+	uiConfig.AccountUsage = func(ctx context.Context, sessionProvider string) (*core.AccountUsage, error) {
 		cfg := active()
-		if cfg.Provider == "claude" {
+		if sessionProvider == "claude" {
 			binary, err := findClaude(cfg.ClaudeBinary)
 			if err != nil {
 				return nil, err
 			}
-			return (&provider.Claude{Binary: binary}).WeeklyUsage(ctx)
+			return (&provider.Claude{Binary: binary}).AccountUsage(ctx)
 		}
 		binary, err := findCodex(cfg.CodexBinary)
 		if err != nil {
 			return nil, err
 		}
-		return (&provider.Codex{Binary: binary}).WeeklyUsage(ctx)
+		weekly, err := (&provider.Codex{Binary: binary}).WeeklyUsage(ctx)
+		if err != nil || weekly == nil {
+			return nil, err
+		}
+		return &core.AccountUsage{Weekly: weekly}, nil
 	}
 	runErr := ui.Run(uiConfig)
 	pending := runner.finish(ctx, func() {

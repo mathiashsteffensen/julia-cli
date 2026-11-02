@@ -83,11 +83,17 @@ type ModelOption struct {
 	IsDefault             bool
 }
 
-// WeeklyUsage is a provider's current weekly allowance, separate from per-turn
-// token usage. A zero reset time means the provider did not supply one.
-type WeeklyUsage struct {
+// UsageWindow is a provider's remaining allowance, separate from per-turn
+// token usage. A zero reset time means no reset was supplied.
+type UsageWindow struct {
 	RemainingPercent float64
 	ResetsAt         time.Time
+}
+
+// AccountUsage holds the available subscription windows. A nil window is unknown.
+type AccountUsage struct {
+	Weekly   *UsageWindow
+	FiveHour *UsageWindow
 }
 
 // Session is one conversation. A child session, run by a subagent, names its

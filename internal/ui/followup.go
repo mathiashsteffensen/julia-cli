@@ -103,7 +103,7 @@ func followupEntries(events []core.Event) []entry {
 			out = append(out, entry{role: "tool", call: event.Call, text: event.Text})
 		case "tool_end":
 			for i := len(out) - 1; i >= 0; i-- {
-				if out[i].role == "tool" && !out[i].done && (event.Call == nil || out[i].call != nil && out[i].call.ID == event.Call.ID) {
+				if out[i].role == "tool" && !out[i].done && out[i].isCall(event.Call) {
 					out[i].done, out[i].result = true, event.Result
 					break
 				}

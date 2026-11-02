@@ -12,106 +12,152 @@ import (
 )
 
 const (
-	weeklyRefreshInterval = time.Minute
-	weeklyMinimumInterval = 10 * time.Second
+	usageRefreshInterval = time.Minute
+	usageMinimumInterval = 10 * time.Second
 )
 
-type weeklyUsageState struct {
-	value       *core.WeeklyUsage
+// accountUsageState holds the account's allowance windows and the lookup that
+// refreshes them.
+type accountUsageState struct {
+	weekly      usageReading
+	fiveHour    usageReading
 	loading     bool
-	stale       bool
 	next        time.Time
 	lastAttempt time.Time
 	sequence    uint64
 	cancel      context.CancelFunc
 }
 
-type weeklyUsageMsg struct {
+type usageReading struct {
+	value *core.UsageWindow
+	stale bool
+}
+
+// markStale keeps a reading on show after an update failed, marked as old.
+func (reading *usageReading) markStale() {
+	reading.stale = reading.value != nil
+}
+
+type accountUsageMsg struct {
 	sequence uint64
-	value    *core.WeeklyUsage
+	value    *core.AccountUsage
 	err      error
 }
 
 // Calls are coalesced on the UI goroutine. A completed turn can bring the next
 // refresh forward, but short turns never create overlapping or rapid requests.
-func (m *model) refreshWeeklyUsage(afterTurn bool) tea.Cmd {
-	if !config.IsCLIProvider(m.cfg.Session.Provider) || m.cfg.Demo || m.cfg.WeeklyUsage == nil || m.quitting || m.lifetime.Err() != nil {
+func (m *model) refreshAccountUsage(afterTurn bool) tea.Cmd {
+	if !config.IsCLIProvider(m.cfg.Session.Provider) || m.cfg.Demo || m.cfg.AccountUsage == nil || m.quitting || m.lifetime.Err() != nil {
 		return nil
 	}
 	if afterTurn {
 		due := m.now
-		if earliest := m.weekly.lastAttempt.Add(weeklyMinimumInterval); earliest.After(due) {
+		if earliest := m.accountUsage.lastAttempt.Add(usageMinimumInterval); earliest.After(due) {
 			due = earliest
 		}
-		if m.weekly.next.IsZero() || due.Before(m.weekly.next) {
-			m.weekly.next = due
+		if m.accountUsage.next.IsZero() || due.Before(m.accountUsage.next) {
+			m.accountUsage.next = due
 		}
 	}
-	if m.weekly.loading || m.now.Before(m.weekly.next) {
+	if m.accountUsage.loading || m.now.Before(m.accountUsage.next) {
 		return nil
 	}
-	m.weekly.loading = true
-	m.weekly.lastAttempt = m.now
-	m.weekly.next = m.now.Add(weeklyRefreshInterval)
-	m.weekly.sequence++
-	sequence := m.weekly.sequence
+	m.accountUsage.loading = true
+	m.accountUsage.lastAttempt = m.now
+	m.accountUsage.next = m.now.Add(usageRefreshInterval)
+	m.accountUsage.sequence++
+	sequence := m.accountUsage.sequence
 	ctx, cancel := context.WithTimeout(m.lifetime, 15*time.Second)
-	m.weekly.cancel = cancel
-	fetch := m.cfg.WeeklyUsage
+	m.accountUsage.cancel = cancel
+	fetch, provider := m.cfg.AccountUsage, m.cfg.Session.Provider
 	return func() tea.Msg {
 		defer cancel()
-		value, err := fetch(ctx)
+		value, err := fetch(ctx, provider)
 		if value != nil {
 			copy := *value
+			copy.Weekly = copyUsage(value.Weekly)
+			copy.FiveHour = copyUsage(value.FiveHour)
 			value = &copy
 		}
-		return weeklyUsageMsg{sequence: sequence, value: value, err: err}
+		return accountUsageMsg{sequence: sequence, value: value, err: err}
 	}
 }
 
-func (m *model) receiveWeeklyUsage(msg weeklyUsageMsg) {
-	if msg.sequence != m.weekly.sequence || !m.weekly.loading || !config.IsCLIProvider(m.cfg.Session.Provider) || m.quitting || m.lifetime.Err() != nil {
+func copyUsage(value *core.UsageWindow) *core.UsageWindow {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func (m *model) receiveAccountUsage(msg accountUsageMsg) {
+	if msg.sequence != m.accountUsage.sequence || !m.accountUsage.loading || !config.IsCLIProvider(m.cfg.Session.Provider) || m.quitting || m.lifetime.Err() != nil {
 		return
 	}
-	m.weekly.loading = false
-	m.weekly.cancel = nil
+	m.accountUsage.loading = false
+	m.accountUsage.cancel = nil
 	if msg.err != nil {
-		m.weekly.stale = m.weekly.value != nil
+		m.accountUsage.weekly.markStale()
+		m.accountUsage.fiveHour.markStale()
 		return
 	}
 	if msg.value == nil {
-		m.weekly.value, m.weekly.stale = nil, false
-		return
+		msg.value = &core.AccountUsage{}
 	}
-	if math.IsNaN(msg.value.RemainingPercent) || math.IsInf(msg.value.RemainingPercent, 0) || msg.value.RemainingPercent < 0 || msg.value.RemainingPercent > 100 {
-		m.weekly.stale = m.weekly.value != nil
-		return
-	}
-	copy := *msg.value
-	m.weekly.value = &copy
-	m.weekly.stale = false
+	m.accountUsage.weekly.receive(msg.value.Weekly)
+	m.accountUsage.fiveHour.receive(msg.value.FiveHour)
 }
 
-func (m *model) cancelWeeklyUsage() {
-	if m.weekly.cancel != nil {
-		m.weekly.cancel()
-		m.weekly.cancel = nil
+func (reading *usageReading) receive(value *core.UsageWindow) {
+	if value == nil {
+		reading.value, reading.stale = nil, false
+		return
 	}
-	m.weekly.loading = false
-	m.weekly.sequence++
+	if math.IsNaN(value.RemainingPercent) || math.IsInf(value.RemainingPercent, 0) || value.RemainingPercent < 0 || value.RemainingPercent > 100 {
+		reading.markStale()
+		return
+	}
+	reading.value, reading.stale = value, false
+}
+
+func (m *model) cancelAccountUsage() {
+	if m.accountUsage.cancel != nil {
+		m.accountUsage.cancel()
+		m.accountUsage.cancel = nil
+	}
+	m.accountUsage.loading = false
+	m.accountUsage.sequence++
+}
+
+// A provider or profile change invalidates both the readings and any request
+// started for the previous account. The next tick starts a fresh lookup.
+func (m *model) resetAccountUsage() {
+	m.cancelAccountUsage()
+	m.accountUsage.weekly, m.accountUsage.fiveHour = usageReading{}, usageReading{}
+	m.accountUsage.next = time.Time{}
+	m.accountUsage.lastAttempt = time.Time{}
 }
 
 func (m *model) weeklyUsageLine(p palette) string {
-	if m.weekly.value == nil {
-		if m.weekly.loading {
-			return p.muted.Render("Weekly · loading…")
+	return m.usageLine(p, "Weekly", m.accountUsage.weekly)
+}
+
+func (m *model) fiveHourUsageLine(p palette) string {
+	return m.usageLine(p, "5-hour", m.accountUsage.fiveHour)
+}
+
+func (m *model) usageLine(p palette, label string, reading usageReading) string {
+	if reading.value == nil {
+		if m.accountUsage.loading {
+			return p.muted.Render(label + " · loading…")
 		}
-		return p.faint.Render("Weekly · unavailable")
+		return p.faint.Render(label + " · unavailable")
 	}
-	value := m.weekly.value
-	stale := m.weekly.stale || (!value.ResetsAt.IsZero() && !m.now.Before(value.ResetsAt))
+	value := reading.value
+	stale := reading.stale || (!value.ResetsAt.IsZero() && !m.now.Before(value.ResetsAt))
 	if stale {
-		return p.muted.Render(fmt.Sprintf("Weekly · %.0f%% · stale", value.RemainingPercent))
+		return p.muted.Render(fmt.Sprintf("%s · %.0f%% · stale", label, value.RemainingPercent))
 	}
-	return p.violet.Render(fmt.Sprintf("Weekly · %.0f%% left", value.RemainingPercent))
+	return p.violet.Render(fmt.Sprintf("%s · %.0f%% left", label, value.RemainingPercent))
 }

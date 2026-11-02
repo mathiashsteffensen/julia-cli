@@ -111,14 +111,12 @@ type codeSpan struct {
 	text  string
 }
 
-// renderCodeBlock draws a card width cells wide: a header row, a padding row,
-// the code, and a padding row. continued marks rows that carry on a wrapped line.
-func renderCodeBlock(code, language string, width int) (rows []string, continued []bool) {
-	return renderCodeCard(code, language, width, "⧉ copy")
-}
+// copyHint is the header's hint on a code card that a click can copy.
+const copyHint = "⧉ copy"
 
-// renderCodeCard is renderCodeBlock with the header's right-hand hint chosen
-// by the caller: a card that cannot be clicked to copy shows none.
+// renderCodeCard draws a card width cells wide: a header row, a padding row, the
+// code, and a padding row. continued marks rows that carry on a wrapped line. hint
+// goes on the header's right; a card that cannot be clicked to copy has none.
 func renderCodeCard(code, language string, width int, hint string) (rows []string, continued []bool) {
 	width = max(codeGutter+8, width)
 	inner := width - codeGutter - 1

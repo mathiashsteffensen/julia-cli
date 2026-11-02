@@ -127,10 +127,6 @@ func (m *model) refresh(forceBottom bool) {
 		}
 		return
 	}
-	if m.renderWidth != m.mainWidth {
-		m.markdown = markdownRenderer(m.mainWidth)
-		m.renderWidth = m.mainWidth
-	}
 	m.lines, m.rows = m.lines[:0], m.rows[:0]
 	for i := range m.entries {
 		layout := m.renderEntry(&m.entries[i])
@@ -157,6 +153,19 @@ func (m *model) refresh(forceBottom bool) {
 	if forceBottom || atBottom {
 		m.viewport.GotoBottom()
 	}
+}
+
+// markdownCache keeps the Markdown renderer for the width last asked of it.
+type markdownCache struct {
+	renderer *glamour.TermRenderer
+	width    int
+}
+
+func (cache *markdownCache) at(width int) *glamour.TermRenderer {
+	if cache.renderer == nil || cache.width != width {
+		cache.renderer, cache.width = markdownRenderer(width), width
+	}
+	return cache.renderer
 }
 
 // markdownRenderer renders a reply's Markdown in the interface's colors,
@@ -196,7 +205,7 @@ func str(value string) *string { return &value }
 func ptr[T any](value T) *T    { return &value }
 
 func (m *model) renderEntry(item *entry) entryLayout {
-	return m.renderEntryIn(item, column{width: m.mainWidth, markdown: m.markdown})
+	return m.renderEntryIn(item, column{width: m.mainWidth, markdown: m.markdown.at(m.mainWidth)})
 }
 
 // column is where an entry is laid out: the conversation, or a fleet agent's
@@ -207,6 +216,12 @@ type column struct {
 	// wordWrap breaks a message between words. The conversation breaks
 	// between cells instead, so a copy can join a wrapped row back exactly.
 	wordWrap bool
+	// printed marks a column written once to the scrollback, where nothing can
+	// be clicked.
+	printed bool
+	// resultBelow keeps a tool's result off its title row, for a transcript
+	// that has printed the title before the result existed.
+	resultBelow bool
 }
 
 func (m *model) renderEntryIn(item *entry, in column) entryLayout {
@@ -221,7 +236,7 @@ func (m *model) renderEntryIn(item *entry, in column) entryLayout {
 func (m *model) renderEntryContent(item entry) string { return m.layoutEntry(item).text }
 
 func (m *model) layoutEntry(item entry) entryLayout {
-	return m.layoutEntryIn(item, column{width: m.mainWidth, markdown: m.markdown})
+	return m.layoutEntryIn(item, column{width: m.mainWidth, markdown: m.markdown.at(m.mainWidth)})
 }
 
 // layoutEntryIn renders an entry together with the map from its rows back to
@@ -246,6 +261,16 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 			}
 		}
 	}
+	// marked adds a message with its mark on the first row only, so that the rows
+	// a wrap creates line up under the text.
+	marked := func(mark string, style lipgloss.Style, text string) {
+		lead := mark + " "
+		wrapped(sanitize(text), w, rowMeta{gutter: 2}, func(s string) string {
+			row := style.Render(lead + s)
+			lead = "  "
+			return row
+		})
+	}
 	switch item.role {
 	case "user":
 		out.targets = []copyTarget{{"your message", item.text}}
@@ -268,6 +293,9 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 		// A reply opens with the spark and runs on without a heading; a labelled
 		// reply (an agent's, a memory's) keeps its heading row.
 		lead := violetStyle.Render("✦ ")
+		if item.noSpark {
+			lead = "  "
+		}
 		if item.label != "" {
 			add(lead+violetStyle.Bold(true).Render(strings.TrimPrefix(item.label, "✦ ")), rowMeta{gutter: 2, skip: true})
 			lead = "  "
@@ -289,7 +317,11 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 				}
 				out.targets = append(out.targets, copyTarget{label, segment.text})
 				width := max(codeGutter+8, in.width-3)
-				rows, continued := renderCodeBlock(segment.text, segment.language, width)
+				hint := copyHint
+				if in.printed {
+					hint = ""
+				}
+				rows, continued := renderCodeCard(segment.text, segment.language, width, hint)
 				for j, row := range rows {
 					edge := j <= 1 || j == len(rows)-1 // header and padding rows
 					add("  "+row, rowMeta{gutter: 2 + codeGutter, end: width + 1, cont: continued[j], skip: edge, target: target, code: true})
@@ -338,6 +370,12 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 			// The reflection step's changes read as its own, live and resumed.
 			if item.text == "reflection" || strings.HasPrefix(item.call.ID, "reflection-") {
 				detail = "reflection · " + detail
+			}
+			// A subagent's call in a transcript goes under the role's name.
+			if item.label != "" && detail != "" {
+				detail = item.label + " · " + detail
+			} else if item.label != "" {
+				detail = item.label
 			}
 		}
 		if item.call != nil && item.call.Name == "Browser" && item.result != nil {
@@ -412,7 +450,7 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 			}
 			first, _, _ := strings.Cut(result, "\n")
 			merged := false
-			if plain := !isOther && !isPage && !isScreen && !m.expandTools && result != ""; plain && ansi.StringWidth(title)+5+ansi.StringWidth(first) <= w {
+			if plain := !isOther && !isPage && !isScreen && !m.expandTools && !in.resultBelow && result != ""; plain && ansi.StringWidth(title)+5+ansi.StringWidth(first) <= w {
 				style := faintStyle
 				if item.result.IsError {
 					style = coralStyle
@@ -498,10 +536,10 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 		flushTitle()
 	case "warning":
 		out.targets = []copyTarget{{"warning", item.text}}
-		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string { return coralStyle.Render("! " + s) })
+		marked("!", coralStyle, item.text)
 	default:
 		out.targets = []copyTarget{{"note", item.text}}
-		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string { return mutedStyle.Italic(true).Render("· " + s) })
+		marked("·", mutedStyle.Italic(true), item.text)
 	}
 	out.text = strings.TrimSuffix(out.text, "\n")
 	return out
@@ -610,7 +648,7 @@ func toolSummary(call core.ToolCall) string {
 	if json.Unmarshal(call.Arguments, &args) != nil {
 		return string(call.Arguments)
 	}
-	for _, key := range []string{"path", "file_path", "command", "pattern", "directory", "query"} {
+	for _, key := range []string{"path", "file_path", "command", "pattern", "directory", "query", "url"} {
 		if raw, ok := args[key]; ok {
 			var value string
 			if json.Unmarshal(raw, &value) == nil {
@@ -1053,6 +1091,10 @@ func (m *model) sidebar() string {
 		}
 		if config.IsCLIProvider(provider) {
 			connection = append(connection, m.weeklyUsageLine(card))
+			// Only Claude Code reports a 5-hour window.
+			if provider == "claude" {
+				connection = append(connection, m.fiveHourUsageLine(card))
+			}
 		}
 	}
 	// The per-call figures describe the last model call only; the session totals

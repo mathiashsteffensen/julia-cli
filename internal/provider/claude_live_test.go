@@ -47,11 +47,15 @@ func TestClaudeLiveProtocol(t *testing.T) {
 		t.Fatalf("models %v", ids)
 	}
 	t.Logf("models: %v", ids)
-	usage, err := backend.WeeklyUsage(ctx)
+	usage, err := backend.AccountUsage(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("weekly usage: %+v", usage)
+	if usage != nil {
+		t.Logf("account usage: weekly=%+v five-hour=%+v", usage.Weekly, usage.FiveHour)
+	} else {
+		t.Log("account usage unavailable")
+	}
 	session := &core.Session{Directory: t.TempDir()}
 	var events []core.Event
 	err = backend.Run(ctx, session, core.Prompt{Text: "Call the Read tool on README.md, then answer with one word."}, &claudeTestExecutor{}, func(e core.Event) { events = append(events, e) })

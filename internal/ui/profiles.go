@@ -114,6 +114,7 @@ func (m *model) switchProfile(name string) error {
 		return err
 	}
 	m.invalidateReasoningCycle()
+	m.resetAccountUsage()
 	newConversation := next.ID != m.cfg.Session.ID
 	*m.cfg.Session = *next
 	m.cfg.Profile, m.cfg.Mode, m.cfg.ContextWindow = name, settings.Mode, settings.ContextWindow
