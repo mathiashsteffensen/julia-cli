@@ -13,13 +13,6 @@ Note: This harness is designed to be opinionated. Underlying models are highly c
 
 Also note: This harness is largely slop (just as Codex and Claude is). The codebase is a mess and should not be viewed by the faint of heart. However, it works and is a joy to use. The sandboxing limits and auto-approvals are however very well-tested. Running this harness in auto mode should be considered as safe as using auto mode in a harness like Codex or Claude Code, possibly safer as it is quite conservative comparatively in my experience.
 
-## Principle: it should be gorgeous
-
-A core principle of this harness is that it should be gorgeous. You spend hours
-reading what it shows you, so how it looks is part of how well it works. Every
-interface is designed: a code block gets a card, a selection is lit, and a status
-line says only what matters. A change that works but looks careless is not done.
-
 ## Install
 
 Requires Go 1.27+, `rg`, and macOS (sandboxed Bash is macOS-only for now, do not run this on your dev machine if you use linux). For
