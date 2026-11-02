@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -148,8 +149,14 @@ func (e *Executor) bash(ctx context.Context, call core.ToolCall) (string, error)
 	// the servers the agent starts itself, in the command or its terminals:
 	// the machine's own services are closed to it. Review only what leaves
 	// that boundary.
+	review := true
+	if escalated && namesKeyMaterial(a.Command) {
+		// A private key leaving the machine must not rest on a model's score.
+		review = false
+		approval.Reason += " It names a private key or login file, so automatic review cannot approve it."
+	}
 	if e.config.Mode != "auto" || escalated || a.Network {
-		if err := e.authorizeRequest(ctx, approval, true); err != nil {
+		if err := e.authorizeRequest(ctx, approval, review); err != nil {
 			return "", err
 		}
 	}
@@ -160,6 +167,19 @@ func (e *Executor) bash(ctx context.Context, call core.ToolCall) (string, error)
 		e.emit("warning", "Executing the approved command outside the OS sandbox with host-user filesystem and network access.")
 	}
 	return e.runBash(ctx, a.Command, reach, time.Duration(a.Timeout)*time.Second, escalated)
+}
+
+// keyMaterial matches private keys and long-lived login files by name. It is
+// narrower than the sandbox's credential denials on purpose: `credentials` and
+// `.config` also name ordinary packages and settings, and each match here
+// interrupts the user.
+var keyMaterial = regexp.MustCompile(`(?i)(^|[^a-z0-9._-])(\.ssh|\.gnupg|\.netrc|\.aws/credentials)($|[^a-z0-9._-])|(^|[^a-z0-9])id_(rsa|dsa|ecdsa|ed25519)`)
+
+// namesKeyMaterial reports whether a command spells out key material. This is a
+// tripwire, not a boundary: a glob or a variable gets past it, so automatic
+// review still judges every other escalated command.
+func namesKeyMaterial(command string) bool {
+	return keyMaterial.MatchString(command)
 }
 
 // scratchDir creates the session scratch directory on first use. Without a

@@ -2,7 +2,9 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -92,8 +94,12 @@ func TestRepeatedReviewDenialsReturnToAHuman(t *testing.T) {
 	e.config.Review = func(context.Context, core.Approval) (core.Decision, error) {
 		return core.Decision{Allow: allow, Reason: "not authorized"}, nil
 	}
+	// Each request is a different action, as an identical one skips review.
+	actions := 0
 	request := func() error {
-		return e.authorizeRequest(context.Background(), core.Approval{Call: core.ToolCall{Name: "Bash"}, Reason: "Run this command?"}, true)
+		actions++
+		arguments := json.RawMessage(`{"command":"action ` + strconv.Itoa(actions) + `"}`)
+		return e.authorizeRequest(context.Background(), core.Approval{Call: core.ToolCall{Name: "Bash", Arguments: arguments}, Reason: "Run this command?"}, true)
 	}
 	// The third consecutive denial goes to a human, who resets the streak.
 	for i, wantHumans := range []int{0, 0, 1, 1, 1, 2} {
@@ -118,5 +124,55 @@ func TestRepeatedReviewDenialsReturnToAHuman(t *testing.T) {
 		if err := request(); err == nil || humans != 3+i {
 			t.Fatal("denial past the turn limit did not reach a human", humans, err)
 		}
+	}
+}
+
+func TestDeniedActionGoesToAHumanWithoutAnotherReview(t *testing.T) {
+	reviews, humans := 0, 0
+	e, _ := fixture(t, "auto", func(_ context.Context, a core.Approval) (core.Decision, error) {
+		humans++
+		if !strings.Contains(a.Reason, "already denied") || !strings.Contains(a.Reason, "not authorized") {
+			t.Fatal("human was not told why the action reached them", a.Reason)
+		}
+		return core.Decision{Allow: true, Reason: "human allowed"}, nil
+	})
+
+	allow := false
+	e.config.Review = func(context.Context, core.Approval) (core.Decision, error) {
+		reviews++
+		return core.Decision{Allow: allow, Reason: "not authorized"}, nil
+	}
+
+	// A retry is a new call with a new ID; only what it would do identifies it.
+	calls := 0
+	request := func(arguments string) error {
+		calls++
+		call := core.ToolCall{ID: "call-" + strconv.Itoa(calls), Name: "Bash", Arguments: json.RawMessage(arguments)}
+		return e.authorizeRequest(context.Background(), core.Approval{Task: e.config.Task, Call: call, Reason: "Run this command?"}, true)
+	}
+
+	const push, dryRun = `{"command":"git push"}`, `{"command":"git push --dry-run"}`
+	e.SetTask("add tests")
+
+	if err := request(push); err == nil || reviews != 1 || humans != 0 {
+		t.Fatal("the first denial did not go back to the model", err, reviews, humans)
+	}
+
+	// A human approval covers one invocation, so a further repeat asks again.
+	for wantHumans := 1; wantHumans <= 2; wantHumans++ {
+		if err := request(push); err != nil || reviews != 1 || humans != wantHumans {
+			t.Fatal("the repeat was not a human's decision alone", err, reviews, humans)
+		}
+	}
+
+	if err := request(dryRun); err == nil || reviews != 2 || humans != 2 {
+		t.Fatal("a different action was not reviewed", err, reviews, humans)
+	}
+
+	// The user's answer changes the task, so the retry is reviewed on its merits.
+	e.SetTask("add tests, then push")
+	allow = true
+	if err := request(push); err != nil || reviews != 3 || humans != 2 {
+		t.Fatal("a retry after the user's answer was not reviewed", err, reviews, humans)
 	}
 }

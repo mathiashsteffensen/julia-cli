@@ -81,8 +81,10 @@ type Executor struct {
 	scratch    string
 	ownScratch bool
 	// denials and consecutiveDenials count this turn's automatic review denials;
-	// see maxConsecutiveDenials. Execute holds mu, which serializes them.
+	// see maxConsecutiveDenials. deniedActions keeps the reason for each denied
+	// action; see deniedAction. Execute holds mu, which serializes them.
 	denials, consecutiveDenials int
+	deniedActions               map[deniedAction]string
 	// terminals are the Terminal tool's open terminals, which live until
 	// stopped or Close; terminalCount numbers them and scopes numbers the
 	// subagents that may own some.
@@ -101,6 +103,16 @@ const (
 	maxConsecutiveDenials = 3
 	maxTurnDenials        = 20
 )
+
+// deniedAction identifies a request that automatic review denied. A model scores
+// the same request differently each time, so reviewing it again is another chance
+// to pass, not a second opinion: the same request goes to a human instead. An
+// answer from the user changes task, so a retry after one is a new request.
+type deniedAction struct{ task, tool, arguments string }
+
+func deniedActionOf(a core.Approval) deniedAction {
+	return deniedAction{a.Task, a.Call.Name, string(a.Call.Arguments)}
+}
 
 func New(c Config) (*Executor, error) {
 	if c.Mode == "" {
@@ -645,8 +657,11 @@ func (e *Executor) authorizeRequest(ctx context.Context, a core.Approval, review
 		label = " outside the OS sandbox"
 	}
 	if review && e.config.Mode == "auto" {
+		earlierDenial, repeated := e.deniedActions[deniedActionOf(a)]
 		if e.config.Review == nil {
 			a.Reason += " Automatic review unavailable: no reviewer is configured."
+		} else if repeated {
+			a.Reason += " Automatic approval not granted: " + earlierDenial + " The same action was already denied this turn, so it needs your decision."
 		} else {
 			e.emit("status", "Automatic review in progress"+label+"…")
 			decision, err := e.config.Review(ctx, a)
@@ -658,7 +673,7 @@ func (e *Executor) authorizeRequest(ctx context.Context, a core.Approval, review
 			case err != nil:
 				// A failed review is no judgment of the action; only a human can decide it.
 				a.Reason += " Automatic review failed: " + bounded(err.Error())
-			case e.denied():
+			case e.denied(a, bounded(decision.Reason)):
 				reason := bounded(decision.Reason)
 				e.emit("warning", "Automatic review denied"+label+": "+reason)
 				return fmt.Errorf("automatic review denied this action: %s. Do not retry it reworded or reach the same effect another way. Continue with other authorized work; if this action is necessary, explain why and ask the user (AskUserQuestion where available), then retry it only if they authorize it", reason)
@@ -687,7 +702,11 @@ func (e *Executor) authorizeRequest(ctx context.Context, a core.Approval, review
 
 // denied records an automatic review denial and reports whether it goes back to
 // the model; false means the limits are reached and a human decides instead.
-func (e *Executor) denied() bool {
+func (e *Executor) denied(a core.Approval, reason string) bool {
+	if e.deniedActions == nil {
+		e.deniedActions = make(map[deniedAction]string)
+	}
+	e.deniedActions[deniedActionOf(a)] = reason
 	e.denials++
 	e.consecutiveDenials++
 	return e.consecutiveDenials < maxConsecutiveDenials && e.denials < maxTurnDenials

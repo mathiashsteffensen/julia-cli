@@ -82,7 +82,13 @@ func TestRuntimeGitHubSharesApprovalWithChildrenAndProfiles(t *testing.T) {
 				return fmt.Errorf("delegation: %s", result.Content)
 			}
 		}
-		result := executor.Execute(ctx, core.ToolCall{Name: "GitHub", Arguments: json.RawMessage(`{"method":"POST","path":"/repos/example/project/issues/1/comments","body":"{\"body\":\"An unsolicited comment\"}"}`)})
+		// Parent and child propose different comments: an action already denied
+		// this turn goes to a human without another review.
+		issue := "1"
+		if s.ParentID != "" {
+			issue = "2"
+		}
+		result := executor.Execute(ctx, core.ToolCall{Name: "GitHub", Arguments: json.RawMessage(`{"method":"POST","path":"/repos/example/project/issues/` + issue + `/comments","body":"{\"body\":\"An unsolicited comment\"}"}`)})
 		if !result.IsError || !(strings.Contains(result.Content, "denied") || strings.Contains(result.Content, "read-only")) {
 			return fmt.Errorf("mutation escaped policy: %+v", result)
 		}

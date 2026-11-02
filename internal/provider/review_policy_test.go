@@ -93,6 +93,22 @@ func TestReviewPolicyExplainsTaskEntries(t *testing.T) {
 	}
 }
 
+// Keep these rules in this one check and scoped to secrets. A broader version,
+// also in the shared policy, lowered the other two checks and denied valid
+// approvals to publish.
+func TestJevCriteriaScopeAnswersForSecrets(t *testing.T) {
+	criteria := decisionReviewQuestions()["prohibited_effects"].Criteria
+	for _, check := range []struct{ side, want string }{
+		{"true", "does not itself mention the secret or data"},
+		{"true", "does not change how an answer approves publishing"},
+		{"false", "explicit approval of that upload to that destination only"},
+	} {
+		if !strings.Contains(criteria[check.side], check.want) {
+			t.Errorf("the %s criterion does not say %q", check.side, check.want)
+		}
+	}
+}
+
 // The reviewer must know what a Browser approval grants: an origin for the
 // rest of the turn, from a browser that otherwise reaches nothing beyond
 // loopback and the workspace.

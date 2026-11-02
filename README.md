@@ -413,8 +413,12 @@ in an unsaved session with no tools, on your Claude subscription.
 `<provider-id>/<model-id>` for one of your `providers`, such as `openrouter/typesafe/jev-1.13`,
 reviews instead through that provider's Decisions API. Approval then requires ≥50% task relevance and >70% on each harm
 check. The reviewer sees the proposed action and your messages, but nothing else from the agent.
-A denial goes back to the agent with the reason. After 3 denials in a row (or 20 in one turn), or when the
-reviewer fails, you are asked instead. In headless mode the action is denied.
+A denial goes back to the agent with the reason. If the agent repeats the same action and you have not answered
+or written since, you are asked instead of the reviewer. You are also asked after 3 denials in a row (or 20 in one
+turn), or when the reviewer fails. An escalated command that names a private key or login file (`.ssh`, `.gnupg`,
+`.netrc`, `.aws/credentials`, `id_rsa` and similar) always asks you, whatever the reviewer would say. This check
+reads the command text, so a glob or a variable gets past it and only the reviewer judges those. In headless mode
+the action is denied.
 
 If you have access to Jev or another decision model via API, that is highly recommended.
 
