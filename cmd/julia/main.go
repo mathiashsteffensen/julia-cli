@@ -259,6 +259,7 @@ func run() error {
 		}
 		preview := baseUIConfig(s, cfg, demoTools)
 		preview.Demo, preview.Profile = true, profileLabel(path)
+		preview.Hangup = hangup
 		return ui.Run(preview)
 	}
 	if err := store.Lock(s.ID); err != nil {
