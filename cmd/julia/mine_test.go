@@ -133,6 +133,47 @@ func TestMiningRejectBeforeJudgeStaysLocal(t *testing.T) {
 	}
 }
 
+// A review key must not rescan every transcript, so the review's Save skips them.
+// The next command's Load still checks them under the lock.
+func TestMiningReviewSaveSkipsTranscriptsAndNextLoadChecksThem(t *testing.T) {
+	command, _, _ := miningCommandFixture(t)
+	directory := filepath.Join(t.TempDir(), "report")
+	ctx := context.Background()
+	if err := command.run(ctx, []string{"scan", "--output", directory}); err != nil {
+		t.Fatal(err)
+	}
+
+	command.review = func(ctx context.Context, cfg ui.MiningReviewConfig) error {
+		cfg.Report.Candidates[0].Messages[0].Content = "password=abc12345"
+		return cfg.Save()
+	}
+	if err := command.run(ctx, []string{"review", directory}); err != nil {
+		t.Fatalf("review save scanned the transcripts: %v", err)
+	}
+
+	command.review = func(context.Context, ui.MiningReviewConfig) error {
+		t.Fatal("review opened a report with a secret in its transcript")
+		return nil
+	}
+	if err := command.run(ctx, []string{"review", directory}); err == nil {
+		t.Fatal("review accepted a report with a secret in its transcript")
+	}
+}
+
+func TestMiningLeavesNoLockBesideOtherFiles(t *testing.T) {
+	command, _, _ := miningCommandFixture(t)
+	path := filepath.Join(t.TempDir(), "notes.json")
+	if err := os.WriteFile(path, []byte(`{"name":"package"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.run(context.Background(), []string{"export", path}); err == nil {
+		t.Fatal("export accepted a file that is not a report")
+	}
+	if _, err := os.Lstat(path + ".lock"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("created a lock beside another file: %v", err)
+	}
+}
+
 func TestMiningArgumentsAndOverwriteGuards(t *testing.T) {
 	command, _, _ := miningCommandFixture(t)
 	ctx := context.Background()

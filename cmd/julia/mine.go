@@ -210,8 +210,9 @@ func (c miningCommand) withReport(ctx context.Context, action string, args []str
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
 		path = filepath.Join(path, "report.json")
 	}
-	// Validate before creating the lock file, then reload under the lock.
-	if _, err := miner.Load(path); err != nil {
+	// Do not create a lock file beside something that is not a report. The full
+	// validation happens once, under the lock.
+	if err := miner.CheckFile(path); err != nil {
 		return err
 	}
 	unlock, err := lockMiningReport(path)
@@ -223,7 +224,7 @@ func (c miningCommand) withReport(ctx context.Context, action string, args []str
 	if err != nil {
 		return err
 	}
-	save := func() error { return miner.Save(path, report) }
+	save := func() error { return miner.Checkpoint(path, report) }
 	if output == "" {
 		output = filepath.Join(filepath.Dir(path), "dataset")
 	}

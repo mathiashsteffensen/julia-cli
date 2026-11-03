@@ -1,6 +1,7 @@
 package miner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -137,6 +138,118 @@ func TestLoadRejectsInvalidDecisionsAndSchemas(t *testing.T) {
 	}
 	if _, err := Load(path); err == nil {
 		t.Fatal("accepted trailing JSON")
+	}
+}
+
+func TestCheckpointRefusesInvalidProgress(t *testing.T) {
+	r, _ := testReport(t)
+	path := filepath.Join(t.TempDir(), "report.json")
+	if err := Save(path, r); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*Report)
+	}{
+		{"unknown decision", func(r *Report) { r.Candidates[0].Review.Decision = "ship" }},
+		{"rank without keep", func(r *Report) { r.Candidates[0].Review = Review{Decision: "reject", Rank: 1} }},
+		{"keep without assessment", func(r *Report) { r.Candidates[0].Review = Review{Decision: "keep", Rank: 3} }},
+		{"bad assessment", func(r *Report) {
+			r.Candidates[0].Assessment = &Assessment{Recommendation: "yes", Initiative: 1, Completion: 1, Restraint: 1}
+		}},
+		{"secret judge error", func(r *Report) { r.Candidates[0].JudgeError = "password=abc12345" }},
+		{"secret judge name", func(r *Report) { r.Judge = "password=abc12345" }},
+		{"negative usage", func(r *Report) { r.Usage.Input = -1 }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clone := *r
+			clone.Candidates = append([]Candidate(nil), r.Candidates...)
+			tc.mutate(&clone)
+			if err := Checkpoint(path, &clone); err == nil {
+				t.Fatal("checkpoint accepted invalid progress")
+			}
+			if after, _ := os.ReadFile(path); !bytes.Equal(after, saved) {
+				t.Fatal("a refused checkpoint changed the report")
+			}
+		})
+	}
+	if err := Checkpoint(path, nil); err == nil {
+		t.Fatal("checkpoint accepted no report")
+	}
+}
+
+// Checkpoint skips the transcripts to keep review fast. Load is the backstop: a
+// transcript changed in memory reaches the file, but no later command accepts it.
+func TestCheckpointSkipsTranscriptsAndLoadCatchesThem(t *testing.T) {
+	r, _ := testReport(t)
+	path := filepath.Join(t.TempDir(), "report.json")
+	if err := Save(path, r); err != nil {
+		t.Fatal(err)
+	}
+
+	r.Candidates[0].Review = Review{Decision: "defer"}
+	if err := Checkpoint(path, r); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil || loaded.Candidates[0].Review.Decision != "defer" {
+		t.Fatalf("decision did not survive: %+v %v", loaded, err)
+	}
+
+	r.Candidates[0].Messages[0].Content = "password=abc12345"
+	if err := Checkpoint(path, r); err != nil {
+		t.Fatalf("checkpoint scanned the transcripts: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("load accepted a secret in a transcript")
+	}
+}
+
+func TestValidationReportsFirstFailureInReportOrder(t *testing.T) {
+	report := syntheticReport(20, 2, 600)
+	for _, i := range []int{7, 3, 31} {
+		report.Candidates[i].Messages[0].Content = "password=abc12345"
+	}
+	for range 20 {
+		err := validateReport(report)
+		if err == nil || !strings.Contains(err.Error(), report.Candidates[3].ID) {
+			t.Fatalf("error does not name the first bad candidate: %v", err)
+		}
+	}
+}
+
+func TestCheckFile(t *testing.T) {
+	r, _ := testReport(t)
+	dir := t.TempDir()
+	report := filepath.Join(dir, "report.json")
+	if err := Save(report, r); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckFile(report); err != nil {
+		t.Fatalf("refused a report: %v", err)
+	}
+
+	files := map[string]string{"text.json": "not a report", "other.json": `{"name":"package"}`, "future.json": `{"version":99}`, "cut.json": `{"version":1,`}
+	for name, content := range files {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckFile(path); err == nil {
+			t.Errorf("accepted %s", name)
+		}
+	}
+	if err := CheckFile(filepath.Join(dir, "missing.json")); err == nil {
+		t.Error("accepted a missing file")
+	}
+	if err := CheckFile(dir); err == nil {
+		t.Error("accepted a directory")
 	}
 }
 
@@ -314,7 +427,7 @@ func TestSaveDistinguishesCommittedDurabilityFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	report.Candidates[0].Review = Review{Decision: "reject"}
-	err := saveReport(path, report, func(*os.File) error { return errors.New("directory sync failed") })
+	err := writeReport(path, report, func(*os.File) error { return errors.New("directory sync failed") })
 	var durability *DurabilityError
 	if !errors.As(err, &durability) {
 		t.Fatalf("committed failure not distinguished: %v", err)

@@ -140,6 +140,8 @@ julia mine review "$RUN"
 | q or Esc | Quit; saved decisions remain |
 
 There is no default acceptance. Each decision is saved before advancing.
+A save checks decisions and assessments. Transcripts are checked when a command
+loads the report and again at export, not on every key.
 A failure before file replacement leaves the prior decision intact. If replacement
 succeeds but the durability check fails, the UI keeps the committed vote and shows
 a warning. Judge rejection is advisory:

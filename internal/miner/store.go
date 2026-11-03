@@ -1,25 +1,49 @@
 package miner
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
+
+	"julia/internal/core"
 )
 
 const maxReportBytes = 128 * 1024 * 1024
 
-// Save atomically replaces a report with a private file. Existing symlinks and
-// non-regular destinations are refused; session files are never changed.
+// Save checks a whole report and atomically replaces its file with a private one.
+// Existing symlinks and non-regular destinations are refused; session files are
+// never changed.
 func Save(path string, report *Report) error {
-	return saveReport(path, report, func(directory *os.File) error { return directory.Sync() })
+	if err := validateReport(report); err != nil {
+		return err
+	}
+	return writeReport(path, report, flushDirectory)
 }
+
+// Checkpoint saves a report from Load after a review decision or a judge result.
+// It checks only what those change. The transcripts stay as Load checked them, and
+// scanning them again would stall the reviewer on every key. The next Load checks
+// the whole report and Export checks what it writes, so a transcript changed in
+// memory cannot pass unnoticed.
+func Checkpoint(path string, report *Report) error {
+	if err := validateProgress(report); err != nil {
+		return err
+	}
+	return writeReport(path, report, flushDirectory)
+}
+
+func flushDirectory(directory *os.File) error { return directory.Sync() }
 
 // DurabilityError means replacement succeeded, but directory sync failed. The
 // caller must keep the new state: reporting a rollback would disagree with disk.
@@ -31,10 +55,7 @@ func (e *DurabilityError) Error() string {
 
 func (e *DurabilityError) Unwrap() error { return e.Err }
 
-func saveReport(path string, report *Report, syncDirectory func(*os.File) error) error {
-	if err := validateReport(report); err != nil {
-		return err
-	}
+func writeReport(path string, report *Report, syncDirectory func(*os.File) error) error {
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return err
@@ -104,8 +125,26 @@ func checkDestination(path string) error {
 	return nil
 }
 
-// Load validates the portable report rather than trusting its saved decisions.
-func Load(path string) (*Report, error) {
+// CheckFile tells a report from any other file without scanning its transcripts.
+// A command calls it before it creates a lock file beside the path.
+func CheckFile(path string) error {
+	data, err := readReportFile(path)
+	if err != nil {
+		return err
+	}
+	var header struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return fmt.Errorf("decode report: %w", err)
+	}
+	if header.Version != Version {
+		return errors.New("invalid report header")
+	}
+	return nil
+}
+
+func readReportFile(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -125,7 +164,16 @@ func Load(path string) (*Report, error) {
 	if len(data) > maxReportBytes {
 		return nil, errors.New("report too large")
 	}
-	dec := json.NewDecoder(strings.NewReader(string(data)))
+	return data, nil
+}
+
+// Load validates the portable report rather than trusting its saved decisions.
+func Load(path string) (*Report, error) {
+	data, err := readReportFile(path)
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var report Report
 	if err := dec.Decode(&report); err != nil {
@@ -142,6 +190,16 @@ func Load(path string) (*Report, error) {
 }
 
 func validateReport(r *Report) error {
+	if err := validateEvidence(r); err != nil {
+		return err
+	}
+	return validateProgress(r)
+}
+
+// validateEvidence checks what a scan fixed: the report header and every
+// candidate's transcript. This is the slow part, because the secret patterns read
+// every transcript several times.
+func validateEvidence(r *Report) error {
 	if r == nil || r.Version != Version || r.CreatedAt.IsZero() || r.SourceDirectory == "" || r.Focus == "" {
 		return errors.New("invalid report header")
 	}
@@ -188,9 +246,6 @@ func validateReport(r *Report) error {
 			return errors.New("invalid rejection reference")
 		}
 	}
-	if r.Usage.Input < 0 || r.Usage.Output < 0 || r.Usage.CacheRead < 0 || r.Usage.CacheWrite < 0 {
-		return errors.New("negative token usage")
-	}
 	definitions := map[string]bool{}
 	for _, d := range r.Tools {
 		if d.Name == "" || definitions[d.Name] {
@@ -201,63 +256,121 @@ func validateReport(r *Report) error {
 	if SensitiveText(r.Focus) || sensitiveJSON(r.Focus) {
 		return errors.New("the focus looks like it contains a secret; rephrase it")
 	}
-	if SensitiveText(r.SourceDirectory) || SensitiveText(r.Workspace) || SensitiveText(r.Judge) {
+	if SensitiveText(r.SourceDirectory) || SensitiveText(r.Workspace) {
 		return errors.New("sensitive report metadata")
 	}
 	toolJSON, err := json.Marshal(r.Tools)
 	if err != nil || SensitiveText(string(toolJSON)) {
 		return errors.New("invalid or sensitive tool definitions")
 	}
-	ids := map[string]bool{}
+	ids := make(map[string]bool, len(r.Candidates))
 	for _, c := range r.Candidates {
-		if c.ID == "" || ids[c.ID] || !sessionIDPattern.MatchString(c.Source.SessionID) || !sessionIDPattern.MatchString(c.Source.GroupID) || c.Source.Start < 0 || c.Source.End-c.Source.Start != len(c.Messages) || len(c.Context) > c.Source.Start || c.Source.UpdatedAt.IsZero() {
+		if c.ID == "" || ids[c.ID] {
 			return errors.New("invalid candidate source")
 		}
 		ids[c.ID] = true
-		for _, s := range []string{c.ID, c.Source.Title, c.Source.Directory, c.Source.Provider, c.Source.Model, c.Feedback, c.JudgeError} {
-			if SensitiveText(s) {
-				return errors.New("sensitive candidate metadata")
-			}
-		}
-		if imagePattern.MatchString(c.Feedback) {
-			return errors.New("image in feedback")
-		}
-		if sensitiveJSON(c.Feedback) {
+	}
+	return checkCandidates(r.Candidates, func(c *Candidate) error {
+		return validateCandidateEvidence(c, r.Tools)
+	})
+}
+
+func validateCandidateEvidence(c *Candidate, tools []core.ToolDefinition) error {
+	if !sessionIDPattern.MatchString(c.Source.SessionID) || !sessionIDPattern.MatchString(c.Source.GroupID) || c.Source.Start < 0 || c.Source.End-c.Source.Start != len(c.Messages) || len(c.Context) > c.Source.Start || c.Source.UpdatedAt.IsZero() {
+		return errors.New("invalid candidate source")
+	}
+	for _, s := range []string{c.ID, c.Source.Title, c.Source.Directory, c.Source.Provider, c.Source.Model, c.Feedback} {
+		if SensitiveText(s) {
 			return errors.New("sensitive candidate metadata")
 		}
-		b, err := json.Marshal(c.Messages)
-		contextJSON, contextErr := json.Marshal(c.Context)
-		feedbackJSON, feedbackErr := json.Marshal(c.Feedback)
-		if err != nil || contextErr != nil || feedbackErr != nil || len(contextJSON)+len(b)+len(feedbackJSON) > maxTurnBytes {
-			return errors.New("candidate too large")
+	}
+	if imagePattern.MatchString(c.Feedback) {
+		return errors.New("image in feedback")
+	}
+	if sensitiveJSON(c.Feedback) {
+		return errors.New("sensitive candidate metadata")
+	}
+	b, err := json.Marshal(c.Messages)
+	contextJSON, contextErr := json.Marshal(c.Context)
+	feedbackJSON, feedbackErr := json.Marshal(c.Feedback)
+	if err != nil || contextErr != nil || feedbackErr != nil || len(contextJSON)+len(b)+len(feedbackJSON) > maxTurnBytes {
+		return errors.New("candidate too large")
+	}
+	if err := ValidateMessages(c.Messages, tools); err != nil {
+		return fmt.Errorf("invalid candidate %s: %w", c.ID, err)
+	}
+	if err := validateContext(c.Context, tools); err != nil {
+		return fmt.Errorf("invalid candidate %s context: %w", c.ID, err)
+	}
+	for _, s := range c.Signals {
+		if s == "" || SensitiveText(s) {
+			return errors.New("invalid candidate signal")
 		}
-		if err := ValidateMessages(c.Messages, r.Tools); err != nil {
-			return fmt.Errorf("invalid candidate %s: %w", c.ID, err)
+	}
+	return nil
+}
+
+// validateProgress checks what judging and reviewing change. It is cheap enough
+// to run on every checkpoint.
+func validateProgress(r *Report) error {
+	if r == nil {
+		return errors.New("invalid report header")
+	}
+	if r.Usage.Input < 0 || r.Usage.Output < 0 || r.Usage.CacheRead < 0 || r.Usage.CacheWrite < 0 {
+		return errors.New("negative token usage")
+	}
+	if SensitiveText(r.Judge) {
+		return errors.New("sensitive report metadata")
+	}
+	return checkCandidates(r.Candidates, validateCandidateProgress)
+}
+
+func validateCandidateProgress(c *Candidate) error {
+	if SensitiveText(c.JudgeError) {
+		return errors.New("sensitive candidate metadata")
+	}
+	if c.Assessment != nil {
+		if err := validateAssessment(*c.Assessment); err != nil {
+			return fmt.Errorf("invalid candidate assessment: %w", err)
 		}
-		if err := validateContext(c.Context, r.Tools); err != nil {
-			return fmt.Errorf("invalid candidate %s context: %w", c.ID, err)
+	}
+	switch c.Review.Decision {
+	case "keep":
+		if c.Review.Rank < 1 || c.Review.Rank > 5 || c.JudgeError != "" || ExportBlock(*c) != "" {
+			return errors.New("invalid keep decision")
 		}
-		for _, s := range c.Signals {
-			if s == "" || SensitiveText(s) {
-				return errors.New("invalid candidate signal")
+	case "", "reject", "defer":
+		if c.Review.Rank != 0 {
+			return errors.New("rank without keep decision")
+		}
+	default:
+		return errors.New("invalid review decision")
+	}
+	return nil
+}
+
+// checkCandidates runs check on every candidate across all cores and returns the
+// first failure in report order, so the error does not depend on scheduling.
+func checkCandidates(candidates []Candidate, check func(*Candidate) error) error {
+	failures := make([]error, len(candidates))
+	var next atomic.Int64
+	var workers sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), len(candidates)) {
+		workers.Go(func() {
+			for {
+				i := int(next.Add(1)) - 1
+				if i >= len(candidates) {
+					return
+				}
+				failures[i] = check(&candidates[i])
 			}
-		}
-		if c.Assessment != nil {
-			if err := validateAssessment(*c.Assessment); err != nil {
-				return fmt.Errorf("invalid candidate assessment: %w", err)
-			}
-		}
-		switch c.Review.Decision {
-		case "keep":
-			if c.Review.Rank < 1 || c.Review.Rank > 5 || c.JudgeError != "" || ExportBlock(c) != "" {
-				return errors.New("invalid keep decision")
-			}
-		case "", "reject", "defer":
-			if c.Review.Rank != 0 {
-				return errors.New("rank without keep decision")
-			}
-		default:
-			return errors.New("invalid review decision")
+		})
+	}
+	workers.Wait()
+
+	for _, failure := range failures {
+		if failure != nil {
+			return failure
 		}
 	}
 	return nil
