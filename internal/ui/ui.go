@@ -746,6 +746,8 @@ func (m *model) submit() tea.Cmd {
 			return m.openQuestion(QuestionRequest{Question: demoQuestion(prompt == "/ask text")}, true)
 		case "/clear":
 			next := sessions.New(m.cfg.Session.Directory, m.cfg.Session.Provider, m.cfg.Session.Model)
+			next.ConfigPath = m.cfg.Session.ConfigPath
+			next.ConfigProfile = m.cfg.Session.ConfigProfile
 			next.Reasoning = m.cfg.Session.Reasoning
 			next.ReasoningSet = m.cfg.Session.ReasoningSet
 			if m.cfg.Save != nil {

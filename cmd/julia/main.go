@@ -59,7 +59,7 @@ func run() error {
 	var cont, demo, jsonMode, showVersion bool
 	var snapshot int
 	flags.StringVar(&path, "config", configPath, "configuration file")
-	flags.StringVar(&profile, "profile", "", "configuration profile: config.<name>.json beside config.json, which is the default profile")
+	flags.StringVar(&profile, "profile", "", "configuration profile name (default: default)")
 	flags.StringVar(&dir, "dir", ".", "workspace directory")
 	flags.StringVar(&prompt, "prompt", "", "run one task without the TUI")
 	flags.StringVar(&modelFlag, "model", "", "provider/<model-id>: codex, claude, openai, anthropic, google or the id of one of your providers (bare codex uses your Codex model, bare claude Claude Code's default)")
@@ -87,26 +87,76 @@ func run() error {
 		fmt.Println("julia", version)
 		return nil
 	}
-	configSet := false
-	flags.Visit(func(f *flag.Flag) { configSet = configSet || f.Name == "config" })
+	configSet, profileSet := false, false
+	flags.Visit(func(f *flag.Flag) {
+		configSet = configSet || f.Name == "config"
+		profileSet = profileSet || f.Name == "profile"
+	})
 	initializing := slices.Equal(flags.Args(), []string{"config", "init"})
+	if profile != "" && configSet {
+		return errors.New("choose either --config or --profile")
+	}
+	if profile != "" && !config.ValidProfileName(profile) {
+		return fmt.Errorf("--profile %q is not a profile name, which is %s", profile, config.ProfileRule)
+	}
+
+	store, err := session.Default()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	dir, err = filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	dir, err = filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return errors.New("workspace must be a directory")
+	}
+
+	// Select and lock the conversation before loading any launch configuration.
+	// The post-lock read is the authority for its profile and model.
+	resuming := len(flags.Args()) == 0 && snapshot == 0 && (resume != "" || cont)
+	var s *core.Session
+	if resuming {
+		s, err = openResumeSession(store, dir, resume, cont, !demo)
+		if err != nil {
+			return err
+		}
+		if !configSet && !profileSet && s.ConfigPath != "" {
+			path, profile = s.ConfigPath, s.ConfigProfile
+			if profile == "" {
+				if _, err := os.Stat(path); err != nil {
+					return fmt.Errorf("saved configuration %s: %w", path, err)
+				}
+			}
+		}
+	}
+
 	var cfg config.Config
 	switch {
-	case profile != "" && configSet:
-		return errors.New("choose either --config or --profile")
-	case profile != "" && !config.ValidProfileName(profile):
-		return fmt.Errorf("--profile %q is not a profile name, which is %s", profile, config.ProfileRule)
 	case profile != "":
-		path = config.ProfilePath(filepath.Dir(configPath), profile)
+		profileDir := filepath.Dir(configPath)
+		if resuming && !configSet && !profileSet && s.ConfigPath != "" {
+			profileDir = filepath.Dir(s.ConfigPath)
+		}
+		path = config.ProfilePath(profileDir, profile)
 		if initializing {
 			// The profile is what config init creates.
 			cfg, err = config.Load(path)
 		} else {
-			cfg, err = config.LoadProfile(filepath.Dir(configPath), profile)
+			cfg, err = config.LoadProfile(profileDir, profile)
 		}
 	default:
 		cfg, err = config.Load(path)
 	}
+	if err != nil {
+		return err
+	}
+	path, err = filepath.Abs(path)
 	if err != nil {
 		return err
 	}
@@ -146,22 +196,6 @@ func run() error {
 	roles, err := loadRoles(path, cfg)
 	if err != nil {
 		return err
-	}
-	store, err := session.Default()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-	dir, err = filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	dir, err = filepath.EvalSymlinks(dir)
-	if err != nil {
-		return err
-	}
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		return errors.New("workspace must be a directory")
 	}
 	args := flags.Args()
 	// Consolidation is a headless task of the agent's: a pass over the notes
@@ -241,17 +275,8 @@ func run() error {
 		fmt.Print(ui.RenderDemo(snapshot, 40, demoTools...))
 		return nil
 	}
-	s := session.New(dir, cfg.Provider, cfg.Model)
-	if resume != "" && cont {
-		return errors.New("choose either --resume or --continue")
-	}
-	if resume != "" {
-		s, err = store.Load(resume)
-	} else if cont {
-		s, err = store.Latest(dir)
-	}
-	if err != nil {
-		return err
+	if s == nil {
+		s = session.New(dir, cfg.Provider, cfg.Model)
 	}
 	if demo {
 		if err := selectSessionModel(&cfg, s, dir, backend, model, reasoningSet, resume != "" || cont); err != nil {
@@ -262,20 +287,18 @@ func run() error {
 		preview.Hangup = hangup
 		return ui.Run(preview)
 	}
-	if err := store.Lock(s.ID); err != nil {
-		return err
-	}
-	if resume != "" || cont {
-		// Re-read only after locking: another process may have completed between
-		// listing/loading the session and acquiring exclusive ownership.
-		s, err = store.Load(s.ID)
-		if err != nil {
+	if !resuming {
+		if err := store.Lock(s.ID); err != nil {
 			return err
 		}
 	}
-	if err := selectSessionModel(&cfg, s, dir, backend, model, reasoningSet, resume != "" || cont); err != nil {
+	if err := selectSessionModel(&cfg, s, dir, backend, model, reasoningSet, resuming); err != nil {
 		return err
 	}
+	if !configSet && profile == "" && (profileSet || !resuming || s.ConfigPath == "") {
+		profile = config.DefaultProfile
+	}
+	s.ConfigPath, s.ConfigProfile = path, profile
 	if prompt == "" && !term.IsTerminal(os.Stdin.Fd()) {
 		return errors.New("interactive mode requires a terminal; use --prompt for headless work")
 	}
@@ -393,7 +416,7 @@ func run() error {
 			}
 		}
 		previousProvider := current.Provider
-		if err := applySessionSettings(cfg, current, selectedProvider, selectedModel, reasoning, store.Save); err != nil {
+		if err := applySessionSettings(cfg, current, selectedProvider, selectedModel, reasoning, saveSessionProfile(store.Save, current, current.ConfigPath, current.ConfigProfile, selectedProvider, selectedModel)); err != nil {
 			return err
 		}
 		// A provider switch resets the effort rather than choosing one, so it must
@@ -418,7 +441,7 @@ func run() error {
 		if err != nil {
 			return ui.ProfileSettings{}, err
 		}
-		if err := applySessionSettings(next, current, next.Provider, next.Model, next.Reasoning, store.Save); err != nil {
+		if err := applySessionSettings(next, current, next.Provider, next.Model, next.Reasoning, saveSessionProfile(store.Save, current, config.ProfilePath(configDir, name), name, next.Provider, next.Model)); err != nil {
 			return ui.ProfileSettings{}, err
 		}
 		runner.switchProfile(next)

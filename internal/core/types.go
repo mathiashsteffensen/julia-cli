@@ -101,20 +101,25 @@ type AccountUsage struct {
 type Session struct {
 	// Instructions is rebuilt from the current environment and user skills per turn.
 	// It is deliberately excluded from saved sessions.
-	Instructions string          `json:"-"`
-	ID           string          `json:"id"`
-	ParentID     string          `json:"parent_id,omitempty"`
-	Title        string          `json:"title"`
-	Directory    string          `json:"directory"`
-	Provider     string          `json:"provider"`
-	Model        string          `json:"model"`
-	Reasoning    string          `json:"reasoning,omitempty"`
-	ReasoningSet bool            `json:"reasoning_set,omitempty"`
-	Role         string          `json:"role,omitempty"`
-	RemoteID     string          `json:"remote_id,omitempty"`
-	State        json.RawMessage `json:"state,omitempty"`
-	PendingTool  *ToolCall       `json:"pending_tool,omitempty"`
-	Audit        []AuditEntry    `json:"audit,omitempty"`
+	Instructions string `json:"-"`
+	ID           string `json:"id"`
+	ParentID     string `json:"parent_id,omitempty"`
+	Title        string `json:"title"`
+	Directory    string `json:"directory"`
+	// ConfigPath is the absolute path of the active configuration. ConfigProfile
+	// names a profile to resolve in its directory; empty means an explicit file.
+	// Older sessions omit both and use the launch's default configuration.
+	ConfigPath    string          `json:"config_path,omitempty"`
+	ConfigProfile string          `json:"config_profile,omitempty"`
+	Provider      string          `json:"provider"`
+	Model         string          `json:"model"`
+	Reasoning     string          `json:"reasoning,omitempty"`
+	ReasoningSet  bool            `json:"reasoning_set,omitempty"`
+	Role          string          `json:"role,omitempty"`
+	RemoteID      string          `json:"remote_id,omitempty"`
+	State         json.RawMessage `json:"state,omitempty"`
+	PendingTool   *ToolCall       `json:"pending_tool,omitempty"`
+	Audit         []AuditEntry    `json:"audit,omitempty"`
 	// MemoryTaint names the tools that brought content from outside the
 	// user's words into this conversation so far. The model reasons from the
 	// whole conversation, so a page read in one turn can shape a note saved

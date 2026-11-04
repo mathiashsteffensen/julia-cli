@@ -311,7 +311,7 @@ func TestSandboxedApprovalKeepsExistingNetworkDisclosure(t *testing.T) {
 }
 
 func TestClearArchivesOldSessionAndResetsAllProviderState(t *testing.T) {
-	old := &core.Session{ID: "old-id", Directory: "/workspace", Provider: "codex", Model: "selected", RemoteID: "remote-thread", State: json.RawMessage(`{"history":"old"}`), PendingTool: &core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"old"}`)}, Messages: []core.Message{{Role: "user", Content: "old task"}}}
+	old := &core.Session{ID: "old-id", Directory: "/workspace", Provider: "codex", Model: "selected", ConfigPath: "/config/julia.toml", ConfigProfile: "work", RemoteID: "remote-thread", State: json.RawMessage(`{"history":"old"}`), PendingTool: &core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"old"}`)}, Messages: []core.Message{{Role: "user", Content: "old task"}}}
 	old.Reasoning = "medium"
 	var saved []*core.Session
 	m := testModel(t, Config{Session: old, Save: func(s *core.Session) error { saved = append(saved, cloneSession(s)); return nil }})
@@ -332,6 +332,11 @@ func TestClearArchivesOldSessionAndResetsAllProviderState(t *testing.T) {
 	}
 	if saved[1].ID != current.ID {
 		t.Fatal("new session was not persisted")
+	}
+	for name, session := range map[string]*core.Session{"current": current, "persisted": saved[1]} {
+		if session.ConfigPath != "/config/julia.toml" || session.ConfigProfile != "work" {
+			t.Errorf("%s session lost config metadata: path=%q profile=%q", name, session.ConfigPath, session.ConfigProfile)
+		}
 	}
 }
 

@@ -44,6 +44,10 @@ Other flags: `--model`, `--reasoning`, `--mode`, `--memory off|read|write`,
 `--timeout`, `--config`, `--profile`. Run `julia -h`
 for the full list.
 
+`--resume` and `--continue` reuse the session's saved profile or explicit config
+file. Pass `--profile` or `--config` to override it. Sessions saved before this
+metadata was added use the launch default instead.
+
 | Key                           | Action                                                                                                                 |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | Enter / Alt+Enter             | Send / new line                                                                                                        |
