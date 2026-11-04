@@ -28,6 +28,7 @@ func codexTestMessage(t *testing.T, value any) codexRPCMessage {
 	if err = json.Unmarshal(data, &message); err != nil {
 		t.Fatal(err)
 	}
+	message.receivedAt = time.Now()
 	return message
 }
 

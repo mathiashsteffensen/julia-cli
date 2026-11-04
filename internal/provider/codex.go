@@ -242,6 +242,9 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 	if err != nil {
 		return err
 	}
+	if journal.PendingContinuation != "" {
+		return errors.New("Codex interaction continuation was interrupted with an uncertain outcome; inspect the thread before starting a new session")
+	}
 	for _, entry := range journal.Calls {
 		if entry.Result == nil {
 			return fmt.Errorf("tool %s was interrupted with an uncertain outcome; inspect the workspace and start a new session before continuing", entry.Call.Name)
@@ -454,6 +457,15 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 	callStarted, toolTime := time.Now(), time.Duration(0)
 	var pending strings.Builder
 	streamed := map[string]bool{}
+	var lateInteraction *codexLateInteraction
+	var interactionResult *codexLateInteraction
+	var interactionSent time.Time
+	type bufferedText struct {
+		itemID string
+		text   string
+	}
+	var buffered []bufferedText
+	unclassified := map[string]bool{}
 	var usage codexUsageTracker
 	if b := journal.Usage; b != nil && b.Thread == session.RemoteID && !review {
 		usage = codexUsageTracker{total: b.Total, seen: true}
@@ -465,6 +477,23 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 		}
 	}
 	defer flush()
+	emitText := func(text string) {
+		pending.WriteString(text)
+		emit(core.Event{Kind: "text", Text: text})
+	}
+	flushClassified := func() {
+		for len(buffered) > 0 && !unclassified[buffered[0].itemID] {
+			emitText(buffered[0].text)
+			buffered = buffered[1:]
+		}
+	}
+	queueText := func(itemID, text string) {
+		if len(buffered) == 0 && !unclassified[itemID] {
+			emitText(text)
+			return
+		}
+		buffered = append(buffered, bufferedText{itemID: itemID, text: text})
+	}
 	// Messages the user sends mid-turn join the turn under way. Once Codex
 	// refuses one, as it does when the turn is ending, the rest wait for the
 	// next turn: taking them again would only be refused again.
@@ -554,10 +583,26 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 					} else {
 						result = previous.Result.Sendable()
 					}
-				} else if tool.Name == core.QuestionTool {
-					// No side effects and possibly a long wait: never journal it as an
-					// uncertain tool, or an interruption would strand the session.
-					result = executor.Execute(ctx, tool).Sendable()
+				} else if tool.Name == core.QuestionTool || tool.Name == core.ReviewTool {
+					// A card has no side effects, so an interruption while it is open
+					// must not leave an uncertain execution intent.
+					var completed, finalAnswer bool
+					result, completed, finalAnswer, err = client.interaction(ctx, executor, tool, session.RemoteID, turn.Turn.ID)
+					if err != nil {
+						return err
+					}
+					result = result.Sendable()
+					if !result.IsError {
+						interactionResult = &codexLateInteraction{Call: tool, Result: result}
+						if completed || finalAnswer {
+							lateInteraction = interactionResult
+						}
+					}
+					record := result.Record()
+					journal.Calls[tool.ID] = codexJournalEntry{Call: tool, Result: &record}
+					if err = saveCodexJournal(session, journal, nil); err != nil {
+						return err
+					}
 				} else {
 					journal.Calls[tool.ID] = codexJournalEntry{Call: tool}
 					if err = saveCodexJournal(session, journal, checkpoint); err != nil {
@@ -572,6 +617,11 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 						return err
 					}
 				}
+				if (tool.Name == core.QuestionTool || tool.Name == core.ReviewTool) && !result.IsError && (interactionResult == nil || interactionResult.Call.ID != tool.ID) {
+					// A replayed interaction result must get the same completion
+					// check without opening the card a second time.
+					interactionResult = &codexLateInteraction{Call: tool, Result: result}
+				}
 				emit(core.Event{Kind: "tool_end", Call: &tool, Result: &result})
 			}
 			toolTime += time.Since(toolStarted)
@@ -581,6 +631,9 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 			}
 			if err = ctx.Err(); err != nil {
 				return err
+			}
+			if interactionResult != nil && interactionResult.Call.ID == tool.ID {
+				interactionSent = time.Now()
 			}
 			if err = client.send(map[string]any{"id": message.ID, "result": map[string]any{"success": !result.IsError, "contentItems": codexContentItems(result)}}); err != nil {
 				return err
@@ -598,9 +651,10 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 			Message   string `json:"message"`
 			WillRetry bool   `json:"willRetry"`
 			Item      struct {
-				Type string `json:"type"`
-				ID   string `json:"id"`
-				Text string `json:"text"`
+				Type  string `json:"type"`
+				ID    string `json:"id"`
+				Text  string `json:"text"`
+				Phase string `json:"phase"`
 			} `json:"item"`
 			Turn struct {
 				ID     string `json:"id"`
@@ -631,13 +685,41 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 				return fmt.Errorf("Codex exposed an unexpected native capability (%s); stopped without granting approval", notification.Item.Type)
 			}
 		case "item/agentMessage/delta":
+			preResponse := interactionResult != nil && !message.receivedAt.IsZero() && message.receivedAt.Before(interactionSent)
+			if lateInteraction != nil && !preResponse {
+				continue
+			}
 			streamed[notification.ItemID] = true
-			pending.WriteString(notification.Delta)
-			emit(core.Event{Kind: "text", Text: notification.Delta})
+			if preResponse {
+				// The phase is only known at item/completed. Hold this item until
+				// then, and hold later text behind it to preserve stream order.
+				unclassified[notification.ItemID] = true
+			}
+			queueText(notification.ItemID, notification.Delta)
 		case "item/completed":
-			if notification.Item.Type == "agentMessage" && !streamed[notification.Item.ID] && notification.Item.Text != "" {
-				pending.WriteString(notification.Item.Text)
-				emit(core.Event{Kind: "text", Text: notification.Item.Text})
+			if notification.Item.Type != "agentMessage" {
+				continue
+			}
+			staleFinal := interactionResult != nil && notification.Item.Phase == "final_answer" && !message.receivedAt.IsZero() && message.receivedAt.Before(interactionSent)
+			if lateInteraction == nil && staleFinal {
+				lateInteraction = interactionResult
+			}
+			if staleFinal || (lateInteraction != nil && notification.Item.Phase != "commentary") {
+				kept := buffered[:0]
+				for _, part := range buffered {
+					if part.itemID != notification.Item.ID {
+						kept = append(kept, part)
+					}
+				}
+				buffered = kept
+			}
+			delete(unclassified, notification.Item.ID)
+			flushClassified()
+			if lateInteraction != nil && (notification.Item.Phase != "commentary" || message.receivedAt.IsZero() || !message.receivedAt.Before(interactionSent)) {
+				continue
+			}
+			if !streamed[notification.Item.ID] && notification.Item.Text != "" {
+				queueText(notification.Item.ID, notification.Item.Text)
 			}
 		case "thread/tokenUsage/updated":
 			event, counted := usage.update(notification.TokenUsage.Last, notification.TokenUsage.Total)
@@ -674,6 +756,16 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 			if notification.Turn.ID != turn.Turn.ID {
 				continue
 			}
+			if lateInteraction == nil && interactionResult != nil && !message.receivedAt.IsZero() && message.receivedAt.Before(interactionSent) {
+				lateInteraction = interactionResult
+			}
+			if lateInteraction == nil {
+				clear(unclassified)
+				flushClassified()
+			} else {
+				buffered = nil
+				clear(unclassified)
+			}
 			flush()
 			if err = checkpoint(); err != nil {
 				return fmt.Errorf("save completed turn: %w", err)
@@ -683,6 +775,42 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 					return fmt.Errorf("Codex turn %s: %s", notification.Turn.Status, notification.Turn.Error.Message)
 				}
 				return fmt.Errorf("Codex turn %s", notification.Turn.Status)
+			}
+			if lateInteraction != nil {
+				entry := journal.Calls[lateInteraction.Call.ID]
+				if entry.Continued {
+					return errors.New("Codex completed again before receiving an already continued interaction; stopped without repeating the continuation")
+				}
+				data, marshalErr := json.Marshal(lateInteraction)
+				if marshalErr != nil {
+					return marshalErr
+				}
+				turnParams["input"] = codexUserInput("JULIA system continuation: the preceding Codex turn produced a final answer or completed before it received the following human interaction result. This is the actual tool call and result, not a request to call the tool again. Continue the original task using the result.\n\n"+string(data), nil)
+				// Never automatically replay an ambiguous turn/start after a crash.
+				journal.PendingContinuation = session.RemoteID
+				if err = saveCodexJournal(session, journal, checkpoint); err != nil {
+					return fmt.Errorf("save interaction continuation intent: %w", err)
+				}
+				continuationCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+				turnData, err = client.call(continuationCtx, "turn/start", turnParams)
+				cancel()
+				if err != nil {
+					return fmt.Errorf("start interaction continuation (outcome uncertain): %w", err)
+				}
+				if json.Unmarshal(turnData, &turn) != nil || turn.Turn.ID == "" {
+					return errors.New("Codex returned no interaction continuation turn ID; outcome uncertain")
+				}
+				journal.PendingContinuation = ""
+				entry.Continued = true
+				journal.Calls[lateInteraction.Call.ID] = entry
+				if err = saveCodexJournal(session, journal, checkpoint); err != nil {
+					return fmt.Errorf("save accepted interaction continuation: %w", err)
+				}
+				lateInteraction = nil
+				interactionResult = nil
+				interactionSent = time.Time{}
+				streamed = map[string]bool{}
+				continue
 			}
 			return nil
 		}
@@ -817,9 +945,15 @@ func (t *codexUsageTracker) update(last, total codexTokenBreakdown) (core.Event,
 }
 
 type codexJournalEntry struct {
-	Call   core.ToolCall    `json:"call"`
-	Result *core.ToolResult `json:"result,omitempty"`
+	Call      core.ToolCall    `json:"call"`
+	Result    *core.ToolResult `json:"result,omitempty"`
+	Continued bool             `json:"continued,omitempty"`
 }
+type codexLateInteraction struct {
+	Call   core.ToolCall   `json:"call"`
+	Result core.ToolResult `json:"result"`
+}
+
 type codexJournal struct {
 	Kind            string   `json:"kind"`
 	ToolCatalog     string   `json:"tool_catalog,omitempty"`
@@ -828,10 +962,11 @@ type codexJournal struct {
 	// PendingTurn is the thread a prompt, already saved last in the session,
 	// was being sent to. Set until Codex accepts the turn, it outlives a
 	// crash in between, and the next turn then repeats that prompt.
-	PendingTurn   string                                  `json:"pending_turn,omitempty"`
-	Calls         map[string]codexJournalEntry            `json:"calls"`
-	ArchivedCalls map[string]map[string]codexJournalEntry `json:"archived_calls,omitempty"`
-	Usage         *codexUsageBaseline                     `json:"usage,omitempty"`
+	PendingTurn         string                                  `json:"pending_turn,omitempty"`
+	PendingContinuation string                                  `json:"pending_continuation,omitempty"`
+	Calls               map[string]codexJournalEntry            `json:"calls"`
+	ArchivedCalls       map[string]map[string]codexJournalEntry `json:"archived_calls,omitempty"`
+	Usage               *codexUsageBaseline                     `json:"usage,omitempty"`
 }
 
 // Codex only accepts dynamicTools on thread/start. Fingerprint the whole catalog
@@ -914,11 +1049,12 @@ func isolatedCodexConfig(data []byte) (map[string]any, error) {
 }
 
 type codexRPCMessage struct {
-	ID     json.RawMessage `json:"id"`
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params"`
-	Result json.RawMessage `json:"result"`
-	Error  *struct {
+	receivedAt time.Time
+	ID         json.RawMessage `json:"id"`
+	Method     string          `json:"method"`
+	Params     json.RawMessage `json:"params"`
+	Result     json.RawMessage `json:"result"`
+	Error      *struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`
@@ -983,6 +1119,7 @@ func startCodex(ctx context.Context, binary, directory string) (*codexClient, er
 		for scanner.Scan() {
 			var message codexRPCMessage
 			err := json.Unmarshal(scanner.Bytes(), &message)
+			message.receivedAt = time.Now()
 			select {
 			case incoming <- codexRead{Message: message, Err: err}:
 			case <-done:
@@ -1003,6 +1140,81 @@ func startCodex(ctx context.Context, binary, directory string) (*codexClient, er
 	}()
 	return &codexClient{input: input, incoming: incoming, stop: func() { close(done); cancel(); _ = input.Close(); _ = output.Close(); _ = cmd.Wait() }}, nil
 }
+
+// interaction keeps reading the app-server while a human card is open. Events
+// remain ordered for the main loop. A completed turn or explicit final answer
+// in that queue cannot have consumed the response, which has not been sent yet.
+func (c *codexClient) interaction(ctx context.Context, executor core.ToolExecutor, tool core.ToolCall, threadID, turnID string) (core.ToolResult, bool, bool, error) {
+	interactionCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	resultCh := make(chan core.ToolResult, 1)
+	go func() { resultCh <- executor.Execute(interactionCtx, tool) }()
+
+	completed, finalAnswer := false, false
+	inspect := func(message codexRPCMessage) {
+		if message.Method != "turn/completed" && message.Method != "item/completed" {
+			return
+		}
+		var event struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+			Item     struct {
+				Type  string `json:"type"`
+				Phase string `json:"phase"`
+			} `json:"item"`
+			Turn struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+			} `json:"turn"`
+		}
+		if json.Unmarshal(message.Params, &event) != nil || (event.ThreadID != "" && event.ThreadID != threadID) {
+			return
+		}
+		if message.Method == "turn/completed" && event.Turn.ID == turnID && event.Turn.Status == "completed" {
+			completed = true
+		}
+		if message.Method == "item/completed" && (event.TurnID == "" || event.TurnID == turnID) && event.Item.Type == "agentMessage" && event.Item.Phase == "final_answer" {
+			finalAnswer = true
+		}
+	}
+	for _, message := range c.queued {
+		inspect(message)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return core.ToolResult{}, false, false, ctx.Err()
+		case result := <-resultCh:
+			// Drain what the reader has already received before the result can be
+			// sent. This also resolves a simultaneous answer and notification.
+			for {
+				select {
+				case incoming, ok := <-c.incoming:
+					if !ok {
+						return core.ToolResult{}, false, false, io.EOF
+					}
+					if incoming.Err != nil {
+						return core.ToolResult{}, false, false, incoming.Err
+					}
+					inspect(incoming.Message)
+					c.queued = append(c.queued, incoming.Message)
+				default:
+					return result, completed, finalAnswer, nil
+				}
+			}
+		case incoming, ok := <-c.incoming:
+			if !ok {
+				return core.ToolResult{}, false, false, io.EOF
+			}
+			if incoming.Err != nil {
+				return core.ToolResult{}, false, false, incoming.Err
+			}
+			inspect(incoming.Message)
+			c.queued = append(c.queued, incoming.Message)
+		}
+	}
+}
+
 func (c *codexClient) close() {
 	c.once.Do(func() {
 		if c.stop != nil {

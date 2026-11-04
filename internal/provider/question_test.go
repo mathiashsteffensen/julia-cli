@@ -86,8 +86,12 @@ func TestCodexQuestionIsNotJournaledAsAnUncertainTool(t *testing.T) {
 	session := &core.Session{Directory: t.TempDir()}
 	tools := &questionTools{session: session}
 	var intents []string
+	turns := 0
 	f.turn = func(f *codexFixture) {
-		f.push(map[string]any{"id": 21, "method": "item/tool/call", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "callId": call.ID, "tool": call.Name, "arguments": call.Arguments}})
+		turns++
+		if turns == 1 {
+			f.push(map[string]any{"id": 21, "method": "item/tool/call", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "callId": call.ID, "tool": call.Name, "arguments": call.Arguments}})
+		}
 		f.finish("completed")
 	}
 	backend := &Codex{start: f.start}
