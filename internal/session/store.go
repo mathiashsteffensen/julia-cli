@@ -68,7 +68,7 @@ func (s *Store) Save(v *core.Session) error {
 	}
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("encode session: %w", err)
 	}
 	f, err := os.CreateTemp(s.Directory, ".session-*")
 	if err != nil {

@@ -273,7 +273,9 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 		started, elapsed := time.Now(), time.Duration(0)
 		_, err := agent.Stream(ctx, fantasy.AgentStreamCall{
 			Messages: a.request(history),
-			OnRetry:  func(*fantasy.ProviderError, time.Duration) { started = time.Now() },
+			// On the call: Stream does not read fantasy.WithRepairToolCall.
+			RepairToolCall: refuseToolCallRepair,
+			OnRetry:        func(*fantasy.ProviderError, time.Duration) { started = time.Now() },
 			OnTextDelta: func(_ string, text string) error {
 				partial.WriteString(text)
 				emit(core.Event{Kind: "text", Text: text})
@@ -317,6 +319,12 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 		}
 		if completed == nil {
 			return errors.New("provider ended without a completed response")
+		}
+		var malformed []string
+		completed.Messages, malformed = quarantineMalformedArguments(completed.Messages)
+		completed.Messages = completeUnansweredToolCalls(completed.Messages, completed.FinishReason)
+		for _, tool := range malformed {
+			emit(core.Event{Kind: "warning", Text: fmt.Sprintf("The model sent %s arguments that are not valid JSON. The call did not run.", tool)})
 		}
 		// Every saved history is elided, so only this step can add an image too many.
 		history = elideToolImages(append(history, completed.Messages...), keepImages, "elided")
@@ -847,6 +855,80 @@ func toolResponse(result core.ToolResult) fantasy.ToolResponse {
 		}
 	}
 	return response
+}
+
+// refuseToolCallRepair turns off fantasy's default repair, which guesses what
+// malformed arguments meant and runs the tool with the guess. A guess can change
+// what runs: it drops the last newline of a file's content. Without a repair, the
+// model gets the validation error as the tool's result and can send the call again.
+func refuseToolCallRepair(context.Context, fantasy.ToolCallRepairOptions) (*fantasy.ToolCallContent, error) {
+	return nil, errors.New("tool call repair is off")
+}
+
+// quarantineMalformedArguments replaces tool-call arguments that are not JSON with
+// a JSON object that holds their text as a string, and returns the names of those
+// tools. The transcript stores arguments as raw JSON, so one such call would fail
+// every later checkpoint, and a server that parses arguments would reject every
+// later request. The text stays for the model to correct and for diagnosis, as
+// private as the valid arguments beside it in the session file.
+func quarantineMalformedArguments(messages []fantasy.Message) ([]fantasy.Message, []string) {
+	var tools []string
+
+	quarantined := rewriteParts(messages, func(part fantasy.MessagePart) (fantasy.MessagePart, bool) {
+		call, isCall := part.(fantasy.ToolCallPart)
+		if !isCall || json.Valid([]byte(call.Input)) {
+			return part, false
+		}
+
+		// Encoding a map of strings cannot fail.
+		input, _ := json.Marshal(map[string]string{"invalid_arguments": call.Input})
+		call.Input = string(input)
+		tools = append(tools, call.ToolName)
+
+		return call, true
+	})
+
+	return quarantined, tools
+}
+
+// completeUnansweredToolCalls closes client calls that the agent did not dispatch,
+// so a later request does not contain tool calls without their required results.
+// Provider-executed calls and existing results remain untouched.
+func completeUnansweredToolCalls(messages []fantasy.Message, reason fantasy.FinishReason) []fantasy.Message {
+	answered := make(map[string]bool)
+	for _, message := range messages {
+		for _, part := range message.Content {
+			if result, ok := part.(fantasy.ToolResultPart); ok {
+				answered[result.ToolCallID] = true
+			}
+		}
+	}
+
+	var missing []fantasy.MessagePart
+	for _, message := range messages {
+		for _, part := range message.Content {
+			call, ok := part.(fantasy.ToolCallPart)
+			if !ok || call.ProviderExecuted || answered[call.ToolCallID] {
+				continue
+			}
+			missing = append(missing, fantasy.ToolResultPart{
+				ToolCallID: call.ToolCallID,
+				Output: fantasy.ToolResultOutputContentError{
+					Error: fmt.Errorf("tool call did not run: provider finished with %s", reason),
+				},
+			})
+			answered[call.ToolCallID] = true
+		}
+	}
+	if len(missing) == 0 {
+		return messages
+	}
+	if last := len(messages) - 1; last >= 0 && messages[last].Role == fantasy.MessageRoleTool {
+		messages = append([]fantasy.Message(nil), messages...)
+		messages[last].Content = append(append([]fantasy.MessagePart(nil), messages[last].Content...), missing...)
+		return messages
+	}
+	return append(messages, fantasy.Message{Role: fantasy.MessageRoleTool, Content: missing})
 }
 
 func appendTranscript(s *core.Session, messages []fantasy.Message) {

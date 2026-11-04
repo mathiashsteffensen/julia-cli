@@ -26,7 +26,7 @@ var memoryActions = []string{"save", "read", "forget", "list"}
 
 // MemoryDefinition describes the tool that keeps notes between sessions. It
 // is not a workspace tool: the notes live beside JULIA's own state, outside
-// the workspace and out of reach of the file tools, so it is registered by
+// the workspace, with their own approval rules, so it is registered by
 // WithMemory rather than Definitions.
 func MemoryDefinition() core.ToolDefinition {
 	return core.ToolDefinition{
@@ -137,6 +137,9 @@ func readsAgentInstructions(call core.ToolCall, result core.ToolResult, workspac
 	}
 	json.Unmarshal(call.Arguments, &args)
 	for _, name := range []string{args.Path, args.Glob} {
+		if relative, inside := memoryWorkspacePath(name, workspace); inside {
+			name = relative
+		}
 		if name != "" && agentInstructions(name) {
 			return filepath.ToSlash(filepath.Clean(name)), true
 		}
@@ -282,6 +285,7 @@ func (e *Memory) Tainted() []string {
 func (e *Memory) observe(call core.ToolCall, result core.ToolResult) {
 	var args struct {
 		Action      string `json:"action"`
+		Path        string `json:"path"`
 		Network     bool   `json:"network"`
 		Permissions string `json:"sandbox_permissions"`
 	}
@@ -291,6 +295,10 @@ func (e *Memory) observe(call core.ToolCall, result core.ToolResult) {
 	switch call.Name {
 	case "WebFetch", "WebSearch", "Browser", "Slack", "Linear", "GitHub", "Mail", "Subagent":
 		source = call.Name
+	case "Read", "List", "Grep", "Edit", "MultiEdit", "Write":
+		if _, inside := memoryWorkspacePath(args.Path, e.options.Workspace); !inside {
+			source = call.Name + " outside the workspace"
+		}
 	case "Bash":
 		switch {
 		case unsandboxed:
@@ -671,6 +679,21 @@ func (e *Memory) authorize(ctx context.Context, call core.ToolCall, args memoryA
 	return nil
 }
 
+// memoryWorkspacePath mirrors the file tools' workspace spellings without
+// resolving the requested path. Only the trusted workspace may be a symlink.
+func memoryWorkspacePath(path, workspace string) (string, bool) {
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) {
+		return path, true
+	}
+	base, err := filepath.Abs(workspace)
+	if err != nil || workspace == "" {
+		return "", false
+	}
+	resolved, _ := filepath.EvalSymlinks(base)
+	return workspaceRelative(path, base, resolved)
+}
+
 // deliver appends to a tool's result the notes anchored to what it just did:
 // the lesson is read at the moment it applies, which an index at the top of
 // the instructions cannot promise. A Bash command is matched against command
@@ -696,9 +719,13 @@ func (e *Memory) deliver(call core.ToolCall, result *core.ToolResult) {
 		if json.Unmarshal(call.Arguments, &args) != nil || args.Path == "" {
 			return
 		}
-		// The model may write ./a or a//b; the executor cleans it, and so must the cue.
-		path := filepath.ToSlash(filepath.Clean(args.Path))
-		cue = func(t memory.Triggers) bool { return t.MatchesPath(path) }
+		// Absolute workspace paths must deliver the same notes as relative paths.
+		// External paths do not inherit this workspace's path cues.
+		path, inside := memoryWorkspacePath(args.Path, e.options.Workspace)
+		if !inside {
+			return
+		}
+		cue = func(t memory.Triggers) bool { return t.MatchesPath(filepath.ToSlash(path)) }
 	default:
 		return
 	}

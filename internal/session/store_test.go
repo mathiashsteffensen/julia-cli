@@ -1,8 +1,12 @@
 package session
 
 import (
+	"encoding/json"
 	"os"
+	"strings"
 	"testing"
+
+	"julia/internal/core"
 )
 
 func TestPersistenceAndConfinement(t *testing.T) {
@@ -28,6 +32,29 @@ func TestPersistenceAndConfinement(t *testing.T) {
 	v.ID = "../bad"
 	if err = s.Save(v); err == nil {
 		t.Fatal("accepted traversal on save")
+	}
+}
+
+func TestSaveFailureNamesTheSessionAndKeepsTheLastCheckpoint(t *testing.T) {
+	s := &Store{Directory: t.TempDir()}
+	defer s.Close()
+
+	v := New("/workspace", "compatible", "")
+	v.Title = "Last good checkpoint"
+	if err := s.Save(v); err != nil {
+		t.Fatal(err)
+	}
+
+	v.Title = "Never saved"
+	v.Messages = []core.Message{{Role: "assistant", ToolCalls: []core.ToolCall{{ID: "call", Name: "List", Arguments: json.RawMessage("{\"path\":\"a\nb\"}")}}}}
+	err := s.Save(v)
+	if err == nil || !strings.HasPrefix(err.Error(), "encode session: ") {
+		t.Fatalf("got %v, want an error that names the session encoding", err)
+	}
+
+	saved, loadErr := s.Load(v.ID)
+	if loadErr != nil || saved.Title != "Last good checkpoint" {
+		t.Fatalf("failed save changed the checkpoint: %+v %v", saved, loadErr)
 	}
 }
 

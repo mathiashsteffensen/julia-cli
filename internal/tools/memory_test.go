@@ -253,6 +253,48 @@ func TestMemoryDeliversAnchoredNotesWithToolResults(t *testing.T) {
 	}
 }
 
+func TestMemoryAbsoluteFilePaths(t *testing.T) {
+	store := &memory.Store{Directory: t.TempDir()}
+	// A workspace ancestor is not part of the requested file's relative path.
+	workspace := filepath.Join(t.TempDir(), ".claude", "worktrees", "workspace")
+	if err := os.MkdirAll(workspace, 0700); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	note := &memory.Note{
+		Name: "path-cue", Description: "Workspace file guidance", Type: memory.TypeFeedback,
+		Scope:    memory.Scope{Kind: memory.ScopeWorkspace, Workspace: workspace},
+		Triggers: memory.Triggers{Paths: []string{"internal/**"}},
+	}
+	if err := store.Save(note); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, path string
+		outside    bool
+	}{
+		{"relative", "internal/file.go", false},
+		{"absolute", filepath.Join(workspace, "internal/file.go"), false},
+		{"resolved", filepath.Join(resolved, "internal/file.go"), false},
+		{"external", filepath.Join(workspace+"-sibling", "internal/file.go"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapped := WithMemory(stubTools{"ok"}, MemoryOptions{Store: store, Workspace: workspace})
+			raw, _ := json.Marshal(map[string]any{"path": tc.path})
+			got := wrapped.Execute(context.Background(), core.ToolCall{Name: "Read", Arguments: raw})
+			if strings.Contains(got.Content, "[Memory · path-cue]") == tc.outside {
+				t.Fatalf("wrong path cue: %s", got.Content)
+			}
+			if tainted := wrapped.Tainted(); (len(tainted) != 0) != tc.outside {
+				t.Fatalf("wrong outside-content tracking: %v", tainted)
+			}
+		})
+	}
+}
+
 func TestMemoryTaintedSavesNeedTheUser(t *testing.T) {
 	store := &memory.Store{Directory: t.TempDir()}
 	workspace := t.TempDir()

@@ -16,9 +16,9 @@ import (
 )
 
 // parentNoFollow pins every path component by descriptor and refuses symlinks
-// atomically at open time. os.Root holds the original workspace identity; openat
+// atomically at open time. os.Root holds the selected filesystem root; openat
 // with O_NOFOLLOW prevents a path-check/open race into a protected directory.
-func (e *Executor) parentNoFollow(name string, create bool) (*os.File, string, error) {
+func (e *fileSystem) parentNoFollow(name string, create bool) (*os.File, string, error) {
 	current, err := e.root.Open(".")
 	if err != nil {
 		return nil, "", err
@@ -53,7 +53,7 @@ func (e *Executor) parentNoFollow(name string, create bool) (*os.File, string, e
 	}
 	return current, base, nil
 }
-func (e *Executor) openNoFollow(name string) (*os.File, error) {
+func (e *fileSystem) openNoFollow(name string) (*os.File, error) {
 	parent, base, err := e.parentNoFollow(name, false)
 	if err != nil {
 		return nil, err
@@ -65,7 +65,7 @@ func (e *Executor) openNoFollow(name string) (*os.File, error) {
 	}
 	return os.NewFile(uintptr(fd), name), nil
 }
-func (e *Executor) atomicWriteNoFollow(name string, b []byte, mode os.FileMode) error {
+func (e *fileSystem) atomicWriteNoFollow(name string, b []byte, mode os.FileMode) error {
 	parent, base, err := e.parentNoFollow(name, true)
 	if err != nil {
 		return err
@@ -100,7 +100,7 @@ func (e *Executor) atomicWriteNoFollow(name string, b []byte, mode os.FileMode) 
 }
 
 // walk never follows a directory symlink, even if it changes after enumeration.
-func (e *Executor) walk(name string, fn fs.WalkDirFunc) error {
+func (e *fileSystem) walk(name string, fn fs.WalkDirFunc) error {
 	f, err := e.openNoFollow(name)
 	if err != nil {
 		return err

@@ -1,5 +1,5 @@
-// Package tools provides provider-independent JULIA tools. All file
-// access is rooted in the workspace. Shell execution is sandboxed by default;
+// Package tools provides provider-independent JULIA tools. File access outside
+// the workspace requires approval. Shell execution is sandboxed by default;
 // leaving the sandbox requires an explicitly requested and approved command.
 package tools
 
@@ -69,8 +69,8 @@ type Config struct {
 	Mail MailConfig
 }
 type Executor struct {
+	fileSystem
 	config    Config
-	root      *os.Root
 	directory string
 	mu        sync.Mutex
 	goEnv     *goEnvironment
@@ -125,6 +125,7 @@ func New(c Config) (*Executor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("workspace: %w", err)
 	}
+	c.Directory = dir // Keep the configured spelling of a symlinked workspace too.
 	dir, err = filepath.EvalSymlinks(dir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace: %w", err)
@@ -133,7 +134,7 @@ func New(c Config) (*Executor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open workspace: %w", err)
 	}
-	return &Executor{config: c, root: root, directory: dir, envKey: c.SearchKey}, nil
+	return &Executor{config: c, fileSystem: fileSystem{root: root}, directory: dir, envKey: c.SearchKey}, nil
 }
 func (e *Executor) Close() error {
 	e.mu.Lock()
@@ -187,15 +188,15 @@ func Definitions(roles []agents.Role, linear, mail, github bool) []core.ToolDefi
 }
 
 func definitions(roles []agents.Role, slack bool, slackOwner string, linear, mail, github bool) []core.ToolDefinition {
-	path := str("Workspace-relative path. Absolute paths, symlinks and protected credential/git paths are forbidden.")
+	path := str("Workspace-relative or absolute path. Inside the workspace, both use the same rules. Outside paths need review in auto mode, human approval in ask mode, and are blocked in read-only mode; yolo grants them. Symlinks, parent traversal and protected credential/git paths are forbidden.")
 	edits := map[string]any{"type": "array", "minItems": 1, "maxItems": 100, "items": schema(map[string]any{"old_string": str("Nonempty exact text occurring once"), "new_string": str("Replacement text")}, "old_string", "new_string")}
 	// Reading, editing, running, then the web: the sidebar packs the names in
 	// this order, so its rows group them the same way.
 	definitions := []core.ToolDefinition{
 		{Name: "Read", Description: "Read a UTF-8 text file with numbered lines. Defaults to 200 lines; at most 1000 lines and 32 KiB output.", Parameters: schema(map[string]any{"path": path, "offset": integer("First line, 1-based; default 1"), "limit": integer("Line count; default 200, max 1000")}, "path")},
 		viewImageDefinition(),
-		{Name: "List", Description: "List workspace entries, excluding symlinks and protected paths. Defaults to depth 1; maximum depth 5 and 2000 entries.", Parameters: schema(map[string]any{"path": str("Workspace-relative directory, default ."), "depth": integer("Depth 1–5, default 1")})},
-		{Name: "Grep", Description: "Search text with ripgrep regex, without following symlinks or reading protected files. Scans up to 16 MiB of files, each at most 4 MiB; output capped at 32 KiB.", Parameters: schema(map[string]any{"pattern": str("Ripgrep regex"), "path": str("Workspace-relative file/directory, default ."), "glob": str("Optional filename glob such as *.go"), "ignore_case": map[string]any{"type": "boolean"}}, "pattern")},
+		{Name: "List", Description: "List directory entries, excluding symlinks and protected paths. Defaults to depth 1; maximum depth 5 and 2000 entries.", Parameters: schema(map[string]any{"path": str("Directory, default .; accepts workspace-relative or absolute paths. Outside-workspace access follows the approval rules of Read."), "depth": integer("Depth 1–5, default 1")})},
+		{Name: "Grep", Description: "Search text with ripgrep regex, without following symlinks or reading protected files. Scans up to 16 MiB of files, each at most 4 MiB; output capped at 32 KiB.", Parameters: schema(map[string]any{"pattern": str("Ripgrep regex"), "path": str("File/directory, default .; accepts workspace-relative or absolute paths. Outside-workspace access follows the approval rules of Read."), "glob": str("Optional filename glob such as *.go"), "ignore_case": map[string]any{"type": "boolean"}}, "pattern")},
 		{Name: "Edit", Description: "Atomically replace one unique exact string in one file. Fails if old_string is absent or ambiguous. Maximum file size 4 MiB.", Parameters: schema(map[string]any{"path": path, "old_string": str("Nonempty exact text occurring once"), "new_string": str("Replacement text")}, "path", "old_string", "new_string")},
 		{Name: "MultiEdit", Description: "Apply ordered exact replacements to ONE file atomically. Every old_string must occur exactly once at its step; any failure leaves the file untouched.", Parameters: schema(map[string]any{"path": path, "edits": edits}, "path", "edits")},
 		{Name: "Write", Description: "Atomically create or replace a UTF-8 file up to 4 MiB; creates parent directories.", Parameters: schema(map[string]any{"path": path, "content": str("Complete file contents")}, "path", "content")},
@@ -269,15 +270,15 @@ func (e *Executor) execute(ctx context.Context, call core.ToolCall, scope int) c
 	var err error
 	switch call.Name {
 	case "Read":
-		content, err = e.read(call)
+		content, err = e.read(ctx, call)
 	case "ViewImage":
-		// Reads only, like Read, so every mode allows it.
+		// Workspace and scratch images are readable in every mode.
 		var result core.ToolResult
 		if result, err = e.viewImage(ctx, call); err == nil {
 			return result
 		}
 	case "List":
-		content, err = e.list(call)
+		content, err = e.list(ctx, call)
 	case "Grep":
 		content, err = e.grep(ctx, call)
 	case "WebSearch":
@@ -297,13 +298,7 @@ func (e *Executor) execute(ctx context.Context, call core.ToolCall, scope int) c
 			err = errors.New("read-only mode prohibits file changes")
 			break
 		}
-		if e.config.Mode == "ask" {
-			err = e.authorize(ctx, call, false, false)
-			if err != nil {
-				break
-			}
-		}
-		content, err = e.modify(call)
+		content, err = e.modify(ctx, call)
 	case "Bash":
 		content, err = e.bash(ctx, call)
 	case "Terminal":
@@ -346,25 +341,14 @@ func protected(name string) bool {
 	}
 	return false
 }
-func (e *Executor) path(name string, allowRoot bool) (string, error) {
-	if name == "" {
-		if allowRoot {
-			name = "."
-		} else {
-			return "", errors.New("path is required")
-		}
+func (e *fileSystem) path(name string, allowRoot bool) (string, error) {
+	var err error
+	name, err = cleanFilePath(name, allowRoot)
+	if err != nil {
+		return "", err
 	}
-	if filepath.IsAbs(name) || strings.ContainsRune(name, 0) {
+	if filepath.IsAbs(name) {
 		return "", errors.New("path must be workspace-relative")
-	}
-	for _, part := range strings.Split(filepath.ToSlash(name), "/") {
-		if part == ".." {
-			return "", errors.New("parent traversal is forbidden")
-		}
-	}
-	name = filepath.Clean(name)
-	if name == "." && !allowRoot {
-		return "", errors.New("file path is required")
 	}
 	if protected(name) {
 		return "", errors.New("protected credential or metadata path is forbidden")
@@ -385,7 +369,7 @@ func (e *Executor) path(name string, allowRoot bool) (string, error) {
 	}
 	return name, nil
 }
-func (e *Executor) readFile(name string) ([]byte, os.FileMode, error) {
+func (e *fileSystem) readFile(name string) ([]byte, os.FileMode, error) {
 	f, err := e.openNoFollow(name)
 	if err != nil {
 		return nil, 0, fmt.Errorf("open %s: %w", name, err)
@@ -413,7 +397,7 @@ func (e *Executor) readFile(name string) ([]byte, os.FileMode, error) {
 	}
 	return b, info.Mode().Perm(), nil
 }
-func (e *Executor) read(call core.ToolCall) (string, error) {
+func (e *Executor) read(ctx context.Context, call core.ToolCall) (string, error) {
 	var a struct {
 		Path   string `json:"path"`
 		Offset int    `json:"offset"`
@@ -422,10 +406,12 @@ func (e *Executor) read(call core.ToolCall) (string, error) {
 	if err := decode(call.Arguments, &a); err != nil {
 		return "", err
 	}
-	name, err := e.path(a.Path, false)
+	target, err := e.fileTarget(ctx, call, a.Path, false)
 	if err != nil {
 		return "", err
 	}
+	defer target.close()
+	name := target.name
 	if a.Offset == 0 {
 		a.Offset = 1
 	}
@@ -435,7 +421,7 @@ func (e *Executor) read(call core.ToolCall) (string, error) {
 	if a.Offset < 1 || a.Limit < 1 || a.Limit > 1000 {
 		return "", errors.New("offset must be positive; limit must be between 1 and 1000")
 	}
-	b, _, err := e.readFile(name)
+	b, _, err := target.readFile(name)
 	if err != nil {
 		return "", err
 	}
@@ -475,9 +461,9 @@ func requireFields(raw json.RawMessage, fields ...string) error {
 	return nil
 }
 
-func (e *Executor) modify(call core.ToolCall) (string, error) {
-	var name, content string
-	mode := os.FileMode(0644)
+func (e *Executor) modify(ctx context.Context, call core.ToolCall) (string, error) {
+	var rawPath, content string
+	var edits []replacement
 	if call.Name == "Write" {
 		var a struct {
 			Path    string `json:"path"`
@@ -486,13 +472,50 @@ func (e *Executor) modify(call core.ToolCall) (string, error) {
 		if err := decode(call.Arguments, &a); err != nil {
 			return "", err
 		}
-		var err error
-		name, err = e.path(a.Path, false)
-		if err != nil {
+		rawPath, content = a.Path, a.Content
+	} else if call.Name == "Edit" {
+		var a struct {
+			Path string `json:"path"`
+			Old  string `json:"old_string"`
+			New  string `json:"new_string"`
+		}
+		if err := decode(call.Arguments, &a); err != nil {
 			return "", err
 		}
-		content = a.Content
-		if info, err := e.root.Lstat(name); err == nil {
+		rawPath = a.Path
+		edits = []replacement{{a.Old, a.New}}
+	} else {
+		var a struct {
+			Path  string        `json:"path"`
+			Edits []replacement `json:"edits"`
+		}
+		if err := decode(call.Arguments, &a); err != nil {
+			return "", err
+		}
+		var wire struct {
+			Edits []json.RawMessage `json:"edits"`
+		}
+		_ = json.Unmarshal(call.Arguments, &wire)
+		for i, raw := range wire.Edits {
+			if err := requireFields(raw, "old_string", "new_string"); err != nil {
+				return "", fmt.Errorf("edit %d: %w", i+1, err)
+			}
+		}
+		if len(a.Edits) == 0 || len(a.Edits) > 100 {
+			return "", errors.New("provide between 1 and 100 edits")
+		}
+		rawPath, edits = a.Path, a.Edits
+	}
+
+	target, err := e.fileTarget(ctx, call, rawPath, false)
+	if err != nil {
+		return "", err
+	}
+	defer target.close()
+	name := target.name
+	mode := os.FileMode(0644)
+	if call.Name == "Write" {
+		if info, err := target.root.Lstat(name); err == nil {
 			if !info.Mode().IsRegular() {
 				return "", errors.New("destination must be a regular file")
 			}
@@ -501,49 +524,8 @@ func (e *Executor) modify(call core.ToolCall) (string, error) {
 			return "", err
 		}
 	} else {
-		var edits []replacement
-		var rawPath string
-		if call.Name == "Edit" {
-			var a struct {
-				Path string `json:"path"`
-				Old  string `json:"old_string"`
-				New  string `json:"new_string"`
-			}
-			if err := decode(call.Arguments, &a); err != nil {
-				return "", err
-			}
-			rawPath = a.Path
-			edits = []replacement{{a.Old, a.New}}
-		} else {
-			var a struct {
-				Path  string        `json:"path"`
-				Edits []replacement `json:"edits"`
-			}
-			if err := decode(call.Arguments, &a); err != nil {
-				return "", err
-			}
-			var wire struct {
-				Edits []json.RawMessage `json:"edits"`
-			}
-			_ = json.Unmarshal(call.Arguments, &wire)
-			for i, raw := range wire.Edits {
-				if err := requireFields(raw, "old_string", "new_string"); err != nil {
-					return "", fmt.Errorf("edit %d: %w", i+1, err)
-				}
-			}
-			rawPath = a.Path
-			edits = a.Edits
-		}
-		if len(edits) == 0 || len(edits) > 100 {
-			return "", errors.New("provide between 1 and 100 edits")
-		}
-		var err error
-		name, err = e.path(rawPath, false)
-		if err != nil {
-			return "", err
-		}
 		var b []byte
-		b, mode, err = e.readFile(name)
+		b, mode, err = target.readFile(name)
 		if err != nil {
 			return "", err
 		}
@@ -565,15 +547,15 @@ func (e *Executor) modify(call core.ToolCall) (string, error) {
 	if len(content) > maxFile || !utf8.ValidString(content) || strings.ContainsRune(content, 0) {
 		return "", errors.New("content must be UTF-8 text no larger than 4 MiB")
 	}
-	if err := e.atomicWrite(name, []byte(content), mode); err != nil {
+	if err := target.atomicWrite(name, []byte(content), mode); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s: wrote %d bytes", name, len(content)), nil
+	return fmt.Sprintf("%s: wrote %d bytes", target.display(name), len(content)), nil
 }
-func (e *Executor) atomicWrite(name string, b []byte, mode os.FileMode) error {
+func (e *fileSystem) atomicWrite(name string, b []byte, mode os.FileMode) error {
 	return e.atomicWriteNoFollow(name, b, mode)
 }
-func (e *Executor) list(call core.ToolCall) (string, error) {
+func (e *Executor) list(ctx context.Context, call core.ToolCall) (string, error) {
 	var a struct {
 		Path  string `json:"path"`
 		Depth int    `json:"depth"`
@@ -581,10 +563,12 @@ func (e *Executor) list(call core.ToolCall) (string, error) {
 	if err := decode(call.Arguments, &a); err != nil {
 		return "", err
 	}
-	name, err := e.path(a.Path, true)
+	target, err := e.fileTarget(ctx, call, a.Path, true)
 	if err != nil {
 		return "", err
 	}
+	defer target.close()
+	name := target.name
 	if a.Depth == 0 {
 		a.Depth = 1
 	}
@@ -593,7 +577,7 @@ func (e *Executor) list(call core.ToolCall) (string, error) {
 	}
 	var out strings.Builder
 	count := 0
-	err = e.walk(name, func(path string, d fs.DirEntry, walkErr error) error {
+	err = target.walk(name, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -622,7 +606,7 @@ func (e *Executor) list(call core.ToolCall) (string, error) {
 			out.WriteString("[listing truncated]\n")
 			return fs.SkipAll
 		}
-		out.WriteString(path)
+		out.WriteString(target.display(path))
 		if d.IsDir() {
 			out.WriteByte('/')
 		}
@@ -712,8 +696,8 @@ func (e *Executor) denied(a core.Approval, reason string) bool {
 	return e.consecutiveDenials < maxConsecutiveDenials && e.denials < maxTurnDenials
 }
 
-// Grep gives rg only verified file contents via stdin: it never opens workspace
-// paths itself. This keeps os.Root's confinement even with concurrent symlink swaps.
+// Grep gives rg only verified file contents via stdin: it never opens paths
+// itself. The file helpers enforce the approved scope even with symlink swaps.
 func (e *Executor) grep(ctx context.Context, call core.ToolCall) (string, error) {
 	var a struct {
 		Pattern    string `json:"pattern"`
@@ -727,10 +711,12 @@ func (e *Executor) grep(ctx context.Context, call core.ToolCall) (string, error)
 	if len(a.Pattern) > 16*1024 {
 		return "", errors.New("pattern exceeds 16 KiB")
 	}
-	name, err := e.path(a.Path, true)
+	target, err := e.fileTarget(ctx, call, a.Path, true)
 	if err != nil {
 		return "", err
 	}
+	defer target.close()
+	name := target.name
 	if a.Glob != "" {
 		if _, err := filepath.Match(a.Glob, ""); err != nil {
 			return "", fmt.Errorf("invalid glob: %w", err)
@@ -745,7 +731,7 @@ func (e *Executor) grep(ctx context.Context, call core.ToolCall) (string, error)
 	line := 1
 	scanned := 0
 	truncated := false
-	err = e.walk(name, func(path string, d fs.DirEntry, walkErr error) error {
+	err = target.walk(name, func(path string, d fs.DirEntry, walkErr error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -770,10 +756,10 @@ func (e *Executor) grep(ctx context.Context, call core.ToolCall) (string, error)
 				return nil
 			}
 		}
-		if _, err := e.path(path, false); err != nil {
+		if _, err := target.path(path, false); err != nil {
 			return nil
 		}
-		b, _, err := e.readFile(path)
+		b, _, err := target.readFile(path)
 		if err != nil {
 			return nil
 		}
@@ -785,7 +771,7 @@ func (e *Executor) grep(ctx context.Context, call core.ToolCall) (string, error)
 		if len(b) == 0 {
 			return nil
 		}
-		sources = append(sources, source{path, line})
+		sources = append(sources, source{target.display(path), line})
 		input.Write(b)
 		n := bytes.Count(b, []byte{'\n'})
 		if b[len(b)-1] != '\n' {
