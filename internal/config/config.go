@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -232,9 +233,6 @@ func (m *ModelEntry) UnmarshalJSON(data []byte) error {
 	if err := d.Decode(&e); err != nil {
 		return fmt.Errorf(`a model is "provider/<model-id>" or {"id": "provider/<model-id>", "reasoning": "<effort>", "context_window": <tokens>}: %w`, err)
 	}
-	if e.ID == "" {
-		return errors.New(`a model object needs an "id"`)
-	}
 	*m = ModelEntry(e)
 	return nil
 }
@@ -344,49 +342,228 @@ func Path() (string, error) {
 }
 func Load(path string) (Config, error) {
 	c := Default()
+	shared := map[string]any{}
+	// An explicitly selected shared file is loaded once, even when the other
+	// format is the preferred shared file.
+	base := filepath.Base(path)
+	if base != "config.shared.toml" && base != "config.shared.json" {
+		sharedPath := ProfilePath(filepath.Dir(path), "shared")
+		var err error
+		shared, err = readConfigLayer(sharedPath)
+		if err != nil {
+			return c, fmt.Errorf("shared configuration %s: %w", sharedPath, err)
+		}
+	}
+	profile, err := readConfigLayer(path)
+	if err != nil {
+		return c, err
+	}
+	mergeConfig(shared, profile)
+	data, err := json.Marshal(shared)
+	if err != nil {
+		return c, fmt.Errorf("read configuration: %w", err)
+	}
+	if err := json.Unmarshal(data, &c); err != nil {
+		return c, fmt.Errorf("read configuration: %w", err)
+	}
+	return c, c.Validate()
+}
+
+// readConfigLayer checks syntax and schema, but not semantic values: a model
+// object, for example, may get its id from the other layer.
+func readConfigLayer(path string) (map[string]any, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		// A dangling symlink is an existing configuration, not a request to
-		// use defaults. Preserve the open error rather than hiding it.
+		// A dangling symlink is an existing configuration, not defaults.
 		if _, statErr := os.Lstat(path); errors.Is(statErr, os.ErrNotExist) {
-			return c, nil
+			return map[string]any{}, nil
 		} else if statErr != nil {
-			return c, statErr
+			return nil, statErr
 		}
 	}
 	if err != nil {
-		return c, err
+		return nil, err
 	}
 	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
 	if err != nil {
-		return c, fmt.Errorf("read configuration: %w", err)
+		return nil, fmt.Errorf("read configuration: %w", err)
 	}
 	if len(data) > 1<<20 {
-		return c, errors.New("configuration exceeds 1 MiB")
+		return nil, errors.New("configuration exceeds 1 MiB")
 	}
 	if filepath.Ext(path) == ".toml" {
 		var values map[string]any
 		if err = toml.Unmarshal(data, &values); err != nil {
-			return c, fmt.Errorf("read configuration: %w", err)
+			return nil, fmt.Errorf("read configuration: %w", err)
 		}
 		if containsUnsupportedTOMLValue(values) {
-			return c, errors.New("read configuration: TOML floating-point, date and time values are not configuration values")
+			return nil, errors.New("read configuration: TOML floating-point, date and time values are not configuration values")
 		}
 		data, err = json.Marshal(values)
 		if err != nil {
-			return c, fmt.Errorf("read configuration: %w", err)
+			return nil, fmt.Errorf("read configuration: %w", err)
 		}
 	}
+	// Check each layer before merging, so an override cannot hide an unknown
+	// field or a value of the wrong type.
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
-	if err = d.Decode(&c); err != nil {
-		return c, fmt.Errorf("read configuration: %w", err)
+	var schema Config
+	if err = d.Decode(&schema); err != nil {
+		return nil, fmt.Errorf("read configuration: %w", err)
 	}
 	if err = d.Decode(new(any)); err != io.EOF {
-		return c, errors.New("configuration contains trailing data")
+		return nil, errors.New("configuration contains trailing data")
 	}
-	return c, c.Validate()
+	if err := rejectDuplicateConfigFields(json.NewDecoder(bytes.NewReader(data)), reflect.TypeFor[Config]()); err != nil {
+		return nil, fmt.Errorf("read configuration: %w", err)
+	}
+	d = json.NewDecoder(bytes.NewReader(data))
+	d.UseNumber()
+	var values map[string]any
+	if err := d.Decode(&values); err != nil {
+		return nil, fmt.Errorf("read configuration: %w", err)
+	}
+	if values == nil {
+		values = map[string]any{}
+	}
+	normalizeConfigKeys(values, reflect.TypeFor[Config]())
+	return values, nil
+}
+
+// configFields describes the JSON schema, including Config's custom model field.
+func configFields(typ reflect.Type) map[string]reflect.Type {
+	fields := make(map[string]reflect.Type)
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			fields[name] = field.Type
+		}
+	}
+	if typ == reflect.TypeFor[Config]() {
+		fields["model"] = reflect.TypeFor[ModelEntry]()
+	}
+	return fields
+}
+
+// Check the token stream before decoding into maps, which discard duplicate
+// keys. Only schema fields are case-insensitive; dynamic map keys are not.
+func rejectDuplicateConfigFields(d *json.Decoder, typ reflect.Type) error {
+	for typ != nil && typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	token, err := d.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		var fields map[string]reflect.Type
+		var mapValue reflect.Type
+		if typ != nil {
+			switch typ.Kind() {
+			case reflect.Struct:
+				fields = configFields(typ)
+			case reflect.Map:
+				mapValue = typ.Elem()
+			}
+		}
+		seen := make(map[string]bool)
+		for d.More() {
+			keyToken, err := d.Token()
+			if err != nil {
+				return err
+			}
+			key := keyToken.(string)
+			childType := mapValue
+			for name, fieldType := range fields {
+				if strings.EqualFold(key, name) {
+					if seen[name] {
+						return fmt.Errorf("duplicate configuration field %q", name)
+					}
+					seen[name] = true
+					childType = fieldType
+					break
+				}
+			}
+			if err := rejectDuplicateConfigFields(d, childType); err != nil {
+				return err
+			}
+		}
+	case '[':
+		var elem reflect.Type
+		if typ != nil && typ.Kind() == reflect.Slice {
+			elem = typ.Elem()
+		}
+		for d.More() {
+			if err := rejectDuplicateConfigFields(d, elem); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = d.Token() // closing delimiter
+	return err
+}
+
+// JSON accepts struct field names case-insensitively. Canonicalize those keys
+// before merging, while keeping map keys such as header names unchanged.
+func normalizeConfigKeys(value any, typ reflect.Type) {
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	switch typ.Kind() {
+	case reflect.Struct:
+		object, ok := value.(map[string]any)
+		if !ok {
+			return
+		}
+		fields := configFields(typ)
+		for _, key := range slices.Sorted(maps.Keys(object)) {
+			for name, fieldType := range fields {
+				if strings.EqualFold(key, name) {
+					child := object[key]
+					normalizeConfigKeys(child, fieldType)
+					if key != name {
+						delete(object, key)
+						if _, exists := object[name]; !exists {
+							object[name] = child
+						}
+					}
+					break
+				}
+			}
+		}
+	case reflect.Map:
+		if object, ok := value.(map[string]any); ok {
+			for _, child := range object {
+				normalizeConfigKeys(child, typ.Elem())
+			}
+		}
+	case reflect.Slice:
+		if items, ok := value.([]any); ok {
+			for _, child := range items {
+				normalizeConfigKeys(child, typ.Elem())
+			}
+		}
+	}
+}
+
+func mergeConfig(base, override map[string]any) {
+	for key, value := range override {
+		if object, ok := value.(map[string]any); ok {
+			if existing, ok := base[key].(map[string]any); ok {
+				mergeConfig(existing, object)
+				continue
+			}
+		}
+		base[key] = value
+	}
 }
 
 // JSON can turn TOML dates into strings and whole floats into integers. None

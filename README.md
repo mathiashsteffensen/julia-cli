@@ -119,9 +119,10 @@ reported rather than falling back to JSON. If only JSON exists, it remains the
 default, including for `config init`, which refuses to overwrite it. With
 neither file present, init creates TOML.
 
-`--config PATH` selects exactly that file, without profile resolution: a
-`.toml` extension selects TOML; other paths use JSON for compatibility.
-`config init` writes that format and never overwrites an existing file.
+`--config PATH` selects that file without profile resolution: a `.toml`
+extension selects TOML; other paths use JSON for compatibility. A shared file
+beside it is still loaded as described below. `config init` writes that format
+and never overwrites an existing file or copies shared settings into it.
 `--config` and `--profile` cannot be combined. Flags override configuration.
 Repo-local config is never loaded automatically, and keys are only referenced
 by env var name.
@@ -210,6 +211,23 @@ it exists, otherwise `config.work.json`. If neither exists,
 formats exist for a profile, TOML wins and the profile is listed once; an
 invalid TOML file does not fall back to JSON. An existing profile is not
 overwritten by init. Profile names are letters, digits, `-` and `_`.
+
+`config.shared.toml` (or `config.shared.json`) beside the active configuration
+provides shared settings for every profile and for an explicit `--config` path.
+TOML wins if both shared formats exist; an invalid TOML file is reported, not
+replaced by JSON. The default profile works with only a shared file, but a named
+profile must still exist. `shared` is reserved and is not a selectable profile.
+Selecting a shared file explicitly with `--config` loads that file once.
+
+The active file overrides shared settings. Tables and objects merge recursively;
+scalars and arrays replace the shared value, including explicit empty and zero
+values. Model strings replace model objects and vice versa. Both files must
+conform to the configuration schema; semantic validation runs after the merge.
+Within each file, duplicate schema fields are rejected, including names that
+only differ in case. Dynamic map keys, such as header names and subagent roles,
+remain case-sensitive. Defaults apply to settings absent from the result.
+`config init` writes its usual defaults, which may override shared values until
+you edit the new file.
 
 In the TUI, `/profile` lists the profiles with each one's model and mode, and
 `/profile NAME` switches directly. The switch applies from the next turn: the

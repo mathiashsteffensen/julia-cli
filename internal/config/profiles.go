@@ -60,7 +60,7 @@ func ProfileName(path string) (string, bool) {
 		return "", false
 	}
 	name = strings.TrimSuffix(name, ext)
-	if name == DefaultProfile || !ValidProfileName(name) {
+	if name == DefaultProfile || name == "shared" || !ValidProfileName(name) {
 		return "", false
 	}
 	return name, true
@@ -93,6 +93,9 @@ func Profiles(dir string) ([]string, error) {
 // the default profile, a named one must exist: a missing file is most likely
 // a mistyped name, which must not silently run on the defaults.
 func LoadProfile(dir, name string) (Config, error) {
+	if name == "shared" {
+		return Default(), errors.New(`profile "shared" is reserved for shared configuration`)
+	}
 	if !ValidProfileName(name) {
 		return Default(), fmt.Errorf("profile %q is not a profile name, which is %s", name, ProfileRule)
 	}

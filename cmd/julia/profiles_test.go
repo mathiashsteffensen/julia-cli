@@ -160,3 +160,25 @@ func TestProfileChoicesAndSwitchUseTOMLPrecedence(t *testing.T) {
 		t.Fatalf("label: %s", label)
 	}
 }
+
+func TestProfileSwitchAndChoicesReloadShared(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "shared", `{"mode":"ask","model":"codex/shared"}`)
+	writeProfile(t, dir, "work", `{"model":"codex/work"}`)
+	choices, err := profileChoices(dir)
+	if err != nil || len(choices) != 2 || choices[0].Detail != "config.toml · codex/shared · ask" || choices[1].Detail != "config.work.json · codex/work · ask" {
+		t.Fatalf("choices: %+v, %v", choices, err)
+	}
+	cfg, err := loadSwitchedProfile(dir, "work", launchOverrides{}, "")
+	if err != nil || cfg.Mode != "ask" || cfg.Model != "work" {
+		t.Fatalf("switch: %+v, %v", cfg, err)
+	}
+	writeProfile(t, dir, "shared", `{"mode":"read-only"}`)
+	cfg, err = loadSwitchedProfile(dir, "work", launchOverrides{}, "")
+	if err != nil || cfg.Mode != "read-only" {
+		t.Fatalf("reload: %+v, %v", cfg, err)
+	}
+	if _, err := loadSwitchedProfile(dir, "shared", launchOverrides{}, ""); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("shared switch: %v", err)
+	}
+}

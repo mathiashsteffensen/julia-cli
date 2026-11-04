@@ -286,3 +286,43 @@ func TestSessionProfilePersistsAndResumesHeadless(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestResumeReloadsSharedConfiguration(t *testing.T) {
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := filepath.Join(configHome, "julia")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeProfile(t, dir, "work", `{"model":"codex"}`)
+	writeProfile(t, dir, "shared", `{"mode":"ask"}`)
+	store, err := session.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := session.New(workspace, "codex", "")
+	s.ConfigPath, s.ConfigProfile = filepath.Join(dir, "config.work.json"), "work"
+	if err := store.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	os.Args = []string{"julia", "--dir", workspace, "--resume", s.ID, "--memory", "off"}
+	if err := run(); err == nil || !strings.Contains(err.Error(), "interactive mode requires a terminal") {
+		t.Fatalf("resume with shared config: %v", err)
+	}
+	writeProfile(t, dir, "shared", `{"mode":"invalid"}`)
+	if err := run(); err == nil || !strings.Contains(err.Error(), "unknown approval mode") {
+		t.Fatalf("resume must reload shared config: %v", err)
+	}
+	os.Args = []string{"julia", "--dir", workspace, "--profile", "shared"}
+	if err := run(); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("shared profile flag: %v", err)
+	}
+}

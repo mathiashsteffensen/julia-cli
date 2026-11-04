@@ -96,6 +96,9 @@ func run() error {
 	if profile != "" && configSet {
 		return errors.New("choose either --config or --profile")
 	}
+	if profile == "shared" {
+		return errors.New(`--profile "shared" is reserved for shared configuration`)
+	}
 	if profile != "" && !config.ValidProfileName(profile) {
 		return fmt.Errorf("--profile %q is not a profile name, which is %s", profile, config.ProfileRule)
 	}
