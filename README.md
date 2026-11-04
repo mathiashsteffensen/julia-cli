@@ -35,7 +35,7 @@ julia --continue              # resume this workspace's latest session
 julia --resume SESSION_ID     # resume a specific session
 julia --prompt "fix the build" [--json]   # headless, one task
 julia --demo                  # offline UI preview
-julia --profile work          # run on ~/.config/julia/config.work.json
+julia --profile work          # run on ~/.config/julia/config.work.toml (or .json)
 julia sessions | login | doctor | config init
 julia memory [show NAME | forget NAME | confirm NAME | pin NAME | unpin NAME | stats [-days N] [-all] | consolidate | path | workspaces]
 ```
@@ -108,57 +108,57 @@ sent only to its own `base_url`; one without `api_key_env` is called keyless.
 
 ## Configuration
 
-`julia config init` writes `~/.config/julia/config.json` (respects
-`$XDG_CONFIG_HOME`). Flags override it. Repo-local config is never loaded, and
-keys are only referenced by env var name.
+`julia config init` creates `~/.config/julia/config.toml` (respects
+`$XDG_CONFIG_HOME`). Existing JSON configurations remain supported. If both
+`config.toml` and `config.json` exist, TOML wins; an invalid TOML file is
+reported rather than falling back to JSON. If only JSON exists, it remains the
+default, including for `config init`, which refuses to overwrite it. With
+neither file present, init creates TOML.
 
-Full reference:
+`--config PATH` selects exactly that file, without profile resolution: a
+`.toml` extension selects TOML; other paths use JSON for compatibility.
+`config init` writes that format and never overwrites an existing file.
+`--config` and `--profile` cannot be combined. Flags override configuration.
+Repo-local config is never loaded automatically, and keys are only referenced
+by env var name.
 
-```json
-{
-  "model": "codex/gpt-6-astra",
-  "reasoning": "medium",
-  "mode": "auto",
-  "max_steps": 256,
-  "context_tokens": 256000,
-  "timeout": "4h",
-  "providers": [
-    {
-      "id": "openrouter",
-      "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY"
-    }
-  ],
-  "enabled_models": [
-    "codex/gpt-6-astra",
-    {
-      "id": "openrouter/vendor/model-b",
-      "reasoning": "high",
-      "context_window": 1000000
-    }
-  ],
-  "workspace_instructions": ["AGENTS.md"],
-  "browser": "/Applications/Chromium.app",
-  "browser_auth": {
-    "https://grafana.example.com": {
-      "Authorization": "Bearer $(gcloud secrets versions access latest --secret=grafana-token --project=example)"
-    }
-  },
-  "subagents": {
-    "scout": "openrouter/vendor/fast-model",
-    "reviewer": { "id": "openrouter/vendor/model-b", "reasoning": "high" },
-    "oracle": "codex/gpt-6-astra"
-  },
-  "memory": {
-    "reflection": "on",
-    "model": "codex/gpt-6-astra",
-    "index_bytes": 16384
-  }
-}
+Full TOML reference (JSON accepts the same fields):
+
+```toml
+model = "codex/gpt-6-astra"
+reasoning = "medium"
+mode = "auto"
+max_steps = 256
+context_tokens = 256000
+timeout = "4h"
+enabled_models = [
+  "codex/gpt-6-astra",
+  { id = "openrouter/vendor/model-b", reasoning = "high", context_window = 1000000 },
+]
+workspace_instructions = ["AGENTS.md"]
+browser = "/Applications/Chromium.app"
+
+[[providers]]
+id = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[browser_auth."https://grafana.example.com"]
+Authorization = "Bearer $(gcloud secrets versions access latest --secret=grafana-token --project=example)"
+
+[subagents]
+scout = "openrouter/vendor/fast-model"
+reviewer = { id = "openrouter/vendor/model-b", reasoning = "high" }
+oracle = "codex/gpt-6-astra"
+
+[memory]
+reflection = "on"
+model = "codex/gpt-6-astra"
+index_bytes = 16384
 ```
 
 - `enabled_models` come first in the model picker, ahead of the rest of Codex's and Claude Code's catalogs, and Ctrl+N cycles through them.
-- `model` and each `enabled_models` entry are `provider/<model-id>`, or `{"id": "provider/<model-id>", "reasoning": "<effort>", "context_window": <tokens>}` for a model that starts at that effort when you launch with it or switch to it, and has a context window of its own. Both keys are optional.
+- `model` and each `enabled_models` entry are `provider/<model-id>`, or a TOML inline table such as `{ id = "provider/<model-id>", reasoning = "high", context_window = 128000 }` (a JSON object in JSON). The model starts at that effort when you launch with it or switch to it, and has a context window of its own. `reasoning` and `context_window` are optional.
 - `context_tokens` is the assumed window for every model without a `context_window` of its own. API providers compact the history at 85% of the model's window. The sidebar uses the window reported by Codex or Claude Code when available, with these settings as the fallback.
 - `workspace_instructions` names files at the workspace root, such as `AGENTS.md` or `CLAUDE.md`, whose contents join every turn as the repository's own context, labelled as such and without authority over the task. Omitted, nothing is read from a repository: a cloned project's files are not trusted by default. A missing file is skipped; a symlink or a file over 64 KiB is a warning.
 - The last reasoning effort you picked for each provider is remembered in `~/.local/state/julia/preferences.json`. It applies at launch unless the model has its own `reasoning`, and `--reasoning` beats both.
@@ -170,7 +170,7 @@ Full reference:
 
 ### Custom system prompt
 
-`system.md` beside `config.json`, usually `~/.config/julia/system.md`, is your
+`system.md` beside the configuration file, usually `~/.config/julia/system.md`, is your
 own part of the system prompt: who you are, how JULIA should address you, how it
 should answer. Its text goes right after JULIA's opening lines, ahead of the
 working rules, for every agent and subagent. It is read again each turn, so an
@@ -198,10 +198,14 @@ skills that match; the skills folder is read again each time it opens.
 
 ### Profiles
 
-Each `config.<name>.json` beside `config.json` is a profile named `<name>`;
-`config.json` itself is the `default` profile. `julia --profile work` launches
-on `config.work.json`, and `julia --profile work config init` creates it.
-Profile names are letters, digits, `-` and `_`.
+Each `config.<name>.toml` or `config.<name>.json` in the configuration
+directory is a profile named `<name>`; `config.toml` or `config.json` is the
+`default` profile. `julia --profile work` selects `config.work.toml` when
+it exists, otherwise `config.work.json`. If neither exists,
+`julia --profile work config init` creates `config.work.toml`. When both
+formats exist for a profile, TOML wins and the profile is listed once; an
+invalid TOML file does not fall back to JSON. An existing profile is not
+overwritten by init. Profile names are letters, digits, `-` and `_`.
 
 In the TUI, `/profile` lists the profiles with each one's model and mode, and
 `/profile NAME` switches directly. The switch applies from the next turn: the

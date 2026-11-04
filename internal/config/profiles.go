@@ -9,14 +9,13 @@ import (
 	"strings"
 )
 
-// DefaultProfile is the profile config.json holds.
+// DefaultProfile is the profile config.toml or config.json holds.
 const DefaultProfile = "default"
 
 // ProfileRule describes a valid profile name, for error messages.
 const ProfileRule = "1 to 64 letters, digits, '-' or '_'"
 
-// ValidProfileName reports whether name may name a profile: config.<name>.json
-// beside config.json, or config.json itself for DefaultProfile.
+// ValidProfileName reports whether name may name a configuration profile.
 func ValidProfileName(name string) bool {
 	if name == "" || len(name) > 64 {
 		return false
@@ -26,49 +25,63 @@ func ValidProfileName(name string) bool {
 	}) < 0
 }
 
-// ProfilePath is the file holding profile name in the configuration directory
-// dir: config.json for the default profile, config.<name>.json for any other.
+// ProfilePath resolves a profile to TOML when it exists, otherwise JSON when
+// it exists, otherwise the TOML path for a new profile. Errors other than a
+// missing TOML file stay on that path so loading does not hide them.
 func ProfilePath(dir, name string) string {
-	if name == DefaultProfile {
-		return filepath.Join(dir, "config.json")
+	base := "config"
+	if name != DefaultProfile {
+		base += "." + name
 	}
-	return filepath.Join(dir, "config."+name+".json")
+	tomlPath := filepath.Join(dir, base+".toml")
+	if _, err := os.Lstat(tomlPath); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return tomlPath
+	}
+	jsonPath := filepath.Join(dir, base+".json")
+	if _, err := os.Lstat(jsonPath); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return jsonPath
+	}
+	return tomlPath
 }
 
-// ProfileName is the profile the file at path holds, and whether it holds one:
-// config.json is the default profile and config.<name>.json is name. Another
-// file, such as one --config names elsewhere, is no profile. config.default.json
-// is none either: the default profile is config.json.
+// ProfileName is the profile the file at path holds, and whether it holds one.
+// The default is config.toml or config.json, not config.default.*.
 func ProfileName(path string) (string, bool) {
 	base := filepath.Base(path)
-	if base == "config.json" {
+	if base == "config.json" || base == "config.toml" {
 		return DefaultProfile, true
 	}
 	name, ok := strings.CutPrefix(base, "config.")
 	if !ok {
 		return "", false
 	}
-	name, ok = strings.CutSuffix(name, ".json")
-	if !ok || name == DefaultProfile || !ValidProfileName(name) {
+	ext := filepath.Ext(name)
+	if ext != ".json" && ext != ".toml" {
+		return "", false
+	}
+	name = strings.TrimSuffix(name, ext)
+	if name == DefaultProfile || !ValidProfileName(name) {
 		return "", false
 	}
 	return name, true
 }
 
 // Profiles lists the profiles in the configuration directory dir: the default
-// first, which exists even without config.json since Load then reads the
+// first, which exists even without a file since Load then reads the
 // defaults, then the others by name.
 func Profiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
+	seen := make(map[string]bool)
 	var names []string
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
-		if name, ok := ProfileName(entry.Name()); ok && name != DefaultProfile {
+		if name, ok := ProfileName(entry.Name()); ok && name != DefaultProfile && !seen[name] {
+			seen[name] = true
 			names = append(names, name)
 		}
 	}

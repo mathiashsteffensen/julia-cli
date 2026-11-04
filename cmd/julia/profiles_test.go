@@ -14,7 +14,11 @@ import (
 
 func writeProfile(t *testing.T, dir, name, data string) {
 	t.Helper()
-	if err := os.WriteFile(config.ProfilePath(dir, name), []byte(data), 0600); err != nil {
+	file := "config." + name + ".json"
+	if name == config.DefaultProfile {
+		file = "config.json"
+	}
+	if err := os.WriteFile(filepath.Join(dir, file), []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -135,5 +139,24 @@ func TestSwitchingProfileProviderStartsFreshConversation(t *testing.T) {
 	}
 	if current.ID == "old" || current.Provider != "router" || current.Model != "vendor/model" || len(current.Messages) != 0 || len(saved) != 2 || saved[0] != "old" {
 		t.Fatalf("session after switch %+v, saved %v", current, saved)
+	}
+}
+
+func TestProfileChoicesAndSwitchUseTOMLPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, "work", `{"model":"codex/json"}`)
+	if err := os.WriteFile(filepath.Join(dir, "config.work.toml"), []byte("model = \"codex/toml\"\nmode = \"ask\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	choices, err := profileChoices(dir)
+	if err != nil || len(choices) != 2 || choices[1].Detail != "config.work.toml · codex/toml · ask" {
+		t.Fatalf("choices: %+v, %v", choices, err)
+	}
+	cfg, err := loadSwitchedProfile(dir, "work", launchOverrides{}, "")
+	if err != nil || cfg.Model != "toml" || cfg.Mode != "ask" {
+		t.Fatalf("switched profile: %+v, %v", cfg, err)
+	}
+	if label := profileLabel(filepath.Join(dir, "config.work.toml")); label != "work" {
+		t.Fatalf("label: %s", label)
 	}
 }

@@ -22,6 +22,7 @@ require (
 	github.com/emersion/go-message v0.18.2
 	github.com/goccy/go-yaml v1.19.2
 	github.com/lucasb-eyer/go-colorful v1.4.1
+	github.com/pelletier/go-toml/v2 v2.2.4
 	golang.org/x/image v0.45.0
 	golang.org/x/net v0.58.0
 	golang.org/x/sys v0.47.0

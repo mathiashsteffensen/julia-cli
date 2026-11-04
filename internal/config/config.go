@@ -15,6 +15,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/pelletier/go-toml/v2"
+
 	"julia/agents"
 	"julia/internal/core"
 )
@@ -338,19 +340,45 @@ func Path() (string, error) {
 		}
 		d = filepath.Join(home, ".config")
 	}
-	return filepath.Join(d, "julia", "config.json"), nil
+	return ProfilePath(filepath.Join(d, "julia"), DefaultProfile), nil
 }
 func Load(path string) (Config, error) {
 	c := Default()
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return c, nil
+		// A dangling symlink is an existing configuration, not a request to
+		// use defaults. Preserve the open error rather than hiding it.
+		if _, statErr := os.Lstat(path); errors.Is(statErr, os.ErrNotExist) {
+			return c, nil
+		} else if statErr != nil {
+			return c, statErr
+		}
 	}
 	if err != nil {
 		return c, err
 	}
 	defer f.Close()
-	d := json.NewDecoder(io.LimitReader(f, 1<<20))
+	data, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
+	if err != nil {
+		return c, fmt.Errorf("read configuration: %w", err)
+	}
+	if len(data) > 1<<20 {
+		return c, errors.New("configuration exceeds 1 MiB")
+	}
+	if filepath.Ext(path) == ".toml" {
+		var values map[string]any
+		if err = toml.Unmarshal(data, &values); err != nil {
+			return c, fmt.Errorf("read configuration: %w", err)
+		}
+		if containsUnsupportedTOMLValue(values) {
+			return c, errors.New("read configuration: TOML floating-point, date and time values are not configuration values")
+		}
+		data, err = json.Marshal(values)
+		if err != nil {
+			return c, fmt.Errorf("read configuration: %w", err)
+		}
+	}
+	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if err = d.Decode(&c); err != nil {
 		return c, fmt.Errorf("read configuration: %w", err)
@@ -360,6 +388,29 @@ func Load(path string) (Config, error) {
 	}
 	return c, c.Validate()
 }
+
+// JSON can turn TOML dates into strings and whole floats into integers. None
+// of the configuration fields accepts dates, times or floating-point values.
+func containsUnsupportedTOMLValue(value any) bool {
+	switch value := value.(type) {
+	case float64, time.Time, toml.LocalDate, toml.LocalTime, toml.LocalDateTime:
+		return true
+	case map[string]any:
+		for _, child := range value {
+			if containsUnsupportedTOMLValue(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range value {
+			if containsUnsupportedTOMLValue(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (c Config) Validate() error {
 	if err := c.validateProviders(); err != nil {
 		return err
@@ -676,6 +727,17 @@ func (c Config) KeyEnv(provider string) string {
 	return ""
 }
 func Init(path string) error {
+	var data []byte
+	var err error
+	if filepath.Ext(path) == ".toml" {
+		data, err = defaultTOML()
+	} else {
+		data, err = json.MarshalIndent(Default(), "", "  ")
+		data = append(data, '\n')
+	}
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
@@ -683,9 +745,7 @@ func Init(path string) error {
 	if err != nil {
 		return err
 	}
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	err = enc.Encode(Default())
+	_, err = f.Write(data)
 	closeErr := f.Close()
 	if err != nil {
 		return err
