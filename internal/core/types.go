@@ -37,6 +37,8 @@ type ToolResult struct {
 }
 
 type Message struct {
+	// Reasoning is provider-exposed thinking for display, not reply text or instructions.
+	Reasoning  string     `json:"reasoning,omitempty"`
 	Role       string     `json:"role"`
 	Content    string     `json:"content"`
 	Images     []Image    `json:"images,omitempty"`
@@ -135,8 +137,9 @@ type Session struct {
 }
 
 // Event is the single provider-independent stream consumed by the UI and headless CLI.
-// Kinds: status, text, tool_start, tool_end, usage, warning, steer,
-// subagent_start, subagent_end. A steer event reports a message the user sent
+// Kinds: status, text, reasoning, tool_start, tool_end, usage, warning, steer,
+// subagent_start, subagent_end. Reasoning carries incremental provider-exposed
+// thinking, separate from reply text. A steer event reports a message the user sent
 // mid-turn that the model now has, in Text; see Steering.
 //
 // A subagent's events reach the stream too, each carrying the Subagent it came

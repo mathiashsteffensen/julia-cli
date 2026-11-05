@@ -128,15 +128,20 @@ func (m *model) refresh(forceBottom bool) {
 		return
 	}
 	m.lines, m.rows = m.lines[:0], m.rows[:0]
+	previousRole := ""
 	for i := range m.entries {
 		layout := m.renderEntry(&m.entries[i])
-		if i > 0 {
-			if m.entries[i].role != "tool" || m.entries[i-1].role != "tool" {
+		if len(layout.rows) == 0 {
+			continue
+		}
+		if previousRole != "" {
+			if m.entries[i].role != "tool" || previousRole != "tool" {
 				// Consecutive calls read as one run of work, with no row between them.
 				m.lines = append(m.lines, "")
 				m.rows = append(m.rows, rowRef{entry: -1})
 			}
 		}
+		previousRole = m.entries[i].role
 		m.lines = append(m.lines, strings.Split(layout.text, "\n")...)
 		for _, row := range layout.rows {
 			m.rows = append(m.rows, rowRef{entry: i, rowMeta: row})
@@ -225,6 +230,9 @@ type column struct {
 }
 
 func (m *model) renderEntryIn(item *entry, in column) entryLayout {
+	if item.role == "reasoning" && !m.showThinking {
+		return entryLayout{}
+	}
 	if item.layout.text != "" && item.cachedRevision == item.revision && item.cachedWidth == in.width && item.cachedExpanded == m.expandTools && item.cachedGraphics == m.graphicsEpoch {
 		return item.layout
 	}
@@ -288,6 +296,15 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 		for _, row := range rows {
 			add(card(ansi.Truncate(row, w, "…")), rowMeta{gutter: 2, skip: true})
 		}
+	case "reasoning":
+		if !m.showThinking {
+			return out
+		}
+		out.targets = []copyTarget{{"thinking", item.text}}
+		add(mutedStyle.Bold(true).Render("◇ Thinking"), rowMeta{gutter: 2, skip: true})
+		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string {
+			return mutedStyle.Render("  " + s)
+		})
 	case "assistant":
 		out.targets = []copyTarget{{"reply", item.text}}
 		// A reply opens with the spark and runs on without a heading; a labelled
@@ -1333,10 +1350,10 @@ func (m *model) footer() string {
 	}
 	// Shortcuts join in order of usefulness while they fit beside the sidebar,
 	// then show in their usual order.
-	extras, priority := []string{"ctrl+o tools", "ctrl+p models", "drag copy", "ctrl+v image"}, []int{1, 0, 2, 3}
+	extras, priority := []string{"ctrl+t thinking", "ctrl+o tools", "ctrl+p models", "drag copy", "ctrl+v image"}, []int{2, 0, 1, 3, 4}
 	if len(m.fleet) > 0 {
 		// With agents at work, the fleet is the shortcut worth knowing first.
-		extras, priority = []string{"ctrl+f fleet", "ctrl+o tools", "ctrl+p models", "drag copy", "ctrl+v image"}, []int{0, 2, 1, 3, 4}
+		extras, priority = []string{"ctrl+f fleet", "ctrl+t thinking", "ctrl+o tools", "ctrl+p models", "drag copy", "ctrl+v image"}, []int{0, 3, 1, 2, 4, 5}
 	}
 	shown := make([]bool, len(extras))
 	used := ansi.StringWidth("enter " + send + "  alt+enter newline  esc interrupt  /help")
@@ -1507,6 +1524,7 @@ func demoEntries() []entry {
 		{role: "tool", call: &core.ToolCall{Name: "Read", Arguments: json.RawMessage(`{"path":"internal/sandbox/runner.go"}`)}, done: true, result: &core.ToolResult{Content: "Read 148 lines · execution boundary and process lifecycle"}},
 		{role: "tool", call: &core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"go test -race ./internal/sandbox/..."}`)}, done: true, result: &core.ToolResult{Content: "ok   julia/internal/sandbox   1.284s"}},
 		{role: "tool", call: &core.ToolCall{Name: "Memory", Arguments: json.RawMessage(`{"action":"save","name":"process-group-cancel","description":"Cancelling a task must signal the ordinary process group; check it whenever the sandbox runner changes","type":"feedback","paths":["internal/sandbox/**"]}`)}, done: true, result: &core.ToolResult{Content: "Saved workspace note process-group-cancel"}},
+		{role: "reasoning", text: "The approval check runs before the command starts. The cancellation check covers the ordinary process group, and the focused race tests passed."},
 		{role: "assistant", text: "**The cancellation path is sound.**\n\nThe runner signals the ordinary process group when a task is interrupted. Approval is checked before execution, and a denied action never reaches the shell.\n\nThe focused race checks passed. No files changed."},
 	}
 }

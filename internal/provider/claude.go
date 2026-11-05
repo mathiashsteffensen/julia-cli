@@ -217,7 +217,7 @@ func claudeBootstrapArgs() []string {
 
 // run sends one turn. A nil side is a turn of the session's conversation; a
 // side call instead gets an unsaved session under the side's own settings.
-func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Prompt, executor core.ToolExecutor, emit core.Emit, side *claudeSideCall, schema any) error {
+func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Prompt, executor core.ToolExecutor, emit core.Emit, side *claudeSideCall, schema any) (runErr error) {
 	review := side != nil
 	if emit == nil {
 		emit = func(core.Event) {}
@@ -283,14 +283,23 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 	// Tool calls arrive as MCP requests on the same stream; runTool answers
 	// one, and keeps any error of its own for the loop to return.
 	var fatal error
-	var pending strings.Builder
-	flush := func() {
-		if pending.Len() > 0 {
-			session.Messages = append(session.Messages, core.Message{Role: "assistant", Content: pending.String()})
-			pending.Reset()
+	var pending, pendingReasoning strings.Builder
+	flush := func() bool {
+		if pending.Len() == 0 && pendingReasoning.Len() == 0 {
+			return false
 		}
+		session.Messages = append(session.Messages, core.Message{Role: "assistant", Content: pending.String(), Reasoning: pendingReasoning.String()})
+		pending.Reset()
+		pendingReasoning.Reset()
+		return true
 	}
-	defer flush()
+	defer func() {
+		if flush() {
+			if err := checkpoint(); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("save interrupted output: %w", err))
+			}
+		}
+	}()
 	callStarted, toolTime := time.Now(), time.Duration(0)
 	runTool := func(name string, arguments json.RawMessage, toolUseID string) core.ToolResult {
 		name = strings.TrimPrefix(name, claudeToolPrefix)
@@ -426,18 +435,20 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 		}
 		emit(core.Event{Kind: "status", Text: "Working · Claude Code"})
 	}
-	// Each model call streams as events: message_start opens it with the
-	// prompt's tokens, text deltas are its answer, and message_delta closes it
-	// with its output tokens. The assistant message that follows repeats the
-	// text, which is only used when nothing streamed.
-	streamed := map[string]bool{}
+	// Claude Code also sends a completed assistant message for each block.
+	// Track the streamed blocks separately so a fallback for one block does
+	// not repeat another block's deltas or hide its unstreamed content.
+	type streamedBlock struct{ text, thinking bool }
+	streamed := map[string]map[int]streamedBlock{}
 	usageSeen := false
 	// Settings can contain an alias. Prefer the latest top-level response's
 	// actual model, with the initialized model as a fallback.
 	initModel, responseModel := "", ""
 	var current struct {
-		id    string
-		usage claudeUsage
+		id          string
+		usage       claudeUsage
+		blockIndex  int
+		blockActive bool
 	}
 	recordUsage := func(usage claudeUsage) {
 		event := core.UsageEvent(usage.tokens(), usage.tokens().Prompt()+usage.Output)
@@ -570,14 +581,16 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 		case "stream_event":
 			var event struct {
 				Type    string `json:"type"`
+				Index   int    `json:"index"`
 				Message struct {
 					ID    string      `json:"id"`
 					Model string      `json:"model"`
 					Usage claudeUsage `json:"usage"`
 				} `json:"message"`
 				Delta struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
+					Type     string `json:"type"`
+					Text     string `json:"text"`
+					Thinking string `json:"thinking"`
 				} `json:"delta"`
 				Usage claudeUsage `json:"usage"`
 			}
@@ -587,15 +600,35 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 			switch event.Type {
 			case "message_start":
 				current.id, current.usage = event.Message.ID, event.Message.Usage
+				current.blockActive = false
 				if event.Message.Model != "" {
 					responseModel = event.Message.Model
 				}
+			case "content_block_start":
+				current.blockIndex, current.blockActive = event.Index, true
 			case "content_block_delta":
-				if event.Delta.Type == "text_delta" && event.Delta.Text != "" {
-					streamed[current.id] = true
-					pending.WriteString(event.Delta.Text)
-					emit(core.Event{Kind: "text", Text: event.Delta.Text})
+				current.blockIndex, current.blockActive = event.Index, true
+				if streamed[current.id] == nil {
+					streamed[current.id] = map[int]streamedBlock{}
 				}
+				block := streamed[current.id][event.Index]
+				switch event.Delta.Type {
+				case "text_delta":
+					if event.Delta.Text != "" {
+						block.text = true
+						pending.WriteString(event.Delta.Text)
+						emit(core.Event{Kind: "text", Text: event.Delta.Text})
+					}
+				case "thinking_delta":
+					if event.Delta.Thinking != "" {
+						block.thinking = true
+						pendingReasoning.WriteString(event.Delta.Thinking)
+						emit(core.Event{Kind: "reasoning", Text: event.Delta.Thinking})
+					}
+				}
+				streamed[current.id][event.Index] = block
+			case "content_block_stop", "message_stop":
+				current.blockActive = false
 			case "message_delta":
 				recordUsage(current.usage.merge(event.Usage))
 			}
@@ -605,8 +638,9 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 					ID      string `json:"id"`
 					Model   string `json:"model"`
 					Content []struct {
-						Type string `json:"type"`
-						Text string `json:"text"`
+						Type     string `json:"type"`
+						Text     string `json:"text"`
+						Thinking string `json:"thinking"`
 					} `json:"content"`
 				} `json:"message"`
 				Error    string `json:"error"`
@@ -621,14 +655,34 @@ func (c *Claude) run(ctx context.Context, session *core.Session, prompt core.Pro
 			if !assistant.APIError && assistant.Message.Model != "" {
 				responseModel = assistant.Message.Model
 			}
-			if assistant.APIError || streamed[assistant.Message.ID] {
+			if assistant.APIError {
 				continue
 			}
-			for _, block := range assistant.Message.Content {
-				if block.Type == "text" && block.Text != "" {
-					pending.WriteString(block.Text)
-					emit(core.Event{Kind: "text", Text: block.Text})
+			if streamed[assistant.Message.ID] == nil {
+				streamed[assistant.Message.ID] = map[int]streamedBlock{}
+			}
+			for index, block := range assistant.Message.Content {
+				// A single-block assistant message arrives before its block stop;
+				// its local index is not necessarily the API stream's index.
+				if len(assistant.Message.Content) == 1 && current.blockActive && assistant.Message.ID == current.id {
+					index = current.blockIndex
 				}
+				seen := streamed[assistant.Message.ID][index]
+				switch block.Type {
+				case "text":
+					if !seen.text && block.Text != "" {
+						seen.text = true
+						pending.WriteString(block.Text)
+						emit(core.Event{Kind: "text", Text: block.Text})
+					}
+				case "thinking":
+					if !seen.thinking && block.Thinking != "" {
+						seen.thinking = true
+						pendingReasoning.WriteString(block.Thinking)
+						emit(core.Event{Kind: "reasoning", Text: block.Thinking})
+					}
+				}
+				streamed[assistant.Message.ID][index] = seen
 			}
 		case "result":
 			var result struct {

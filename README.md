@@ -60,6 +60,7 @@ metadata was added use the launch default instead.
 | Shift+Tab or `/reasoning`     | Change reasoning effort                                                                                                |
 | `/profile` or `/profile NAME` | Switch configuration profile                                                                                           |
 | Ctrl+O                        | Expand/collapse tool output, full subagent tasks, and the arguments of Slack, Linear, GitHub and Mail calls                    |
+| Ctrl+T                        | Show/hide provider thinking, live or saved, in the conversation and fleet                                               |
 | Ctrl+F                        | The fleet: every subagent of the session, with its task, tool calls and report                                         |
 | Ctrl+V                        | Attach the clipboard's image (a screenshot, or an image file copied in Finder)                                         |
 | Drop image files              | Attach them instead of pasting their paths                                                                             |
@@ -72,6 +73,10 @@ metadata was added use the launch default instead.
 | `/clear`, `/help`, `/quit`    | New conversation, shortcuts, exit                                                                                      |
 | `/`, then ↑↓, Tab, Enter      | Command menu: every command and skill that matches what you type · Tab completes · Enter runs · Esc closes             |
 | `/SKILL`, `/SKILL INPUT`      | Run one of your [skills](#skills), with what follows as its input · `/skill:SKILL` when a command has its name         |
+
+Thinking is hidden by default. Ctrl+T shows only what the provider returns;
+Codex supplies reasoning summaries, and some models supply no thinking text.
+Saved sessions retain this output separately from replies.
 
 During an approval prompt, `y`/Enter allows the action once (a Browser origin, for
 the rest of the turn); any other key denies it.

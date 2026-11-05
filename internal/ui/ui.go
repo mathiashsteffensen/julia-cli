@@ -183,6 +183,7 @@ type model struct {
 	live                   core.SessionUsage // usage reported by the running task, added to the session's until the stream finishes
 	toolCount              int
 	expandTools            bool
+	showThinking           bool
 	pending                *ApprovalRequest
 	approvalListening      bool
 	question               *questionState
@@ -566,6 +567,8 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.viewport.GotoBottom()
 			}
 			return m, nil
+		case "ctrl+t":
+			return m, m.toggleThinking()
 		case "ctrl+o":
 			m.expandTools = !m.expandTools
 			m.refresh(false)
@@ -735,7 +738,7 @@ func (m *model) submit() tea.Cmd {
 		case "/quit", "/exit":
 			return m.quit()
 		case "/help":
-			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **click** a link to open it · **double-click** copies a whole message\n- **/** opens the command menu · **↑↓** choose · **Tab** completes · **Enter** runs\n- `/SKILL` runs one of your skills from `~/.agents/skills`, with what follows as its input · `/skill:SKILL` when a command already has its name\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/review` reviews your uncommitted changes · `/review WHAT` reviews what you name · you decide each finding in a card\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- `/memory pin NAME` shows a note in full every turn · `/memory unpin NAME` undoes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- `/profile` switches configuration profile · `/profile NAME` switches to one directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, **Enter** queues your message: it is sent when JULIA settles, or at once with **Ctrl+S** or the steer button, which hands it to the task under way. **↑** in an empty composer takes a queued message back to edit."})
+			m.entries = append(m.entries, entry{role: "assistant", text: "**At your service.**\n\n- **Enter** sends · **Alt+Enter** adds a line\n- **Esc** interrupts a running task, or skips the reflection after it\n- **PgUp / PgDown** scroll · **Ctrl+End** returns to live output\n- **Ctrl+O** expands tool results and reveals full subagent tasks\n- **Ctrl+T** shows or hides provider thinking (including saved thinking)\n- **Ctrl+F** opens the fleet: every subagent's task, tool calls and report\n- **Ctrl+V** pastes an image from the clipboard · dropping image files attaches them · delete an `[Image #N]` token to remove it\n- **Drag** to copy a selection · **click** a code block to copy it · **click** a link to open it · **double-click** copies a whole message\n- **/** opens the command menu · **↑↓** choose · **Tab** completes · **Enter** runs\n- `/SKILL` runs one of your skills from `~/.agents/skills`, with what follows as its input · `/skill:SKILL` when a command already has its name\n- `/copy` copies the last reply · `/copy code` its last code block\n- `/review` reviews your uncommitted changes · `/review WHAT` reviews what you name · you decide each finding in a card\n- `/memory` lists what JULIA remembers here · `/memory NAME` shows a note · `/memory forget NAME` deletes it\n- `/memory pin NAME` shows a note in full every turn · `/memory unpin NAME` undoes it\n- **Ctrl+P** or `/model` opens model search · **Ctrl+N** cycles your enabled models\n- **Shift+Tab** outside the picker cycles reasoning · `/reasoning` opens its picker\n- `/model provider/ID` and `/reasoning LEVEL|default` set them directly\n- `/profile` switches configuration profile · `/profile NAME` switches to one directly\n- **Ctrl+C** stops the task and exits safely\n\n`/clear` starts a fresh conversation · `/quit` exits\n\nSettings apply to the next turn. While a task runs, **Enter** queues your message: it is sent when JULIA settles, or at once with **Ctrl+S** or the steer button, which hands it to the task under way. **↑** in an empty composer takes a queued message back to edit."})
 		case "/ask", "/ask text":
 			if !m.cfg.Demo {
 				m.notice = "Unknown command. /help lists the essentials."
@@ -922,6 +925,15 @@ func (m *model) applyEvent(event core.Event) tea.Cmd {
 		m.entries[len(m.entries)-1].text += event.Text
 		m.entries[len(m.entries)-1].revision++
 		m.status = "Working"
+	case "reasoning":
+		if event.Text != "" {
+			if len(m.entries) == 0 || m.entries[len(m.entries)-1].role != "reasoning" {
+				m.entries = append(m.entries, entry{role: "reasoning"})
+			}
+			m.entries[len(m.entries)-1].text += event.Text
+			m.entries[len(m.entries)-1].revision++
+			m.status = "Thinking"
+		}
 	case "status":
 		m.status = event.Text
 	case "steer":
@@ -978,6 +990,9 @@ func (m *model) loadHistory() {
 	for _, message := range m.cfg.Session.Messages {
 		switch message.Role {
 		case "user", "assistant":
+			if message.Role == "assistant" && message.Reasoning != "" {
+				m.entries = append(m.entries, entry{role: "reasoning", text: message.Reasoning})
+			}
 			if message.Content != "" {
 				text := message.Content
 				if message.Role == "user" {

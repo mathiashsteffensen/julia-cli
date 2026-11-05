@@ -498,6 +498,9 @@ func TestCodexResolvesReasoningWithoutRestoringPriorThreadEffort(t *testing.T) {
 					if params["effort"] != tc.want {
 						t.Fatalf("effort=%v, want %q; prior remote effort was high", params["effort"], tc.want)
 					}
+					if tc.review && params["summary"] != nil || !tc.review && params["summary"] != "detailed" {
+						t.Fatalf("summary=%v, review=%v", params["summary"], tc.review)
+					}
 				}
 			}
 		})

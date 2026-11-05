@@ -85,6 +85,15 @@ func (m *model) applyAgentEvent(event core.Event) {
 		a.entries[len(a.entries)-1].text += event.Text
 		a.entries[len(a.entries)-1].revision++
 		a.activity = "Working"
+	case "reasoning":
+		if event.Text != "" {
+			if len(a.entries) == 0 || a.entries[len(a.entries)-1].role != "reasoning" {
+				a.entries = append(a.entries, entry{role: "reasoning"})
+			}
+			a.entries[len(a.entries)-1].text += event.Text
+			a.entries[len(a.entries)-1].revision++
+			a.activity = "Thinking"
+		}
 	case "status":
 		a.activity = event.Text
 	case "warning":
@@ -138,6 +147,9 @@ func (m *model) loadFleet() {
 					a.entries = append(a.entries, entry{role: "user", label: "TASK", text: message.Content})
 				}
 			case "assistant":
+				if message.Reasoning != "" {
+					a.entries = append(a.entries, entry{role: "reasoning", text: message.Reasoning})
+				}
 				if message.Content != "" {
 					a.entries = append(a.entries, entry{role: "assistant", label: "✦ " + a.role, text: message.Content})
 				}
@@ -241,6 +253,8 @@ func (m *model) updateFleet(key tea.KeyPressMsg) tea.Cmd {
 		v.offset, v.follow = 0, false
 	case "ctrl+end", "end":
 		v.follow = true
+	case "ctrl+t":
+		return m.toggleThinking()
 	case "ctrl+o":
 		m.expandTools = !m.expandTools
 		m.refresh(false)
@@ -456,11 +470,16 @@ func (m *model) fleetPane(l fleetLayout) []string {
 	masthead = append(masthead, fit(spend, faintStyle.Render(oneLine(a.id)), width), faintStyle.Render(strings.Repeat("─", width)))
 	var lines []string
 	in := column{width: width, markdown: m.fleetMarkdown.at(width), wordWrap: true}
+	previousRole := ""
 	for i := range a.entries {
 		layout := m.renderEntryIn(&a.entries[i], in)
-		if i > 0 && (a.entries[i].role != "tool" || a.entries[i-1].role != "tool") {
+		if len(layout.rows) == 0 {
+			continue
+		}
+		if previousRole != "" && (a.entries[i].role != "tool" || previousRole != "tool") {
 			lines = append(lines, "")
 		}
+		previousRole = a.entries[i].role
 		lines = append(lines, strings.Split(layout.text, "\n")...)
 	}
 	if a.state == agentRunning {
@@ -502,7 +521,10 @@ func (m *model) fleetFooter() string {
 	if m.width < 70 {
 		return mutedStyle.Render("↑↓ agent · pgup/pgdn scroll · esc close")
 	}
-	keys := []string{"↑↓ agent", "pgup/pgdn scroll", "ctrl+o expand", "esc close"}
+	keys := []string{"↑↓ agent", "pgup/pgdn scroll", "ctrl+t thinking", "esc close"}
+	if ansi.StringWidth(strings.Join(keys, "  ")+"  ctrl+o expand") <= m.mainWidth {
+		keys = slices.Insert(keys, len(keys)-1, "ctrl+o expand")
+	}
 	var out string
 	for _, item := range keys {
 		key, name, _ := strings.Cut(item, " ")

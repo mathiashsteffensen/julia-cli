@@ -266,7 +266,7 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 		emit(core.Event{Kind: "status", Text: fmt.Sprintf("Working · step %d", step+1)})
 		journal = append([]fantasy.Message(nil), history...)
 		var completed *fantasy.StepResult
-		var partial strings.Builder
+		var partial, partialReasoning strings.Builder
 		// The model's time over the step runs from the request, or the last
 		// retry of it, to the end of its response; tools run after that.
 		started, elapsed := time.Now(), time.Duration(0)
@@ -285,6 +285,11 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 				emit(core.Event{Kind: "text", Text: text})
 				return ctx.Err()
 			},
+			OnReasoningDelta: func(_ string, text string) error {
+				partialReasoning.WriteString(text)
+				emit(core.Event{Kind: "reasoning", Text: text})
+				return ctx.Err()
+			},
 			OnStreamFinish: func(fantasy.Usage, fantasy.FinishReason, fantasy.ProviderMetadata) error {
 				elapsed = time.Since(started)
 				return nil
@@ -292,8 +297,12 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 			OnStepFinish: func(result fantasy.StepResult) error { completed = &result; return nil },
 		})
 		if err != nil {
-			if partial.Len() > 0 {
-				s.Messages = append(s.Messages, core.Message{Role: "assistant", Content: partial.String() + "\n\n[Response interrupted]"})
+			if partial.Len() > 0 || partialReasoning.Len() > 0 {
+				content := "[Response interrupted]"
+				if partial.Len() > 0 {
+					content = partial.String() + "\n\n" + content
+				}
+				s.Messages = append(s.Messages, core.Message{Role: "assistant", Content: content, Reasoning: partialReasoning.String()})
 			}
 			var rejected *fantasy.ProviderError
 			if errors.As(err, &rejected) && rejected.IsContextTooLarge() {
@@ -306,7 +315,7 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 			// that holds one, and the saved history would send it again on every
 			// follow-up. Its tool images become notes of what was there, and the
 			// step is tried again without them.
-			if partial.Len() == 0 && rejectsImages(err) && hasToolImages(history) {
+			if partial.Len() == 0 && partialReasoning.Len() == 0 && rejectsImages(err) && hasToolImages(history) {
 				keepImages = 0
 				history = elideToolImages(history, 0, "not sent, the model rejected it")
 				if err := a.save(s, history); err != nil {
@@ -943,6 +952,10 @@ func appendTranscript(s *core.Session, messages []fantasy.Message) {
 			switch p := part.(type) {
 			case fantasy.TextPart:
 				entry.Content += p.Text
+			case fantasy.ReasoningPart:
+				if m.Role == fantasy.MessageRoleAssistant {
+					entry.Reasoning += p.Text
+				}
 			case fantasy.ToolCallPart:
 				entry.ToolCalls = append(entry.ToolCalls, core.ToolCall{ID: p.ToolCallID, Name: p.ToolName, Arguments: json.RawMessage(p.Input)})
 			case fantasy.ToolResultPart:
@@ -961,7 +974,7 @@ func appendTranscript(s *core.Session, messages []fantasy.Message) {
 				results = append(results, result)
 			}
 		}
-		if entry.Content != "" || len(entry.ToolCalls) > 0 || entry.ToolCallID != "" {
+		if entry.Content != "" || entry.Reasoning != "" || len(entry.ToolCalls) > 0 || entry.ToolCallID != "" {
 			s.Messages = append(s.Messages, entry)
 		}
 		s.Messages = append(s.Messages, results...)

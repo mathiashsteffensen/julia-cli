@@ -55,8 +55,6 @@ func codexContentItems(result core.ToolResult) []any {
 	return items
 }
 
-// withoutImageData copies messages for a text transcript: each image keeps its
-// type and size, so the record shows one was attached, but not its data.
 // codexUserInput is a user message as Codex takes it: the text, then each image.
 func codexUserInput(text string, images []core.Image) []any {
 	input := []any{map[string]any{"type": "text", "text": text}}
@@ -66,10 +64,13 @@ func codexUserInput(text string, images []core.Image) []any {
 	return input
 }
 
+// withoutImageData copies messages for model history: images keep their type
+// and size but not their data, and display-only reasoning is omitted.
 func withoutImageData(messages []core.Message) []core.Message {
 	copied := slices.Clone(messages)
 	for i, message := range copied {
 		copied[i].Images = core.WithoutImageData(message.Images)
+		copied[i].Reasoning = ""
 	}
 	return copied
 }
@@ -411,6 +412,10 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 	// Omission inherits the previous turn's effort, so send the resolved default
 	// explicitly even when the user's saved preference is the empty sentinel.
 	turnParams["effort"] = reasoning
+	if !review {
+		// Keep summaries available for Ctrl+T, even if the inherited setting hides them.
+		turnParams["summary"] = "detailed"
+	}
 	if review && side.model != "" {
 		turnParams["model"] = side.model
 	}
@@ -455,8 +460,11 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 	// Codex reports usage per model call, in its own time: a call's duration
 	// is the time since the previous report, less the tools run in between.
 	callStarted, toolTime := time.Now(), time.Duration(0)
-	var pending strings.Builder
+	var pending, pendingReasoning strings.Builder
 	streamed := map[string]bool{}
+	// Completed items repeat streamed summaries; track each part separately.
+	reasoningParts := map[string]map[int]string{}
+	completedReasoning := map[string]bool{}
 	var lateInteraction *codexLateInteraction
 	var interactionResult *codexLateInteraction
 	var interactionSent time.Time
@@ -471,12 +479,30 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 		usage = codexUsageTracker{total: b.Total, seen: true}
 	}
 	flush := func() {
-		if pending.Len() > 0 {
-			session.Messages = append(session.Messages, core.Message{Role: "assistant", Content: pending.String()})
+		if pending.Len() > 0 || pendingReasoning.Len() > 0 {
+			session.Messages = append(session.Messages, core.Message{Role: "assistant", Content: pending.String(), Reasoning: pendingReasoning.String()})
 			pending.Reset()
+			pendingReasoning.Reset()
 		}
 	}
 	defer flush()
+	emitReasoning := func(itemID string, index int, text string) {
+		if text == "" {
+			return
+		}
+		parts := reasoningParts[itemID]
+		if parts == nil {
+			parts = map[int]string{}
+			reasoningParts[itemID] = parts
+		}
+		if parts[index] == "" && pendingReasoning.Len() > 0 {
+			pendingReasoning.WriteString("\n\n")
+			emit(core.Event{Kind: "reasoning", Text: "\n\n"})
+		}
+		parts[index] += text
+		pendingReasoning.WriteString(text)
+		emit(core.Event{Kind: "reasoning", Text: text})
+	}
 	emitText := func(text string) {
 		pending.WriteString(text)
 		emit(core.Event{Kind: "text", Text: text})
@@ -644,17 +670,19 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 			continue
 		}
 		var notification struct {
-			ThreadID  string `json:"threadId"`
-			TurnID    string `json:"turnId"`
-			ItemID    string `json:"itemId"`
-			Delta     string `json:"delta"`
-			Message   string `json:"message"`
-			WillRetry bool   `json:"willRetry"`
-			Item      struct {
-				Type  string `json:"type"`
-				ID    string `json:"id"`
-				Text  string `json:"text"`
-				Phase string `json:"phase"`
+			ThreadID     string `json:"threadId"`
+			TurnID       string `json:"turnId"`
+			ItemID       string `json:"itemId"`
+			Delta        string `json:"delta"`
+			SummaryIndex *int   `json:"summaryIndex"`
+			Message      string `json:"message"`
+			WillRetry    bool   `json:"willRetry"`
+			Item         struct {
+				Type    string   `json:"type"`
+				ID      string   `json:"id"`
+				Text    string   `json:"text"`
+				Phase   string   `json:"phase"`
+				Summary []string `json:"summary"`
 			} `json:"item"`
 			Turn struct {
 				ID     string `json:"id"`
@@ -696,7 +724,26 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 				unclassified[notification.ItemID] = true
 			}
 			queueText(notification.ItemID, notification.Delta)
+		case "item/reasoning/summaryTextDelta":
+			if notification.ThreadID != session.RemoteID || notification.TurnID != turn.Turn.ID || notification.ItemID == "" || notification.SummaryIndex == nil || *notification.SummaryIndex < 0 || completedReasoning[notification.ItemID] {
+				continue
+			}
+			emitReasoning(notification.ItemID, *notification.SummaryIndex, notification.Delta)
 		case "item/completed":
+			if notification.Item.Type == "reasoning" {
+				id := notification.Item.ID
+				if notification.ThreadID != session.RemoteID || notification.TurnID != turn.Turn.ID || id == "" || completedReasoning[id] {
+					continue
+				}
+				for index, summary := range notification.Item.Summary {
+					prior := reasoningParts[id][index]
+					if strings.HasPrefix(summary, prior) {
+						emitReasoning(id, index, summary[len(prior):])
+					}
+				}
+				completedReasoning[id] = true
+				continue
+			}
 			if notification.Item.Type != "agentMessage" {
 				continue
 			}
@@ -810,6 +857,8 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 				interactionResult = nil
 				interactionSent = time.Time{}
 				streamed = map[string]bool{}
+				reasoningParts = map[string]map[int]string{}
+				completedReasoning = map[string]bool{}
 				continue
 			}
 			return nil
