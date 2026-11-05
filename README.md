@@ -162,7 +162,7 @@ model = "codex/gpt-6-astra"
 index_bytes = 16384
 ```
 
-- `enabled_models` come first in the model picker, ahead of the rest of Codex's and Claude Code's catalogs, and Ctrl+N cycles through them.
+- A nonempty `enabled_models` is the allowlist for model selection: the picker, `/model provider/ID`, `--model`, and Ctrl+N offer only those models. When it is absent or empty, selection is unrestricted and Ctrl+N has no list to cycle. The configured profile model and a resumed session's model can remain active even when not on the list; they are not offered for selection. Switching profiles loads the new profile's model and allowlist.
 - `model` and each `enabled_models` entry are `provider/<model-id>`, or a TOML inline table such as `{ id = "provider/<model-id>", reasoning = "high", context_window = 128000 }` (a JSON object in JSON). The model starts at that effort when you launch with it or switch to it, and has a context window of its own. `reasoning` and `context_window` are optional.
 - `context_tokens` is the assumed window for every model without a `context_window` of its own. API providers compact the history at 85% of the model's window. The sidebar uses the window reported by Codex or Claude Code when available, with these settings as the fallback.
 - `workspace_instructions` names files at the workspace root, such as `AGENTS.md` or `CLAUDE.md`, whose contents join every turn as the repository's own context, labelled as such and without authority over the task. Omitted, nothing is read from a repository: a cloned project's files are not trusted by default. A missing file is skipped; a symlink or a file over 64 KiB is a warning.

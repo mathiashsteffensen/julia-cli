@@ -248,3 +248,18 @@ func TestSharedMergeJSONFieldNamesAndMapKeys(t *testing.T) {
 		t.Fatalf("field names and map keys: %+v, %v", cfg, err)
 	}
 }
+
+func TestModelAllowlistSharedAndEmptyProfileOverride(t *testing.T) {
+	dir := t.TempDir()
+	writeLayer(t, dir, "config.shared.toml", `enabled_models = ["codex/allowed", "claude/sonnet"]`)
+	writeLayer(t, dir, "config.work.json", `{}`)
+	cfg, err := LoadProfile(dir, "work")
+	if err != nil || !cfg.ModelSelectable("codex", "allowed") || !cfg.ModelSelectable("claude", "sonnet") || cfg.ModelSelectable("codex", "other") || cfg.ModelSelectable("codex", "") {
+		t.Fatalf("shared allowlist: %+v, %v", cfg.EnabledModels, err)
+	}
+	writeLayer(t, dir, "config.work.json", `{"enabled_models":[]}`)
+	cfg, err = LoadProfile(dir, "work")
+	if err != nil || !cfg.ModelSelectable("codex", "other") {
+		t.Fatalf("empty profile override should remove restriction: %+v, %v", cfg.EnabledModels, err)
+	}
+}

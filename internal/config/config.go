@@ -40,7 +40,7 @@ type Config struct {
 	Model              string `json:"-"`
 	ModelReasoning     string `json:"-"`
 	ModelContextWindow int    `json:"-"`
-	// EnabledModels are the models the picker lists and ctrl+n cycles, each
+	// EnabledModels restricts selection when nonempty and ctrl+n cycles it, each
 	// provider/<model-id> or an object with that id, a reasoning effort and a
 	// context window.
 	EnabledModels []ModelEntry `json:"enabled_models,omitempty"`
@@ -296,6 +296,16 @@ func (c Config) ReasoningFor(provider, model string) string {
 		}
 	}
 	return ""
+}
+
+// ModelSelectable reports whether an explicit selection is allowed. An absent
+// or empty list leaves selection unrestricted.
+func (c Config) ModelSelectable(provider, model string) bool {
+	if len(c.EnabledModels) == 0 {
+		return true
+	}
+	id := JoinModel(provider, model)
+	return slices.ContainsFunc(c.EnabledModels, func(entry ModelEntry) bool { return entry.ID == id })
 }
 
 // ContextWindowFor is the context window, in tokens, of a provider's model:

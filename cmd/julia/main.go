@@ -167,6 +167,9 @@ func run() error {
 	configDir := filepath.Dir(path)
 	// The "model" entry's reasoning belongs to that provider and model only.
 	backend, model := config.SplitModel(modelFlag)
+	if modelFlag != "" && !cfg.ModelSelectable(backend, model) {
+		return fmt.Errorf("--model %q is not in enabled_models", modelFlag)
+	}
 	if modelFlag != "" && (backend != cfg.Provider || model != cfg.Model) {
 		cfg.Provider, cfg.Model, cfg.ModelReasoning = backend, model, ""
 	}
@@ -429,8 +432,6 @@ func run() error {
 		}
 		return nil
 	}
-	settings := profileSettings(cfg)
-	uiConfig.EnabledModels, uiConfig.NamedProviders = settings.EnabledModels, settings.NamedProviders
 	// Switching profile replaces the runner's configuration between turns;
 	// the launch's --mode and --timeout hold in every profile.
 	uiConfig.Profile = profileLabel(path)
@@ -1094,7 +1095,8 @@ func (o onlyMemory) Execute(_ context.Context, call core.ToolCall) core.ToolResu
 // comes from configuration so the sidebar gauge and API compaction measure the
 // same budget.
 func baseUIConfig(s *core.Session, cfg config.Config, definitions []core.ToolDefinition) ui.Config {
-	return ui.Config{Session: s, Version: version, Mode: cfg.Mode, ToolDefinitions: definitions, ContextWindow: cfg.ContextTokens, Skills: userSkills}
+	settings := profileSettings(cfg)
+	return ui.Config{Session: s, Version: version, Mode: cfg.Mode, ToolDefinitions: definitions, ContextWindow: cfg.ContextTokens, Skills: userSkills, EnabledModels: settings.EnabledModels, NamedProviders: settings.NamedProviders}
 }
 
 // userSkills is every skill in ~/.agents/skills, for the interface's slash

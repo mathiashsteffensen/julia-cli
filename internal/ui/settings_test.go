@@ -139,9 +139,17 @@ func TestShiftTabReportsCatalogFailureWithoutChangingSettings(t *testing.T) {
 	}
 }
 
-func TestPickerListsEveryModelInOneList(t *testing.T) {
+func TestPickerListsOnlyEnabledModels(t *testing.T) {
 	cfg := settingsConfig()
 	cfg.NamedProviders = map[string]bool{"openrouter": true}
+	cfg.Models = func(context.Context) ([]core.ModelOption, error) {
+		return []core.ModelOption{
+			{ID: "current"},
+			{ID: "next", ReasoningEfforts: []string{"low", "medium"}, DefaultReasoning: "medium"},
+			{Provider: "claude", ID: "sonnet"},
+			{Provider: "openrouter", ID: "vendor/extra"},
+		}, nil
+	}
 	cfg.EnabledModels = []core.ModelOption{
 		{Provider: "openrouter", ID: "vendor/or-model-a", Name: "OpenRouter A", Description: "Saved model"},
 		{Provider: "codex", ID: "next", Name: "next", DefaultReasoning: "low"},
@@ -152,7 +160,7 @@ func TestPickerListsEveryModelInOneList(t *testing.T) {
 	for _, choice := range m.pickerChoices() {
 		labels = append(labels, choice.label)
 	}
-	if want := []string{"openrouter/vendor/or-model-a", "codex/next", "codex/current"}; !slices.Equal(labels, want) {
+	if want := []string{"openrouter/vendor/or-model-a", "codex/next"}; !slices.Equal(labels, want) {
 		t.Fatalf("picker lists %v, want %v", labels, want)
 	}
 	if option := modelOption(m.models, "codex", "next"); option == nil || len(option.ReasoningEfforts) != 2 || option.DefaultReasoning != "low" {
@@ -174,10 +182,9 @@ func TestPickerListsEveryModelInOneList(t *testing.T) {
 	}
 	fetchPicker(t, m, m.openPicker("model"))
 	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.cfg.Session.Provider != "codex" || m.cfg.Session.Model != "current" || m.cfg.Session.Reasoning != "medium" {
-		t.Fatal("Codex selection did not restore its model and default effort", m.cfg.Session)
+	if m.cfg.Session.Provider != "codex" || m.cfg.Session.Model != "next" || m.cfg.Session.Reasoning != "low" {
+		t.Fatal("Codex selection did not use its configured default effort", m.cfg.Session)
 	}
 }
 
@@ -482,7 +489,7 @@ func TestNextTurnReceivesChosenSettings(t *testing.T) {
 
 func TestPickerShowsEachModelsRecordedSpeed(t *testing.T) {
 	cfg := settingsConfig()
-	cfg.EnabledModels = []core.ModelOption{{Provider: "compatible", ID: "vendor/fast", Name: "Fast", Description: "Enabled model"}}
+	cfg.EnabledModels = []core.ModelOption{{Provider: "compatible", ID: "vendor/fast", Name: "Fast", Description: "Enabled model"}, {Provider: "codex", ID: "current"}, {Provider: "codex", ID: "next"}}
 	now := time.Now()
 	cfg.Throughput = func() map[string]throughput.Stats {
 		return map[string]throughput.Stats{
@@ -528,6 +535,51 @@ func TestThroughputNoteAges(t *testing.T) {
 	} {
 		if got := throughputNote(throughput.Stats{TokensPerSecond: 40, Calls: 3, LastUsed: now.Add(-tc.idle)}, now); got != tc.want {
 			t.Errorf("idle %v: %q, want %q", tc.idle, got, tc.want)
+		}
+	}
+}
+
+func TestModelAllowlistDirectSelectionAndCurrentReasoning(t *testing.T) {
+	cfg := settingsConfig()
+	cfg.NamedProviders = map[string]bool{"router": true}
+	cfg.EnabledModels = []core.ModelOption{{Provider: "codex", ID: "next"}, {Provider: "router", ID: "vendor/allowed"}}
+	m := testModel(t, cfg)
+	for _, command := range []string{"/model current", "/model codex/current", "/model codex/other", "/model claude/sonnet", "/model router/vendor/other", "/model codex"} {
+		m.input.SetValue(command)
+		m.submit()
+		if m.cfg.Session.Model != "current" || m.input.Value() != command || !strings.Contains(m.notice, "not in enabled_models") {
+			t.Fatalf("%q: model %q, draft %q, notice %q", command, m.cfg.Session.Model, m.input.Value(), m.notice)
+		}
+	}
+	m.input.SetValue("/reasoning medium")
+	m.submit()
+	if m.cfg.Session.Model != "current" || m.cfg.Session.Reasoning != "medium" {
+		t.Fatal("changing current model's reasoning should remain possible")
+	}
+	m.input.SetValue("/model router/vendor/allowed")
+	m.submit()
+	if m.cfg.Session.Provider != "router" || m.cfg.Session.Model != "vendor/allowed" {
+		t.Fatal("allowlisted direct selection failed")
+	}
+	if err := m.applySettings("codex", "current", ""); err == nil {
+		t.Fatal("internal selection allowed a non-allowlisted model")
+	}
+}
+
+func TestEmptyAllowlistLeavesPickerAndDirectSelectionUnrestricted(t *testing.T) {
+	for _, enabled := range [][]core.ModelOption{nil, {}} {
+		cfg := settingsConfig()
+		cfg.EnabledModels = enabled
+		m := testModel(t, cfg)
+		fetchPicker(t, m, m.openPicker("model"))
+		if got := m.pickerChoices(); len(got) != 2 {
+			t.Fatalf("unrestricted picker has %d choices", len(got))
+		}
+		m.closePicker()
+		m.input.SetValue("/model unknown-future-model")
+		m.submit()
+		if m.cfg.Session.Model != "unknown-future-model" {
+			t.Fatal("empty allowlist restricted direct selection")
 		}
 	}
 }

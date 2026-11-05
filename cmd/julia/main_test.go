@@ -250,3 +250,38 @@ func TestRuntimeRunsTheSkillTheUserInvoked(t *testing.T) {
 		t.Fatalf("a skill that has gone must stop the turn with a reason: %v", err)
 	}
 }
+
+func TestCLIModelAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"model":"codex/current","enabled_models":["codex/allowed","claude/sonnet"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	for _, tc := range []struct{ model, want string }{
+		{"codex/forbidden", "not in enabled_models"},
+		{"codex/current", "not in enabled_models"},
+		{"codex", "not in enabled_models"},
+		{"codex/allowed", ""},
+	} {
+		os.Args = []string{"julia", "--config", path, "--dir", dir, "--snapshot", "40", "--model", tc.model}
+		err := run()
+		if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) || tc.want == "" && err != nil {
+			t.Errorf("--model %s: %v, want %q", tc.model, err, tc.want)
+		}
+	}
+}
+
+func TestResumePreservesSavedModelOutsideAllowlist(t *testing.T) {
+	cfg := config.Default()
+	cfg.EnabledModels = []config.ModelEntry{{ID: "codex/allowed"}}
+	s := &core.Session{Directory: "/workspace", Provider: "codex", Model: "saved"}
+	if err := selectSessionModel(&cfg, s, "/workspace", "", "", false, true); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Model != "saved" || s.Model != "saved" {
+		t.Fatalf("resume changed the saved model: config %q, session %q", cfg.Model, s.Model)
+	}
+}

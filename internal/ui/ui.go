@@ -67,8 +67,7 @@ type Config struct {
 	// each true when it takes a reasoning effort.
 	NamedProviders map[string]bool
 	Models         func(context.Context) ([]core.ModelOption, error)
-	// EnabledModels are the configured enabled_models, which the picker lists
-	// first and ctrl+n cycles.
+	// EnabledModels restricts selection when nonempty and ctrl+n cycles it.
 	EnabledModels []core.ModelOption
 	ApplySettings func(*core.Session, string, string, string) error
 	// Profile is the active configuration profile. Profiles lists the

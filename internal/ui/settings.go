@@ -72,7 +72,7 @@ func (m *model) openPicker(kind string) tea.Cmd {
 	m.input.Blur()
 	m.notice = ""
 	if m.cfg.Demo {
-		m.models = previewModelOptions(m.cfg.Session.Provider)
+		m.models = mergeCatalog(m.cfg.EnabledModels, previewModelOptions(m.cfg.Session.Provider))
 		m.throughput = previewThroughput(m.cfg.Session.Provider, m.now)
 		return textinput.Blink
 	}
@@ -95,8 +95,8 @@ func (m *model) pickerSearch(placeholder string) textinput.Model {
 	return search
 }
 
-// rememberModel keeps a model the session used in the picker, so a model
-// missing from enabled_models stays reachable after switching away from it.
+// rememberModel keeps session models available when selection is unrestricted.
+// A nonempty enabled_models list still filters them out of the model picker.
 func (m *model) rememberModel(provider, model string) {
 	if model == "" {
 		return
@@ -472,6 +472,9 @@ func (m *model) pickerChoices() []settingChoice {
 		}
 	default:
 		for _, option := range m.models {
+			if !m.modelSelectable(option.Provider, option.ID) {
+				continue
+			}
 			detail := option.Description
 			if option.Name != "" && option.Name != option.ID {
 				detail = option.Name + " · " + detail
@@ -599,6 +602,10 @@ func (m *model) settingsCommand(prompt string) (bool, tea.Cmd) {
 		if prefix, id := config.SplitModel(parts[1]); slices.Contains(config.BuiltinProviders, prefix) || m.isNamed(prefix) {
 			provider, model = prefix, id
 		}
+		if !m.modelSelectable(provider, model) {
+			m.notice = "Settings unchanged: " + config.JoinModel(provider, model) + " is not in enabled_models."
+			return true, nil
+		}
 	} else {
 		reasoning = parts[1]
 		if reasoning == "default" {
@@ -620,6 +627,9 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 	reset := false
 	providerChanged := provider != m.cfg.Session.Provider
 	modelChanged := model != m.cfg.Session.Model
+	if (providerChanged || modelChanged) && !m.modelSelectable(provider, model) {
+		return fmt.Errorf("%s is not in enabled_models", config.JoinModel(provider, model))
+	}
 	if !m.reasoningSettingsFor(provider) || providerChanged {
 		// Never carry an effort across providers. A destination model's default
 		// can be restored below from its own catalog entry.
@@ -683,6 +693,15 @@ func (m *model) applySettings(provider, model, reasoning string) error {
 		m.notice = "Preview only · " + m.notice
 	}
 	return nil
+}
+
+func (m *model) modelSelectable(provider, model string) bool {
+	if len(m.cfg.EnabledModels) == 0 {
+		return true
+	}
+	return slices.ContainsFunc(m.cfg.EnabledModels, func(option core.ModelOption) bool {
+		return option.Provider == provider && option.ID == model
+	})
 }
 
 // cycleModel switches to the enabled model after the current one, as
@@ -790,6 +809,9 @@ func (m *model) pickerView() string {
 		start := max(0, selected-slots+1)
 		if len(choices) == 0 {
 			empty := "No matching models. Esc to use /model ID."
+			if len(m.cfg.EnabledModels) > 0 {
+				empty = "No matching enabled models."
+			}
 			switch p.kind {
 			case "reasoning":
 				empty = "No matching levels. Esc to use /reasoning LEVEL."

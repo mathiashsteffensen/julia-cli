@@ -135,3 +135,23 @@ func TestDemoProfilesNeverCallExternalCallbacks(t *testing.T) {
 		t.Fatalf("demo profile %q, notice %q", m.cfg.Profile, m.notice)
 	}
 }
+
+func TestProfileSwitchReplacesModelAllowlist(t *testing.T) {
+	var switched []string
+	cfg := profilesConfig(&switched)
+	cfg.EnabledModels = []core.ModelOption{{Provider: "codex", ID: "current"}}
+	m := testModel(t, cfg)
+	if err := m.switchProfile("work"); err != nil {
+		t.Fatal(err)
+	}
+	m.input.SetValue("/model current")
+	m.submit()
+	if m.cfg.Session.Model != "work-model" || !strings.Contains(m.notice, "not in enabled_models") {
+		t.Fatal("old profile's model remained selectable", m.notice)
+	}
+	m.input.SetValue("/model work-fast")
+	m.submit()
+	if m.cfg.Session.Model != "work-fast" {
+		t.Fatal("new profile's model was not selectable", m.notice)
+	}
+}
