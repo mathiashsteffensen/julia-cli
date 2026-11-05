@@ -58,7 +58,7 @@ func NewAPI(ctx context.Context, c APIConfig) (*API, error) {
 			return nil, err
 		}
 	}
-	client := &http.Client{Timeout: 10 * time.Minute, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{Transport: rateLimitTransport{base: http.DefaultTransport}, Timeout: 10 * time.Minute, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	var p fantasy.Provider
 	var err error
 	switch c.Provider {
@@ -176,7 +176,6 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 			agentOptions = append(agentOptions, fantasy.WithProviderOptions(a.reasoningOptions(effort)))
 		}
 	}
-	agent := fantasy.NewAgent(a.Model, agentOptions...)
 	limit := a.MaxSteps
 	if limit <= 0 {
 		limit = 256
@@ -271,6 +270,11 @@ func (a *API) Run(ctx context.Context, s *core.Session, prompt core.Prompt, tool
 		// The model's time over the step runs from the request, or the last
 		// retry of it, to the end of its response; tools run after that.
 		started, elapsed := time.Now(), time.Duration(0)
+		model := &rateLimitModel{LanguageModel: a.Model, onRetry: func(attempt int, delay time.Duration) {
+			emit(core.Event{Kind: "status", Text: fmt.Sprintf("Provider rate limit; retrying attempt %d of %d in %s", attempt, rateLimitAttempts, delay.Round(time.Millisecond))})
+			started = time.Now().Add(delay)
+		}}
+		agent := fantasy.NewAgent(model, agentOptions...)
 		_, err := agent.Stream(ctx, fantasy.AgentStreamCall{
 			Messages: a.request(history),
 			// On the call: Stream does not read fantasy.WithRepairToolCall.

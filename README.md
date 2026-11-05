@@ -78,6 +78,14 @@ the rest of the turn); any other key denies it.
 
 ## Providers
 
+API-provider streaming requests retry HTTP 429 up to five total attempts per
+step, with delays of 5, 10, 20 and 40 seconds. Valid `Retry-After` values take
+precedence. No retry starts after the two-minute retry window; an in-flight
+request keeps its normal timeout. JULIA reports retry progress and does not
+replay partial responses or completed tool actions. This policy does not change
+non-streaming compaction/review calls. Codex and Claude Code manage their own
+provider retries.
+
 | Provider          | Backend                                                               | API key env                |
 | ----------------- | --------------------------------------------------------------------- | -------------------------- |
 | `codex` (default) | Local Codex app-server, your ChatGPT sign-in                          | —                          |
