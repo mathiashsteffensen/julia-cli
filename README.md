@@ -154,6 +154,8 @@ enabled_models = [
   { id = "openrouter/vendor/model-b", reasoning = "high", context_window = 1000000 },
 ]
 workspace_instructions = ["AGENTS.md"]
+disabled_tools = ["WebSearch", "Subagent"]
+system_prompt = "compact"
 browser = "/Applications/Chromium.app"
 
 [[providers]]
@@ -179,6 +181,8 @@ index_bytes = 16384
 - `model` and each `enabled_models` entry are `provider/<model-id>`, or a TOML inline table such as `{ id = "provider/<model-id>", reasoning = "high", context_window = 128000 }` (a JSON object in JSON). The model starts at that effort when you launch with it or switch to it, and has a context window of its own. `reasoning` and `context_window` are optional.
 - `context_tokens` is the assumed window for every model without a `context_window` of its own. API providers compact the history at 85% of the model's window. The sidebar uses the window reported by Codex or Claude Code when available, with these settings as the fallback.
 - `workspace_instructions` names files at the workspace root, such as `AGENTS.md` or `CLAUDE.md`, whose contents join every turn as the repository's own context, labelled as such and without authority over the task. Omitted, nothing is read from a repository: a cloned project's files are not trusted by default. A missing file is skipped; a symlink or a file over 64 KiB is a warning.
+- `system_prompt` is `full` (the default) or `compact`: the same system prompt with JULIA's working rules in a shorter form (`internal/core/system-compact.md`), for a small local model trained on them. Your `system.md`, the runtime context and the skills stay the same; subagents get the same form.
+- `disabled_tools` names tools, such as `WebSearch` or `Subagent`, that neither the agent nor its subagents are offered; a call to one anyway is refused. A benchmark uses it to give every model the same tool set. Omitted, every tool is offered.
 - The last reasoning effort you picked for each provider is remembered in `~/.local/state/julia/preferences.json`. It applies at launch unless the model has its own `reasoning`, and `--reasoning` beats both.
 - Every model call is timed, and `~/.local/state/julia/throughput.json` keeps each model's last week of calls. The model picker (`ctrl+p`) shows each model's output tokens per second over them, with how long ago it was last used once that is more than a week. A model's old calls are dropped only when it is used again, so an idle model keeps its figures.
 - `subagents` assigns a model to each [subagent role](#subagent-roles) by name, as `provider/<model-id>` or `{"id": ..., "reasoning": ...}`. A role without one runs on the delegating agent's model. An assigned model starts at its entry's effort, else at the parent's when it is the parent's model, else at the one `model` or `enabled_models` gives it.
@@ -283,6 +287,8 @@ JavaScript, read the console and resize or switch to dark mode.
 snippets, and fetch returns a public page's main content as Markdown, 24 KiB at
 a time. Set `FIRECRAWL_API_KEY`, or let the first call open a browser
 authorization flow that saves a key to `~/.config/julia/firecrawl.json`.
+Yolo mode runs unattended, so it skips that flow: without a key, the call
+fails at once.
 
 `Slack` appears when `SLACK_BOT_TOKEN` holds a bot token: post a message, react
 to one, read a thread or channel, or list the channels the bot is in. Posting

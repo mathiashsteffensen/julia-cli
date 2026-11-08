@@ -300,6 +300,61 @@ func TestRuntimeDefinitionsMatchExecutorChain(t *testing.T) {
 	}
 }
 
+func TestRuntimeDisabledToolsReachNeitherAgentNorChildren(t *testing.T) {
+	disabled := []string{"WebSearch", core.QuestionTool}
+	search := core.ToolCall{ID: "call-1", Name: "WebSearch", Arguments: json.RawMessage(`{"query":"Go docs"}`)}
+	var chain, childTools []core.ToolDefinition
+	var parentResult, childResult core.ToolResult
+	backend := &questionBackend{}
+	backend.run = func(ctx context.Context, s *core.Session, _ core.Prompt, executor core.ToolExecutor) error {
+		if s.ParentID != "" {
+			childTools = executor.Definitions()
+			childResult = executor.Execute(ctx, search)
+			s.Messages = append(s.Messages, core.Message{Role: "assistant", Content: "child done"})
+			return nil
+		}
+		chain = executor.Definitions()
+		parentResult = executor.Execute(ctx, search)
+		result := executor.Execute(ctx, core.ToolCall{ID: "call-2", Name: "Subagent", Arguments: json.RawMessage(`{"tasks":[{"role":"delegate","task":"search the web"}]}`)})
+		if result.IsError || !strings.Contains(result.Content, "child done") {
+			return fmt.Errorf("subagent failed: %+v", result)
+		}
+		return nil
+	}
+	ask := func(context.Context, core.Question) (core.Answer, error) { return core.Answer{Skipped: true}, nil }
+	runner, s := newQuestionRunner(backend, ask, true, t.TempDir())
+	runner.cfg.DisabledTools = disabled
+
+	if err := runQuestionBackend(runner, s); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(toolNames(runner.Definitions()), toolNames(chain)) || !hasTool(chain, "Subagent") {
+		t.Fatalf("registry %v, executor chain %v", toolNames(runner.Definitions()), toolNames(chain))
+	}
+	for _, name := range disabled {
+		if hasTool(chain, name) || hasTool(childTools, name) {
+			t.Fatalf("%s offered: parent %v, child %v", name, toolNames(chain), toolNames(childTools))
+		}
+	}
+	for _, result := range []core.ToolResult{parentResult, childResult} {
+		if !result.IsError || !strings.Contains(result.Content, "WebSearch is disabled") {
+			t.Fatalf("disabled tool ran: %+v", result)
+		}
+	}
+}
+
+func TestRuntimeCompactSystemPrompt(t *testing.T) {
+	backend := &questionBackend{run: func(context.Context, *core.Session, core.Prompt, core.ToolExecutor) error { return nil }}
+	runner, s := newQuestionRunner(backend, nil, false, t.TempDir())
+	runner.cfg.SystemPrompt = "compact"
+	if err := runQuestionBackend(runner, s); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(s.Instructions, core.CompactSystemPromptWith("")) {
+		t.Fatalf("instructions do not start with the compact prompt:\n%.300s", s.Instructions)
+	}
+}
+
 // writeSkill adds the skill name to dir, with extra frontmatter lines.
 func writeSkill(t *testing.T, dir, name, extra string) {
 	t.Helper()

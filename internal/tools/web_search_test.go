@@ -469,20 +469,23 @@ func TestWebSearchFirstUseSetup(t *testing.T) {
 	}
 }
 
-func TestWebSearchSetupDeniedOrHeadless(t *testing.T) {
+func TestWebSearchSetupDeniedHeadlessOrYolo(t *testing.T) {
+	allow := func(context.Context, core.Approval) (core.Decision, error) { return core.Decision{Allow: true}, nil }
 	for _, tc := range []struct {
-		name    string
-		approve core.Approver
+		name, mode string
+		approve    core.Approver
 	}{
-		{"denied", func(context.Context, core.Approval) (core.Decision, error) { return core.Decision{Reason: "no"}, nil }},
-		{"headless", nil},
+		{"denied", "auto", func(context.Context, core.Approval) (core.Decision, error) { return core.Decision{Reason: "no"}, nil }},
+		{"headless", "auto", nil},
+		// Yolo grants every action, but nobody is at a browser to authorize.
+		{"yolo", "yolo", allow},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, opened, polls := setupFixture(t, func(int, map[string]string) *http.Response {
 				t.Fatal("polled without consent")
 				return nil
 			})
-			e.config.Approve = tc.approve
+			e.config.Mode, e.config.Approve = tc.mode, tc.approve
 			r := invoke(e, "WebSearch", map[string]any{"query": "Go docs"})
 			if !r.IsError || !strings.Contains(r.Content, WebSearchKeyEnv) || *polls != 0 || len(*opened) != 0 {
 				t.Fatal(r)

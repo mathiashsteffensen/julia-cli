@@ -95,6 +95,13 @@ type Config struct {
 	// AGENTS.md, whose contents join the instructions as repository context.
 	// Empty reads none: a cloned repository's files are not trusted by default.
 	WorkspaceInstructions []string `json:"workspace_instructions,omitempty"`
+	// DisabledTools names tools, such as WebSearch or Subagent, that neither the
+	// agent nor its subagents are offered: a benchmark compares models on a
+	// fixed tool set.
+	DisabledTools []string `json:"disabled_tools,omitempty"`
+	// SystemPrompt is full (empty is full) or compact: JULIA's working rules
+	// in a shorter form, for a small local model trained on them.
+	SystemPrompt string `json:"system_prompt,omitempty"`
 	// Memory configures what JULIA keeps between sessions; see memory.Store.
 	Memory MemoryConfig `json:"memory"`
 }
@@ -653,6 +660,19 @@ func (c Config) Validate() error {
 	for _, name := range c.WorkspaceInstructions {
 		if name == "" || name != strings.TrimSpace(name) || len(name) > 255 || filepath.Base(name) != name || name == "." || name == ".." || strings.IndexFunc(name, unicode.IsControl) >= 0 {
 			return fmt.Errorf("workspace_instructions %q must be a plain file name at the workspace root, such as AGENTS.md", name)
+		}
+	}
+	switch c.SystemPrompt {
+	case "", "full", "compact":
+	default:
+		return fmt.Errorf("system_prompt must be full or compact, not %q", c.SystemPrompt)
+	}
+	if len(c.DisabledTools) > 32 {
+		return errors.New("disabled_tools may name at most 32 tools")
+	}
+	for _, name := range c.DisabledTools {
+		if name == "" || len(name) > 64 || strings.IndexFunc(name, func(r rune) bool { return (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') }) >= 0 {
+			return fmt.Errorf("disabled_tools %q must be a tool name, such as WebSearch", name)
 		}
 	}
 	if c.MaxSteps < 1 || c.MaxSteps > 10000 {

@@ -424,6 +424,12 @@ type QuestionResult struct {
 //go:embed system.md
 var systemTemplate string
 
+// compactTemplate is systemTemplate with shorter working rules, for small
+// local models trained on them (system_prompt = "compact").
+//
+//go:embed system-compact.md
+var compactTemplate string
+
 const customPromptPlaceholder = "<CUSTOM_SYSTEM_PROMPT>"
 
 // SystemPrompt is the shared baseline for every executing provider, without
@@ -433,9 +439,18 @@ var SystemPrompt = SystemPromptWith("")
 // SystemPromptWith is the baseline with custom, the user's own system prompt,
 // in its place. An empty custom leaves nothing there, not even a blank line.
 func SystemPromptWith(custom string) string {
+	return withCustomPrompt(systemTemplate, custom)
+}
+
+// CompactSystemPromptWith is SystemPromptWith with the compact working rules.
+func CompactSystemPromptWith(custom string) string {
+	return withCustomPrompt(compactTemplate, custom)
+}
+
+func withCustomPrompt(template, custom string) string {
 	custom = strings.TrimSpace(custom)
 	if custom == "" {
-		return strings.Replace(systemTemplate, customPromptPlaceholder+"\n\n", "", 1)
+		return strings.Replace(template, customPromptPlaceholder+"\n\n", "", 1)
 	}
-	return strings.Replace(systemTemplate, customPromptPlaceholder, custom, 1)
+	return strings.Replace(template, customPromptPlaceholder, custom, 1)
 }

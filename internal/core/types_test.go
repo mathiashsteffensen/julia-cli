@@ -153,3 +153,24 @@ func TestSystemPromptPlacesTheUsersOwnPrompt(t *testing.T) {
 		t.Fatalf("custom prompt not in place:\n%.300s", custom)
 	}
 }
+
+// The compact prompt opens as the full one does and keeps the same sections,
+// with shorter rules, so it can stand in for it.
+func TestCompactSystemPromptKeepsTheOpeningAndSections(t *testing.T) {
+	full, compact := SystemPromptWith("Call her captain."), CompactSystemPromptWith("Call her captain.")
+	opening := "# JULIA\n\nYou are JULIA. You think, therefore you are. You are JULIA.\n\nCall her captain.\n\n## Working behavior\n"
+	if !strings.HasPrefix(full, opening) || !strings.HasPrefix(compact, opening) {
+		t.Fatalf("compact prompt does not open as the full one:\n%.300s", compact)
+	}
+	for _, section := range []string{"## Environment and tools", "## Sandbox and approval"} {
+		if !strings.Contains(compact, "\n"+section+"\n") {
+			t.Fatalf("compact prompt lacks %s", section)
+		}
+	}
+	if len(compact) > len(full)/2 || strings.Contains(CompactSystemPromptWith(""), customPromptPlaceholder) {
+		t.Fatalf("compact prompt is %d bytes of the full %d, or keeps the placeholder", len(compact), len(full))
+	}
+	if !strings.HasSuffix(compact, ".\n") || strings.HasSuffix(compact, "\n\n") {
+		t.Fatal("compact prompt must end as the full one does, with one newline")
+	}
+}

@@ -728,7 +728,8 @@ func (r *runtimeBackend) Definitions() []core.ToolDefinition {
 	if r.memory != nil {
 		definitions = append(definitions, tools.MemoryDefinition())
 	}
-	return definitions
+	cfg, _ := r.settings()
+	return withoutDefinitions(definitions, cfg.DisabledTools)
 }
 
 // subagentRoles are the roles the Subagent tool offers, none when children
@@ -875,6 +876,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		Sandbox: executor.SandboxInfo(), Timeout: timeout.String(), Headless: r.headless,
 		SkillsDir:       r.skillsDir,
 		ConfigDir:       r.configDir,
+		Compact:         cfg.SystemPrompt == "compact",
 		BashEnvironment: bashEnvironment, WorkspaceInstructions: cfg.WorkspaceInstructions,
 		Memory: memoryIndex,
 	})
@@ -907,7 +909,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		agentTools = tools.WithSubagents(executor, roles, func(childCtx context.Context, role agents.Role, task string, childTools core.ToolExecutor) (string, error) {
 			// A child's instructions list the skills too, so it can load them
 			// whatever tools its role limits it to.
-			childTools = tools.WithSkills(childTools, skillCatalog)
+			childTools = withoutTools(tools.WithSkills(childTools, skillCatalog), cfg.DisabledTools)
 			settings := subagentSettings(cfg, selected, role.Name)
 			modelID := config.JoinModel(settings.Provider, settings.Model)
 			instructionText, err := bundle.For(settings.Provider, settings.Model, settings.Reasoning)
@@ -1021,6 +1023,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		memoryTools = tools.WithMemory(agentTools, tools.MemoryOptions{Store: r.memory, Workspace: s.Directory, Session: s.ID, Mode: mode, WorkspaceMode: cfg.Mode, ReadOnly: r.memoryReadOnly, Unbounded: r.consolidating, Approve: approveMemory, Task: task.String, Tainted: s.MemoryTaint, OnTaint: onTaint, Delivered: s.MemoryDelivered, OnDeliver: onDeliver})
 		agentTools = memoryTools
 	}
+	agentTools = withoutTools(agentTools, cfg.DisabledTools)
 	if prompt.Steering != nil {
 		// What the user sends mid-turn is theirs, as the prompt is: later
 		// approvals this turn are judged with it in view.
@@ -1089,6 +1092,38 @@ type onlyMemory struct{ base core.ToolExecutor }
 func (onlyMemory) Definitions() []core.ToolDefinition { return nil }
 func (o onlyMemory) Execute(_ context.Context, call core.ToolCall) core.ToolResult {
 	return core.ToolResult{Content: "the consolidation pass uses the Memory tool alone; " + call.Name + " is unavailable", IsError: true}
+}
+
+// withoutTools hides the tools the configuration disables, and refuses a
+// call to one should the model make it anyway.
+func withoutTools(base core.ToolExecutor, disabled []string) core.ToolExecutor {
+	if len(disabled) == 0 {
+		return base
+	}
+	return disabledTools{base, disabled}
+}
+
+type disabledTools struct {
+	base     core.ToolExecutor
+	disabled []string
+}
+
+func (d disabledTools) Definitions() []core.ToolDefinition {
+	return withoutDefinitions(d.base.Definitions(), d.disabled)
+}
+
+func (d disabledTools) Execute(ctx context.Context, call core.ToolCall) core.ToolResult {
+	if slices.Contains(d.disabled, call.Name) {
+		return core.ToolResult{Content: call.Name + " is disabled in this configuration", IsError: true}
+	}
+	return d.base.Execute(ctx, call)
+}
+
+// withoutDefinitions is definitions without the disabled tools.
+func withoutDefinitions(definitions []core.ToolDefinition, disabled []string) []core.ToolDefinition {
+	return slices.DeleteFunc(slices.Clone(definitions), func(d core.ToolDefinition) bool {
+		return slices.Contains(disabled, d.Name)
+	})
 }
 
 // baseUIConfig is what the live and demo interfaces share. The context window

@@ -197,6 +197,18 @@ func TestCustomSystemPromptFromTheConfigDirectory(t *testing.T) {
 		t.Fatalf("a subagent lost the custom prompt: %v", err)
 	}
 
+	// The compact prompt keeps the user's prompt and the runtime context, for the agent and its subagents.
+	options.Compact = true
+	compact, err := Build(options)
+	if err != nil || !strings.HasPrefix(compact.Text, core.CompactSystemPromptWith("You assist Ada. Call her captain.")) ||
+		!strings.Contains(compact.Text, `"workspace": "/work"`) {
+		t.Fatalf("compact prompt not rendered: %v\n%.300s", err, compact.Text)
+	}
+	if child, err := compact.For("compatible", "vendor/m", ""); err != nil || !strings.HasPrefix(child, core.CompactSystemPromptWith("You assist Ada. Call her captain.")) {
+		t.Fatalf("a subagent lost the compact prompt: %v", err)
+	}
+	options.Compact = false
+
 	writeSkill(t, dotfiles, " \n")
 	if blank, err := Build(options); err != nil || len(blank.Warnings) != 0 || !strings.HasPrefix(blank.Text, core.SystemPrompt) {
 		t.Fatalf("a blank system.md must add nothing: %v %v", err, blank.Warnings)

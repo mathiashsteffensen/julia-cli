@@ -116,7 +116,9 @@ func (e *Executor) searchKey(ctx context.Context, call core.ToolCall) (string, e
 		e.config.SearchKey = key
 		return key, nil
 	}
-	if e.config.SearchKeyFile == "" {
+	// Setup needs a person at a browser, and yolo mode runs unattended: the
+	// call would only wait out the authorization.
+	if e.config.SearchKeyFile == "" || e.config.Mode == "yolo" {
 		return "", errors.New("WebSearch is not configured: set " + WebSearchKeyEnv + " to a Firecrawl API key and restart JULIA")
 	}
 	key, err := e.setupWebSearch(ctx, call)
