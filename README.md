@@ -33,15 +33,15 @@ julia                         # TUI in the current directory
 julia --dir ~/code/project    # choose the workspace
 julia --continue              # resume this workspace's latest session
 julia --resume SESSION_ID     # resume a specific session
-julia --prompt "fix the build" [--json]   # headless, one task
+julia -p "fix the build" [--json]   # headless, one task; -p is short for --prompt
 julia --demo                  # offline UI preview
 julia --profile work          # run on ~/.config/julia/config.work.toml (or .json)
 julia sessions | login | doctor | config init
-julia memory [show NAME | forget NAME | confirm NAME | pin NAME | unpin NAME | stats [-days N] [-all] | consolidate | path | workspaces]
+julia memory [show NAME | forget NAME | confirm NAME | pin NAME | unpin NAME | stats [--days N] [--all] | consolidate | path | workspaces]
 ```
 
 Other flags: `--model`, `--reasoning`, `--mode`, `--memory off|read|write`,
-`--timeout`, `--config`, `--profile`. Run `julia -h`
+`--timeout`, `--config`, `--profile`. Run `julia -h`, or `julia COMMAND -h`,
 for the full list.
 
 `--resume` and `--continue` reuse the session's saved profile or explicit config
@@ -407,7 +407,7 @@ julia memory show NAME       # one note as its file; global/NAME or workspace/NA
 julia memory forget NAME
 julia memory confirm NAME    # clear a note's unverified mark once you have read it and stand behind it
 julia memory pin NAME        # show a note in full in every turn; unpin NAME makes it one line of the index again
-julia memory stats           # how memory was used over the last 30 days here; -days N (0 for all), -all for every workspace
+julia memory stats           # how memory was used over the last 30 days here; --days N (0 for all), --all for every workspace
 julia memory consolidate     # a headless pass that merges, tightens and prunes with the Memory tool alone, marks kept
 julia memory path | workspaces
 ```

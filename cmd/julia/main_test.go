@@ -112,8 +112,8 @@ func TestCLIReasoningAndModelOverridesConfigurationWithoutProviderCalls(t *testi
 		{"API cannot ignore configured effort", []string{"--model", "openai/vendor-model"}, "Codex, Claude Code and your providers only"},
 		{"explicit empty clears configured effort", []string{"--model", "local/vendor/model", "--reasoning="}, ""},
 		{"the compatible provider is gone", []string{"--model", "compatible/vendor/model", "--reasoning="}, "provider/<model-id>"},
-		{"removed endpoint flag", []string{"--compatible-base-url", "http://127.0.0.1:1/v1"}, "flag provided but not defined"},
-		{"removed key flag", []string{"--api-key-env", "OPENROUTER_API_KEY"}, "flag provided but not defined"},
+		{"removed endpoint flag", []string{"--compatible-base-url", "http://127.0.0.1:1/v1"}, "unknown flag"},
+		{"removed key flag", []string{"--api-key-env", "OPENROUTER_API_KEY"}, "unknown flag"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			os.Args = append([]string{"julia", "--config", path, "--dir", dir, "--snapshot", "40"}, tc.flags...)

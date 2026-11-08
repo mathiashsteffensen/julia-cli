@@ -22,8 +22,8 @@ be accepted for training. Rejected and deferred examples are not sent for judgin
 clear their decision with **u** if you want to judge them later.
 
 The judge is your configured model. To choose another provider/model, use the
-existing global `--model` or `--profile` flag before `mine`. The judge command
-prints its selected model. A cloud provider receives the selected transcripts,
+global `--model` or `--profile` flag. The judge command prints its selected
+model. A cloud provider receives the selected transcripts,
 following feedback, focus, and tool definitions. A configured local endpoint keeps
 those requests on that endpoint. No credentials or models are selected automatically
 from the source sessions.

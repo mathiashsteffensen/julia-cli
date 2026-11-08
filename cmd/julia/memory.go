@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -10,97 +9,163 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
 	"julia/internal/config"
 	"julia/internal/core"
 	"julia/internal/memory"
 )
 
-const memoryUsage = "usage: julia memory [show NAME | forget NAME | confirm NAME | pin NAME | unpin NAME | stats [-days N] [-all] | path | workspaces | consolidate]"
-
-// memoryCommand is `julia memory`: the notes a workspace sees, one shown as
+// memoryCommand is julia memory: the notes a workspace sees, one shown as
 // its file, one forgotten, one confirmed as read and stood behind, one pinned
-// for every task it bears on or unpinned, and where
-// the store and its workspaces are, and how memory has been used. args
-// are the words after memory and dir is the workspace, absolute and with
-// symlinks resolved, so it names the same store directory a session in it
-// would. Consolidation is the agent's work, run with the Memory tool, so main
-// intercepts that word before it reaches here; the case below only says so
-// when it has not.
-func memoryCommand(args []string, dir string, out io.Writer) error {
-	store, err := memory.Default()
+// for every task it bears on or unpinned, and where the store and its
+// workspaces are, and how memory has been used. workspace gives the
+// workspace a subcommand runs for, absolute and with symlinks resolved, so it
+// names the same store directory a session in it would. Consolidation is the
+// agent's work, a headless task, so the root command adds that subcommand.
+func memoryCommand(workspace func(*cobra.Command) (string, error)) *cobra.Command {
+	open := func(cmd *cobra.Command) (*memory.Store, string, error) {
+		dir, err := workspace(cmd)
+		if err != nil {
+			return nil, "", err
+		}
+		store, err := memory.Default()
+		return store, dir, err
+	}
+
+	notes := &cobra.Command{
+		Use:   "memory",
+		Short: "List the notes this workspace sees, then the global ones",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			store, dir, err := open(cmd)
+			if err != nil {
+				return err
+			}
+			return listMemory(store, dir, cmd.OutOrStdout())
+		},
+	}
+
+	for _, verb := range []struct{ name, short string }{
+		{"show", "Show one note as its file; global/NAME or workspace/NAME picks a scope"},
+		{"forget", "Forget one note"},
+		{"confirm", "Clear a note's unverified mark once you have read it and stand behind it"},
+		{"pin", "Show a note in full in every turn"},
+		{"unpin", "Make a pinned note one line of the index again"},
+	} {
+		notes.AddCommand(&cobra.Command{
+			Use:   verb.name + " NAME",
+			Short: verb.short,
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				store, dir, err := open(cmd)
+				if err != nil {
+					return err
+				}
+				return noteCommand(store, dir, verb.name, args[0], cmd.OutOrStdout())
+			},
+		})
+	}
+
+	var days int
+	var all bool
+	stats := &cobra.Command{
+		Use:   "stats",
+		Short: "Show how memory was used over the last days, here or in every workspace",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if days < 0 {
+				return errors.New("--days must be 0 or more")
+			}
+			store, dir, err := open(cmd)
+			if err != nil {
+				return err
+			}
+			return memoryStats(store, dir, days, all, time.Now(), cmd.OutOrStdout())
+		},
+	}
+	stats.Flags().IntVar(&days, "days", 30, "how many days back to count; 0 counts the whole log")
+	stats.Flags().BoolVar(&all, "all", false, "count every workspace, not only this one")
+	notes.AddCommand(stats)
+
+	notes.AddCommand(&cobra.Command{
+		Use:   "path",
+		Short: "Print where the notes are kept",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			store, _, err := open(cmd)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), store.Directory)
+			return nil
+		},
+	})
+
+	notes.AddCommand(&cobra.Command{
+		Use:   "workspaces",
+		Short: "List the workspaces that have notes",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			store, _, err := open(cmd)
+			if err != nil {
+				return err
+			}
+			workspaces, err := store.Workspaces()
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			for _, dir := range workspaces {
+				fmt.Fprintln(out, safe(dir))
+			}
+			if len(workspaces) == 0 {
+				fmt.Fprintln(out, "No workspace has notes yet.")
+			}
+			return nil
+		},
+	})
+	return notes
+}
+
+// noteCommand is julia memory show, forget, confirm, pin or unpin NAME: verb
+// is which.
+func noteCommand(store *memory.Store, dir, verb, name string, out io.Writer) error {
+	note, err := findNote(store, dir, name)
 	if err != nil {
 		return err
 	}
-	if len(args) == 0 {
-		return listMemory(store, dir, out)
-	}
-	switch args[0] {
-	case "show", "forget", "confirm", "pin", "unpin":
-		if len(args) != 2 {
-			return errors.New(memoryUsage)
-		}
-		note, err := findNote(store, dir, args[1])
+	switch verb {
+	case "show":
+		data, err := os.ReadFile(note.Path)
 		if err != nil {
 			return err
 		}
-		if args[0] == "pin" || args[0] == "unpin" {
-			text, err := pinNote(store, note, args[0] == "pin")
-			if err != nil {
-				return err
-			}
-			fmt.Fprintln(out, safe(text))
-			return nil
-		}
-		if args[0] == "confirm" {
-			if !note.Tainted {
-				fmt.Fprintf(out, "The %s note %s is not marked unverified.\n", note.Scope, note.Name)
-				return nil
-			}
-			if err := store.Confirm(note.Scope, note.Name); err != nil {
-				return err
-			}
-			fmt.Fprintf(out, "Confirmed %s note %s: %s\n", note.Scope, note.Name, safe(note.Description))
-			return nil
-		}
-		if args[0] == "show" {
-			data, err := os.ReadFile(note.Path)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintln(out, note.Path)
-			fmt.Fprint(out, safe(string(data)))
-			return nil
-		}
+		fmt.Fprintln(out, note.Path)
+		fmt.Fprint(out, safe(string(data)))
+	case "forget":
 		if err := store.Forget(note.Scope, note.Name); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "Forgot %s note %s: %s\n", note.Scope, note.Name, safe(note.Description))
-		return nil
-	case "stats":
-		return memoryStats(store, dir, args[1:], time.Now(), out)
-	case "path":
-		if len(args) != 1 {
-			return errors.New(memoryUsage)
+	case "confirm":
+		if !note.Tainted {
+			fmt.Fprintf(out, "The %s note %s is not marked unverified.\n", note.Scope, note.Name)
+			return nil
 		}
-		fmt.Fprintln(out, store.Directory)
-		return nil
-	case "workspaces":
-		if len(args) != 1 {
-			return errors.New(memoryUsage)
+		if err := store.Confirm(note.Scope, note.Name); err != nil {
+			return err
 		}
-		workspaces, err := store.Workspaces()
+		fmt.Fprintf(out, "Confirmed %s note %s: %s\n", note.Scope, note.Name, safe(note.Description))
+	case "pin", "unpin":
+		text, err := pinNote(store, note, verb == "pin")
 		if err != nil {
 			return err
 		}
-		for _, workspace := range workspaces {
-			fmt.Fprintln(out, safe(workspace))
-		}
-		if len(workspaces) == 0 {
-			fmt.Fprintln(out, "No workspace has notes yet.")
-		}
-		return nil
+		fmt.Fprintln(out, safe(text))
+	default:
+		return fmt.Errorf("julia memory %s is not a command", verb)
 	}
-	return errors.New(memoryUsage)
+	return nil
 }
 
 // markdownText escapes what Markdown would read as markup, so a lesson that
@@ -367,18 +432,12 @@ const silentAfter = 7 * 24 * time.Hour
 // memoryStats prints how memory was used over the last days, from the
 // activity log: whether notes reach turns, whether the agent uses what
 // reaches it, what the reflection step does and costs, then how each note
-// fared. It covers the notes a session in dir sees unless -all is given.
-func memoryStats(store *memory.Store, dir string, args []string, now time.Time, out io.Writer) error {
-	flags := flag.NewFlagSet("julia memory stats", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	days := flags.Int("days", 30, "how many days back to count; 0 counts the whole log")
-	all := flags.Bool("all", false, "count every workspace, not only this one")
-	if err := flags.Parse(args); err != nil || flags.NArg() > 0 || *days < 0 {
-		return errors.New("usage: julia memory stats [-days N] [-all]")
-	}
+// fared. It counts the last days, or the whole log for 0, and covers the
+// notes a session in dir sees unless all is set.
+func memoryStats(store *memory.Store, dir string, days int, all bool, now time.Time, out io.Writer) error {
 	var since time.Time
-	if *days > 0 {
-		since = now.Add(-time.Duration(*days) * 24 * time.Hour)
+	if days > 0 {
+		since = now.Add(-time.Duration(days) * 24 * time.Hour)
 	}
 	entries, skipped, err := store.Activity(since)
 	if err != nil {
@@ -386,7 +445,7 @@ func memoryStats(store *memory.Store, dir string, args []string, now time.Time, 
 	}
 	var live []*memory.Note
 	workspaces := []string{dir}
-	if *all {
+	if all {
 		if workspaces, err = store.Workspaces(); err != nil {
 			return err
 		}
@@ -403,7 +462,7 @@ func memoryStats(store *memory.Store, dir string, args []string, now time.Time, 
 		return err
 	}
 	live = append(live, global...)
-	if !*all {
+	if !all {
 		kept := entries[:0]
 		for _, entry := range entries {
 			if entry.Workspace == dir {
@@ -415,12 +474,12 @@ func memoryStats(store *memory.Store, dir string, args []string, now time.Time, 
 	st := memory.Summarize(entries, live)
 
 	where := "this workspace (" + safe(dir) + ")"
-	if *all {
+	if all {
 		where = "every workspace"
 	}
 	window := "the whole log"
-	if *days > 0 {
-		window = fmt.Sprintf("the last %d %s", *days, plural(*days, "day", "days"))
+	if days > 0 {
+		window = fmt.Sprintf("the last %d %s", days, plural(days, "day", "days"))
 	}
 	fmt.Fprintf(out, "Memory over %s · %s\n", window, where)
 	if len(entries) == 0 {
@@ -484,7 +543,7 @@ func memoryStats(store *memory.Store, dir string, args []string, now time.Time, 
 		switch {
 		case n.Workspace == "":
 			return "global/" + n.Name
-		case *all:
+		case all:
 			return filepath.Base(n.Workspace) + "/" + n.Name
 		}
 		return n.Name

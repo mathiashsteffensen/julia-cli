@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"julia/agents"
+	"github.com/spf13/cobra"
 	"julia/internal/config"
 	"julia/internal/core"
 	"julia/internal/miner"
@@ -61,6 +62,16 @@ func miningCommandFixture(t *testing.T) (miningCommand, *bytes.Buffer, string) {
 		},
 	}
 	return command, &out, source
+}
+
+// run is julia mine with args, on c.
+func (c miningCommand) run(ctx context.Context, args []string) error {
+	command := mineCommand(func(*cobra.Command) (miningCommand, error) { return c, nil })
+	// Never nil: for nil, cobra reads os.Args, the test binary's.
+	command.SetArgs(append([]string{}, args...))
+	command.SetOut(c.output)
+	command.SilenceErrors, command.SilenceUsage = true, true
+	return command.ExecuteContext(ctx)
 }
 
 func TestMiningCommandFullWorkflowAndResume(t *testing.T) {
@@ -249,9 +260,15 @@ func TestMiningScanUsesCurrentWorkspaceUnlessAll(t *testing.T) {
 }
 
 func TestMiningWorkflowWithCurrentToolDefinitions(t *testing.T) {
-	state, workspace := t.TempDir(), t.TempDir()
-	sessions := filepath.Join(state, "sessions")
-	if err := os.Mkdir(sessions, 0700); err != nil {
+	state := t.TempDir()
+	// As --dir resolves it, so the session is in the scanned workspace.
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", state)
+	sessions := filepath.Join(state, "julia", "sessions")
+	if err := os.MkdirAll(sessions, 0700); err != nil {
 		t.Fatal(err)
 	}
 	// The Skill tool comes from the user's skills folder, not the workspace.
@@ -284,12 +301,19 @@ func TestMiningWorkflowWithCurrentToolDefinitions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Only mineCommand builds the real definitions; their descriptions must
-	// pass the report's secret checks, and these calls their schemas.
+	// Only julia mine scan builds the real definitions; their descriptions
+	// must pass the report's secret checks, and these calls their schemas.
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"model":"codex/test-judge"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	var out bytes.Buffer
 	directory := filepath.Join(t.TempDir(), "report")
 	ctx := context.Background()
-	if err := mineCommand(ctx, config.Config{Provider: "codex", Model: "test-judge"}, sessions, workspace, agents.Builtin(), []string{"scan", "--output", directory}, nil, &out); err != nil {
+	root := newCommand(configPath)
+	root.SetArgs([]string{"mine", "scan", "--dir", workspace, "--output", directory})
+	root.SetOut(&out)
+	if err := root.ExecuteContext(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "selected 1 candidates") {
@@ -453,8 +477,17 @@ func TestMiningJudgeUsesConfiguredEndpointWithoutTools(t *testing.T) {
 	}))
 	defer server.Close()
 	t.Setenv("OPENAI_API_KEY", "not-for-this-endpoint")
-	cfg := config.Config{Provider: "mining-local", Model: "judge-model", Providers: []config.ProviderConfig{{ID: "mining-local", BaseURL: server.URL + "/v1"}}}
-	if err := mineCommand(context.Background(), cfg, command.sessions, command.workspace, nil, []string{"judge", directory}, nil, output); err != nil {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := fmt.Sprintf(`{"model":"mining-local/judge-model","providers":[{"id":"mining-local","base_url":%q}]}`, server.URL+"/v1")
+	if err := os.WriteFile(configPath, []byte(cfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+	root := newCommand(configPath)
+	root.SetArgs([]string{"mine", "judge", directory})
+	root.SetOut(output)
+	if err := root.ExecuteContext(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if calls.Load() != 1 {

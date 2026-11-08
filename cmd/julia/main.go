@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,6 +18,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
+	"github.com/spf13/cobra"
 	"julia/agents"
 	"julia/internal/browser"
 	"julia/internal/config"
@@ -48,211 +48,44 @@ func run() error {
 	// them running with nobody to stop them.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
-	hangup, stopHangup := signal.NotifyContext(context.Background(), syscall.SIGHUP)
-	defer stopHangup()
 	configPath, err := config.Path()
 	if err != nil {
 		return err
 	}
-	flags := flag.NewFlagSet("julia", flag.ContinueOnError)
-	var path, profile, dir, prompt, modelFlag, reasoning, mode, resume, timeout, memoryFlag string
-	var cont, demo, jsonMode, showVersion bool
-	var snapshot int
-	flags.StringVar(&path, "config", configPath, "configuration file")
-	flags.StringVar(&profile, "profile", "", "configuration profile name (default: default)")
-	flags.StringVar(&dir, "dir", ".", "workspace directory")
-	flags.StringVar(&prompt, "prompt", "", "run one task without the TUI")
-	flags.StringVar(&modelFlag, "model", "", "provider/<model-id>: codex, claude, openai, anthropic, google or the id of one of your providers (bare codex uses your Codex model, bare claude Claude Code's default)")
-	flags.StringVar(&reasoning, "reasoning", "", "Reasoning effort (Codex model-supported value, Claude Code's low to max, or reasoning_effort for your providers; model support varies)")
-	flags.StringVar(&mode, "mode", "", "auto, ask, read-only, or yolo (no sandbox, no review: for an unattended container)")
-	flags.StringVar(&resume, "resume", "", "resume a saved session ID")
-	flags.StringVar(&timeout, "timeout", "", "maximum duration per task, e.g. 4h")
-	flags.StringVar(&memoryFlag, "memory", "", "off, read or write: whether notes kept between sessions are seen and saved (default write; read for a headless --prompt run)")
-	flags.BoolVar(&cont, "continue", false, "resume latest session in this directory")
-	flags.BoolVar(&demo, "demo", false, "explore the interface offline")
-	flags.BoolVar(&jsonMode, "json", false, "emit JSON events in headless mode")
-	flags.BoolVar(&showVersion, "version", false, "print version")
-	flags.IntVar(&snapshot, "snapshot", 0, "render an offline demo at this terminal width")
-	flags.Usage = func() {
-		fmt.Fprint(flags.Output(), "JULIA · a quiet interface for ambitious work\n\nUsage: julia [flags]\n       julia doctor | login | sessions | mine | config init\n")
-		flags.PrintDefaults()
-	}
-	if err = flags.Parse(os.Args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
+	root := newCommand(configPath)
+	if err := rejectSingleDashFlags(root, os.Args[1:]); err != nil {
 		return err
 	}
-	if showVersion {
-		fmt.Println("julia", version)
-		return nil
-	}
-	configSet, profileSet := false, false
-	flags.Visit(func(f *flag.Flag) {
-		configSet = configSet || f.Name == "config"
-		profileSet = profileSet || f.Name == "profile"
-	})
-	initializing := slices.Equal(flags.Args(), []string{"config", "init"})
-	if profile != "" && configSet {
-		return errors.New("choose either --config or --profile")
-	}
-	if profile == "shared" {
-		return errors.New(`--profile "shared" is reserved for shared configuration`)
-	}
-	if profile != "" && !config.ValidProfileName(profile) {
-		return fmt.Errorf("--profile %q is not a profile name, which is %s", profile, config.ProfileRule)
-	}
+	return root.ExecuteContext(ctx)
+}
 
-	store, err := session.Default()
+// runSession is the root command: the interface, or one headless task, which
+// --prompt and memory consolidate run.
+func (o *options) runSession(cmd *cobra.Command) error {
+	ctx := cmd.Context()
+	hangup, stopHangup := signal.NotifyContext(context.Background(), syscall.SIGHUP)
+	defer stopHangup()
+	l, err := o.open(cmd)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-	dir, err = filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	dir, err = filepath.EvalSymlinks(dir)
-	if err != nil {
-		return err
-	}
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		return errors.New("workspace must be a directory")
-	}
+	defer l.store.Close()
 
-	// Select and lock the conversation before loading any launch configuration.
-	// The post-lock read is the authority for its profile and model.
-	resuming := len(flags.Args()) == 0 && snapshot == 0 && (resume != "" || cont)
-	var s *core.Session
-	if resuming {
-		s, err = openResumeSession(store, dir, resume, cont, !demo)
-		if err != nil {
-			return err
-		}
-		if !configSet && !profileSet && s.ConfigPath != "" {
-			path, profile = s.ConfigPath, s.ConfigProfile
-			if profile == "" {
-				if _, err := os.Stat(path); err != nil {
-					return fmt.Errorf("saved configuration %s: %w", path, err)
-				}
-			}
-		}
-	}
-
-	var cfg config.Config
-	switch {
-	case profile != "":
-		profileDir := filepath.Dir(configPath)
-		if resuming && !configSet && !profileSet && s.ConfigPath != "" {
-			profileDir = filepath.Dir(s.ConfigPath)
-		}
-		path = config.ProfilePath(profileDir, profile)
-		if initializing {
-			// The profile is what config init creates.
-			cfg, err = config.Load(path)
-		} else {
-			cfg, err = config.LoadProfile(profileDir, profile)
-		}
-	default:
-		cfg, err = config.Load(path)
-	}
-	if err != nil {
-		return err
-	}
-	path, err = filepath.Abs(path)
-	if err != nil {
-		return err
-	}
-	// Profiles are the configuration files beside this one; see config.Profiles.
-	configDir := filepath.Dir(path)
-	// The "model" entry's reasoning belongs to that provider and model only.
-	backend, model := config.SplitModel(modelFlag)
-	if modelFlag != "" && !cfg.ModelSelectable(backend, model) {
-		return fmt.Errorf("--model %q is not in enabled_models", modelFlag)
-	}
-	if modelFlag != "" && (backend != cfg.Provider || model != cfg.Model) {
-		cfg.Provider, cfg.Model, cfg.ModelReasoning = backend, model, ""
-	}
-	reasoningSet := false
-	flags.Visit(func(f *flag.Flag) {
-		if f.Name == "reasoning" {
-			reasoningSet = true
-			cfg.Reasoning = reasoning
-		}
-	})
-	overrides := launchOverrides{mode: mode, timeout: timeout}
-	overrides.apply(&cfg)
-	// The model's own configured reasoning, else the last effort chosen for
-	// this provider, replaces the configured default; an explicit flag is
-	// itself a choice and becomes the new default.
+	cfg, s := l.cfg, l.session
+	resuming := s != nil
+	flags := cmd.Flags()
+	backend, model := config.SplitModel(o.model)
+	reasoningSet := flags.Changed("reasoning")
 	preferencesPath, preferencesErr := config.PreferencesPath()
-	if !reasoningSet {
-		var prefs config.Preferences
-		if preferencesErr == nil {
-			prefs, _ = config.LoadPreferences(preferencesPath)
-		}
-		cfg.ApplyStartingReasoning(prefs)
-	}
-	if err = cfg.Validate(); err != nil {
-		return err
-	}
-	if reasoningSet && preferencesErr == nil && !demo && snapshot == 0 {
-		_ = config.RememberReasoning(preferencesPath, cfg.Provider, cfg.Reasoning)
-	}
-	roles, err := loadRoles(path, cfg)
-	if err != nil {
-		return err
-	}
-	args := flags.Args()
-	// Consolidation is a headless task of the agent's: a pass over the notes
-	// with the Memory tool and nothing else, so the workspace tools run
-	// read-only while notes are written, and no reflection follows it.
-	consolidate := false
-	if len(args) > 0 {
-		switch args[0] {
-		case "doctor":
-			return doctor(ctx, cfg, path, roles, dir)
-		case "memory":
-			if len(args) != 2 || args[1] != "consolidate" {
-				return memoryCommand(args[1:], dir, os.Stdout)
-			}
-			consolidate = true
-			prompt, memoryFlag, cfg.Mode = memory.ConsolidationPrompt, "write", "read-only"
-		case "login":
-			return login(ctx, cfg, args[1:])
-		case "config":
-			if len(args) != 2 || args[1] != "init" {
-				return errors.New("usage: julia config init")
-			}
-			if err = config.Init(path); err != nil {
-				return err
-			}
-			fmt.Println("Created", path)
-			return nil
-		case "mine":
-			return mineCommand(ctx, cfg, store.Directory, dir, roles, args[1:], os.Stdin, os.Stdout)
-		case "sessions":
-			list, err := store.List()
-			if err != nil {
-				return err
-			}
-			for _, s := range list {
-				fmt.Printf("%s  %-10s  %s  %s\n", s.ID, safe(s.Provider), s.UpdatedAt.Format("Jan 02 15:04"), safe(s.Title))
-			}
-			if len(list) == 0 {
-				fmt.Println("No saved sessions yet.")
-			}
-			return nil
-		default:
-			return fmt.Errorf("unknown command %q (use --prompt for a headless task)", args[0])
-		}
-	}
-	linearToken, err := tools.LoadLinearToken(linearTokenFile(path))
+	// Profiles are the configuration files beside this one; see config.Profiles.
+	configDir := filepath.Dir(l.path)
+
+	linearToken, err := tools.LoadLinearToken(linearTokenFile(l.path))
 	if err != nil {
 		return fmt.Errorf("linear token: %w", err)
 	}
 	githubAuth, githubWarning := loadGitHubAuth()
-	mailConfig, err := tools.LoadMailConfig(mailConfigFile(path))
+	mailConfig, err := tools.LoadMailConfig(mailConfigFile(l.path))
 	if err != nil {
 		return fmt.Errorf("mail config: %w", err)
 	}
@@ -260,9 +93,10 @@ func run() error {
 	// headless task has no one to see what it saves, or to approve a save
 	// that follows content from outside the user's words, so it learns by
 	// reporting unless told otherwise.
+	memoryFlag := o.memory
 	if memoryFlag == "" {
 		memoryFlag = "write"
-		if prompt != "" {
+		if o.prompt != "" {
 			memoryFlag = "read"
 		}
 	}
@@ -276,40 +110,41 @@ func run() error {
 	default:
 		return errors.New("--memory must be off, read or write")
 	}
-	demoTools := append(tools.Definitions(roles, linearToken != "", mailConfig.Enabled(), githubAuth.Enabled()), tools.QuestionDefinition(), tools.ReviewDefinition())
-	if snapshot > 0 {
-		fmt.Print(ui.RenderDemo(snapshot, 40, demoTools...))
+	demoTools := append(tools.Definitions(l.roles, linearToken != "", mailConfig.Enabled(), githubAuth.Enabled()), tools.QuestionDefinition(), tools.ReviewDefinition())
+	if o.snapshot > 0 {
+		fmt.Print(ui.RenderDemo(o.snapshot, 40, demoTools...))
 		return nil
 	}
 	if s == nil {
-		s = session.New(dir, cfg.Provider, cfg.Model)
+		s = session.New(l.dir, cfg.Provider, cfg.Model)
 	}
-	if demo {
-		if err := selectSessionModel(&cfg, s, dir, backend, model, reasoningSet, resume != "" || cont); err != nil {
+	if o.demo {
+		if err := selectSessionModel(&cfg, s, l.dir, backend, model, reasoningSet, resuming); err != nil {
 			return err
 		}
 		preview := baseUIConfig(s, cfg, demoTools)
-		preview.Demo, preview.Profile = true, profileLabel(path)
+		preview.Demo, preview.Profile = true, profileLabel(l.path)
 		preview.Hangup = hangup
 		return ui.Run(preview)
 	}
 	if !resuming {
-		if err := store.Lock(s.ID); err != nil {
+		if err := l.store.Lock(s.ID); err != nil {
 			return err
 		}
 	}
-	if err := selectSessionModel(&cfg, s, dir, backend, model, reasoningSet, resuming); err != nil {
+	if err := selectSessionModel(&cfg, s, l.dir, backend, model, reasoningSet, resuming); err != nil {
 		return err
 	}
-	if !configSet && profile == "" && (profileSet || !resuming || s.ConfigPath == "") {
+	profile := l.profile
+	if !flags.Changed("config") && profile == "" && (flags.Changed("profile") || !resuming || s.ConfigPath == "") {
 		profile = config.DefaultProfile
 	}
-	s.ConfigPath, s.ConfigProfile = path, profile
-	if prompt == "" && !term.IsTerminal(os.Stdin.Fd()) {
+	s.ConfigPath, s.ConfigProfile = l.path, profile
+	if o.prompt == "" && !term.IsTerminal(os.Stdin.Fd()) {
 		return errors.New("interactive mode requires a terminal; use --prompt for headless work")
 	}
 	factory := func(ctx context.Context, selected config.Config) (core.Backend, core.Approver, error) {
-		return newBackend(ctx, selected, store.Save)
+		return newBackend(ctx, selected, l.store.Save)
 	}
 	raw, review, err := factory(ctx, cfg)
 	if err != nil {
@@ -317,7 +152,7 @@ func run() error {
 	}
 	approvals := make(chan ui.ApprovalRequest)
 	approve := func(ctx context.Context, a core.Approval) (core.Decision, error) {
-		if prompt != "" {
+		if o.prompt != "" {
 			return core.Decision{}, fmt.Errorf("human approval required: %s; resume in the TUI", a.Reason)
 		}
 		reply := make(chan core.Decision, 1)
@@ -336,43 +171,43 @@ func run() error {
 	// The tool is registered in every run so a session's tool catalog is the same
 	// in the TUI and headless; with nobody to answer, a headless question is skipped.
 	ask, triage, questions := headlessAsker, headlessTriager, (<-chan ui.QuestionRequest)(nil)
-	if prompt == "" {
+	if o.prompt == "" {
 		ask, triage, questions = ui.NewBridge()
 	}
 	duration, _ := time.ParseDuration(cfg.Timeout)
-	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: roles, approve: approve, review: review, ask: ask, triage: triage, makeBackend: factory, timeout: duration, parent: ctx, headless: prompt != "", checkpoint: store.Save, searchKeyFile: searchKeyFile(path), linearToken: linearToken, github: githubAuth, githubWarning: githubWarning, mail: mailConfig, memory: memoryStore, memoryReadOnly: memoryFlag == "read", consolidating: consolidate, configDir: configDir}
-	if consolidate {
+	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: l.roles, approve: approve, review: review, ask: ask, triage: triage, makeBackend: factory, timeout: duration, parent: ctx, headless: o.prompt != "", checkpoint: l.store.Save, searchKeyFile: searchKeyFile(l.path), linearToken: linearToken, github: githubAuth, githubWarning: githubWarning, mail: mailConfig, memory: memoryStore, memoryReadOnly: memoryFlag == "read", consolidating: o.consolidate, configDir: configDir}
+	if o.consolidate {
 		// The pass rewrites notes and nothing else: no one is asked, and a
 		// note it rewrites keeps its unverified mark, as a yolo save would.
 		runner.memoryMode = "yolo"
 	}
 	// Every timed model call feeds the speed shown beside each model in the picker.
 	throughputPath, throughputErr := throughput.Path()
-	if throughputErr == nil && !demo && snapshot == 0 {
+	if throughputErr == nil && !o.demo && o.snapshot == 0 {
 		runner.throughputPath = throughputPath
 	}
-	if prompt != "" {
-		s.Title = session.Title(prompt)
-		if consolidate {
+	if o.prompt != "" {
+		s.Title = session.Title(o.prompt)
+		if o.consolidate {
 			s.Title = "Consolidate memory"
 			// Not a conversation to continue: --continue skips it.
 			s.Role = "consolidation"
 		}
 		enc := json.NewEncoder(os.Stdout)
 		var transcript *ui.Transcript
-		if !jsonMode {
+		if !o.json {
 			transcript = ui.NewTranscript(os.Stdout, os.Stderr)
 		}
 		emit := func(e core.Event) {
-			if jsonMode {
+			if o.json {
 				_ = enc.Encode(e)
 				return
 			}
 			transcript.Show(e)
 		}
-		err = runner.Run(ctx, s, core.Prompt{Text: prompt}, nil, emit)
-		saveErr := store.Save(s)
-		if jsonMode {
+		err = runner.Run(ctx, s, core.Prompt{Text: o.prompt}, nil, emit)
+		saveErr := l.store.Save(s)
+		if o.json {
 			msg := "completed"
 			if err != nil {
 				msg = "failed"
@@ -384,7 +219,7 @@ func run() error {
 		return errors.Join(err, saveErr)
 	}
 	uiConfig := baseUIConfig(s, cfg, runner.Definitions())
-	uiConfig.Backend, uiConfig.Save, uiConfig.Approvals, uiConfig.Questions = runner, store.Save, approvals, questions
+	uiConfig.Backend, uiConfig.Save, uiConfig.Approvals, uiConfig.Questions = runner, l.store.Save, approvals, questions
 	if memoryStore != nil {
 		uiConfig.Memory = func(action, name string) (string, error) {
 			// The session's workspace, which a resumed session may not share with the current directory.
@@ -396,7 +231,7 @@ func run() error {
 	followups := make(chan ui.Followup)
 	runner.followups, runner.closed, uiConfig.Followups = followups, make(chan struct{}), followups
 	uiConfig.Children = func(parent string) ([]*core.Session, error) {
-		all, err := store.List()
+		all, err := l.store.List()
 		if err != nil {
 			return nil, err
 		}
@@ -422,7 +257,7 @@ func run() error {
 			}
 		}
 		previousProvider := current.Provider
-		if err := applySessionSettings(cfg, current, selectedProvider, selectedModel, reasoning, saveSessionProfile(store.Save, current, current.ConfigPath, current.ConfigProfile, selectedProvider, selectedModel)); err != nil {
+		if err := applySessionSettings(cfg, current, selectedProvider, selectedModel, reasoning, saveSessionProfile(l.store.Save, current, current.ConfigPath, current.ConfigProfile, selectedProvider, selectedModel)); err != nil {
 			return err
 		}
 		// A provider switch resets the effort rather than choosing one, so it must
@@ -434,18 +269,18 @@ func run() error {
 	}
 	// Switching profile replaces the runner's configuration between turns;
 	// the launch's --mode and --timeout hold in every profile.
-	uiConfig.Profile = profileLabel(path)
+	uiConfig.Profile = profileLabel(l.path)
 	uiConfig.Profiles = func() ([]ui.Profile, error) { return profileChoices(configDir) }
 	uiConfig.SwitchProfile = func(current *core.Session, name string) (ui.ProfileSettings, error) {
 		prefs := ""
 		if preferencesErr == nil {
 			prefs = preferencesPath
 		}
-		next, err := loadSwitchedProfile(configDir, name, overrides, prefs)
+		next, err := loadSwitchedProfile(configDir, name, launchOverrides{mode: o.mode, timeout: o.timeout}, prefs)
 		if err != nil {
 			return ui.ProfileSettings{}, err
 		}
-		if err := applySessionSettings(next, current, next.Provider, next.Model, next.Reasoning, saveSessionProfile(store.Save, current, config.ProfilePath(configDir, name), name, next.Provider, next.Model)); err != nil {
+		if err := applySessionSettings(next, current, next.Provider, next.Model, next.Reasoning, saveSessionProfile(l.store.Save, current, config.ProfilePath(configDir, name), name, next.Provider, next.Model)); err != nil {
 			return ui.ProfileSettings{}, err
 		}
 		runner.switchProfile(next)
@@ -491,7 +326,7 @@ func run() error {
 	pending := runner.finish(ctx, func() {
 		fmt.Fprintln(os.Stderr, "julia: finishing the reflection on your last turn · Ctrl+C skips it")
 	})
-	keepErr := keepAfterTurns(pending, s, store)
+	keepErr := keepAfterTurns(pending, s, l.store)
 	if runErr == nil {
 		width, _, err := term.GetSize(os.Stdout.Fd())
 		if err != nil {

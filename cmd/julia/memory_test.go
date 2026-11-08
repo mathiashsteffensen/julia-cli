@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"julia/internal/config"
 	"julia/internal/core"
 	"julia/internal/memory"
@@ -48,7 +49,12 @@ func seedMemory(t *testing.T) (*memory.Store, string) {
 func runMemory(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	err := memoryCommand(args, dir, &out)
+	command := memoryCommand(func(*cobra.Command) (string, error) { return dir, nil })
+	// Never nil: for nil, cobra reads os.Args, the test binary's.
+	command.SetArgs(append([]string{}, args...))
+	command.SetOut(&out)
+	command.SilenceErrors, command.SilenceUsage = true, true
+	err := command.Execute()
 	return out.String(), err
 }
 
@@ -147,7 +153,7 @@ func TestMemoryCommandShowAndForgetResolveScopes(t *testing.T) {
 }
 
 // The remaining forms name the store and its workspaces; anything else is
-// the usage line, and consolidation says main did not wire it.
+// an error that prints nothing.
 func TestMemoryCommandPathWorkspacesAndUsage(t *testing.T) {
 	store, dir := seedMemory(t)
 	if got, err := runMemory(t, dir, "path"); err != nil || got != store.Directory+"\n" {
@@ -156,21 +162,11 @@ func TestMemoryCommandPathWorkspacesAndUsage(t *testing.T) {
 	if got, err := runMemory(t, dir, "workspaces"); err != nil || got != dir+"\n" {
 		t.Fatalf("workspaces: %q %v", got, err)
 	}
-	for _, args := range [][]string{{"show"}, {"forget"}, {"show", "a", "b"}, {"path", "extra"}, {"workspaces", "extra"}, {"prune"}} {
+	for _, args := range [][]string{{"show"}, {"forget"}, {"show", "a", "b"}, {"confirm"}, {"confirm", "a", "b"}, {"path", "extra"}, {"workspaces", "extra"}, {"prune"}} {
 		got, err := runMemory(t, dir, args...)
-		if err == nil || err.Error() != memoryUsage || got != "" {
+		if err == nil || got != "" {
 			t.Fatalf("%v: %q %v", args, got, err)
 		}
-	}
-	for _, args := range [][]string{{"confirm"}, {"confirm", "a", "b"}} {
-		if _, err := runMemory(t, dir, args...); err == nil || err.Error() != memoryUsage {
-			t.Fatalf("%v: %v", args, err)
-		}
-	}
-	// Consolidation never reaches here: run intercepts the word and starts
-	// the agent, so a stray one is only the usage line.
-	if _, err := runMemory(t, dir, "consolidate"); err == nil || err.Error() != memoryUsage {
-		t.Fatalf("consolidate: %v", err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	if got, err := runMemory(t, dir, "workspaces"); err != nil || got != "No workspace has notes yet.\n" {
@@ -411,7 +407,7 @@ func TestMemoryStats(t *testing.T) {
 	// The notes were saved on 2026-10-16; a month on, the untouched ones are unused.
 	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 	var out bytes.Buffer
-	if err := memoryStats(store, dir, []string{"-days", "0"}, now, &out); err != nil {
+	if err := memoryStats(store, dir, 0, false, now, &out); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
@@ -440,7 +436,7 @@ func TestMemoryStats(t *testing.T) {
 	}
 	// Within the window only, and every workspace with -all.
 	out.Reset()
-	if err := memoryStats(store, dir, []string{"-days", "7", "-all"}, now, &out); err != nil {
+	if err := memoryStats(store, dir, 7, true, now, &out); err != nil {
 		t.Fatal(err)
 	}
 	if got := out.String(); !strings.Contains(got, "Memory over the last 7 days · every workspace") || !strings.Contains(got, "Nothing recorded yet") {

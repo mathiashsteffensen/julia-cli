@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
 	"golang.org/x/sys/unix"
 	"julia/agents"
 	"julia/internal/config"
@@ -21,24 +21,14 @@ import (
 	"julia/internal/ui"
 )
 
-const miningUsage = `Usage:
-  julia mine scan [--all] [--source-provider ID] [--source-model ID]
-                  [--since YYYY-MM-DD] [--limit 100] [--max-bytes 49152]
-                  [--output NEW_DIRECTORY] [--focus TEXT]
-  julia [--model PROVIDER/MODEL] mine judge [--call-timeout 2m] REPORT
-  julia mine review [--output NEW_DIRECTORY] [--min-rank 1]
-                    [--validation-percent 10] REPORT
-  julia mine export [--output NEW_DIRECTORY] [--min-rank 1]
-                    [--validation-percent 10] REPORT
+const miningGuide = `Turn saved sessions into a reviewed fine-tuning dataset.
 
 REPORT is a report.json file or its containing directory.
 Scan is local and read-only. Judge sends candidate transcripts to your selected
 model, with no tools. Review saves every decision; 1–5 accepts and ranks, r rejects,
 d defers, and e confirms export, which uses the review's export flags. Export
 writes training.jsonl, validation.jsonl, and manifest.json into a new private
-directory. No command changes source sessions.
-Global configuration, profile, workspace and model flags go before "mine".
-`
+directory. No command changes source sessions.`
 
 type miningCommand struct {
 	config      config.Config
@@ -51,9 +41,96 @@ type miningCommand struct {
 	review      func(context.Context, ui.MiningReviewConfig) error
 }
 
-func mineCommand(ctx context.Context, cfg config.Config, sessions, workspace string, roles []agents.Role, args []string, input io.Reader, output io.Writer) error {
+// scanFlags are the flags of julia mine scan.
+type scanFlags struct {
+	options       miner.ScanOptions
+	all           bool
+	since, output string
+}
+
+// reportFlags are the flags of the mining commands that take a report.
+type reportFlags struct {
+	callTimeout time.Duration // judge's
+	output      string        // export's, and review's, which exports too
+	export      miner.ExportOptions
+}
+
+// mineCommand is julia mine. open gives the mining command for the flags a
+// subcommand runs with.
+func mineCommand(open func(*cobra.Command) (miningCommand, error)) *cobra.Command {
+	mine := &cobra.Command{
+		Use:   "mine",
+		Short: "Turn saved sessions into a reviewed fine-tuning dataset",
+		Long:  miningGuide,
+		Args:  cobra.NoArgs,
+		RunE:  showHelp,
+	}
+
+	var scan scanFlags
+	scanCommand := &cobra.Command{
+		Use:   "scan",
+		Short: "Select candidate turns from saved sessions into a new report",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, err := open(cmd)
+			if err != nil {
+				return err
+			}
+			return c.scan(cmd.Context(), scan)
+		},
+	}
+	flags := scanCommand.Flags()
+	flags.BoolVar(&scan.all, "all", false, "include every workspace (default: current workspace)")
+	flags.StringVar(&scan.options.Provider, "source-provider", "", "only sessions recorded with this provider")
+	flags.StringVar(&scan.options.Model, "source-model", "", "only sessions recorded with this exact model ID")
+	flags.StringVar(&scan.since, "since", "", "only sessions updated on/after YYYY-MM-DD (UTC)")
+	flags.IntVar(&scan.options.Limit, "limit", 100, "maximum candidates, balanced across behavior signals")
+	flags.IntVar(&scan.options.MaxBytes, "max-bytes", 48*1024, "maximum transcript plus feedback bytes; larger turns are skipped, not truncated")
+	flags.StringVar(&scan.output, "output", "", "new directory for report.json and report.md (default: JULIA state directory)")
+	flags.StringVar(&scan.options.Focus, "focus", miner.DefaultFocus, "behavior the judge should evaluate")
+	mine.AddCommand(scanCommand)
+
+	for _, action := range []struct{ name, short string }{
+		{"judge", "Have the selected model assess each open candidate, with no tools"},
+		{"review", "Decide on each candidate: 1–5 accepts and ranks, r rejects, d defers, e exports"},
+		{"export", "Write the accepted candidates into a new private dataset directory"},
+	} {
+		var report reportFlags
+		command := &cobra.Command{
+			Use:   action.name + " REPORT",
+			Short: action.short,
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				c, err := open(cmd)
+				if err != nil {
+					return err
+				}
+				return c.withReport(cmd.Context(), action.name, args[0], report)
+			},
+		}
+		flags := command.Flags()
+		if action.name == "judge" {
+			flags.DurationVar(&report.callTimeout, "call-timeout", 2*time.Minute, "deadline per candidate model call")
+		} else {
+			// Review exports too, after e and y, so it takes the same export flags.
+			flags.StringVar(&report.output, "output", "", "new dataset directory (default: dataset beside report.json)")
+			flags.IntVar(&report.export.MinRank, "min-rank", 1, "lowest accepted human rank to export, 1–5")
+			flags.IntVar(&report.export.ValidationPercent, "validation-percent", 10, "hold out 0–50 percent by whole conversation group")
+		}
+		mine.AddCommand(command)
+	}
+	return mine
+}
+
+// openMining is the mining command for the flags cmd runs with. Only a scan
+// gets the tool definitions.
+func (o *options) openMining(cmd *cobra.Command) (miningCommand, error) {
+	l, err := o.open(cmd)
+	if err != nil {
+		return miningCommand{}, err
+	}
 	command := miningCommand{
-		config: cfg, sessions: sessions, workspace: workspace, input: input, output: output,
+		config: l.cfg, sessions: l.store.Directory, workspace: l.dir, input: os.Stdin, output: cmd.OutOrStdout(),
 		review: ui.RunMiningReview,
 		makeJudge: func(ctx context.Context, cfg config.Config) (core.Completer, error) {
 			backend, _, err := newBackend(ctx, cfg, nil)
@@ -67,80 +144,58 @@ func mineCommand(ctx context.Context, cfg config.Config, sessions, workspace str
 			return completer, nil
 		},
 	}
-	if len(args) > 0 && args[0] == "scan" {
-		// These are normalized deployment schemas, not claims about what a
-		// historical session saw. Private integration tools are not mined.
-		for _, definition := range tools.Definitions(roles, false, false, false) {
-			if definition.Name != "Slack" {
-				command.definitions = append(command.definitions, definition)
-			}
-		}
-		command.definitions = append(command.definitions, tools.QuestionDefinition(), tools.ReviewDefinition(), tools.MemoryDefinition())
-		// The Skill tool as the runtime offers it: the user's skills folder,
-		// without the skills only the user may run.
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("locate skills: %w", err)
-		}
-		catalog, warnings, err := skills.Discover(skills.DefaultDir(home))
-		if err != nil {
-			return err
-		}
-		for _, warning := range warnings {
-			fmt.Fprintln(output, safe(warning))
-		}
-		if offered := catalog.Offered(); len(offered.Skills) > 0 {
-			command.definitions = append(command.definitions, tools.SkillDefinition(offered))
-		}
+	if cmd.Name() == "scan" {
+		command.definitions, err = miningDefinitions(l.roles, command.output)
 	}
-	return command.run(ctx, args)
+	return command, err
 }
 
-func (c miningCommand) run(ctx context.Context, args []string) error {
-	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		_, err := io.WriteString(c.output, miningUsage)
-		return err
+// miningDefinitions are the tools a scan reads tool calls against. These are
+// normalized deployment schemas, not claims about what a historical session
+// saw. Private integration tools are not mined.
+func miningDefinitions(roles []agents.Role, output io.Writer) ([]core.ToolDefinition, error) {
+	var definitions []core.ToolDefinition
+	for _, definition := range tools.Definitions(roles, false, false, false) {
+		if definition.Name != "Slack" {
+			definitions = append(definitions, definition)
+		}
 	}
-	switch args[0] {
-	case "scan":
-		return c.scan(ctx, args[1:])
-	case "judge", "review", "export":
-		return c.withReport(ctx, args[0], args[1:])
-	default:
-		return errors.New(miningUsage)
+	definitions = append(definitions, tools.QuestionDefinition(), tools.ReviewDefinition(), tools.MemoryDefinition())
+	// The Skill tool as the runtime offers it: the user's skills folder,
+	// without the skills only the user may run.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("locate skills: %w", err)
 	}
+	catalog, warnings, err := skills.Discover(skills.DefaultDir(home))
+	if err != nil {
+		return nil, err
+	}
+	for _, warning := range warnings {
+		fmt.Fprintln(output, safe(warning))
+	}
+	if offered := catalog.Offered(); len(offered.Skills) > 0 {
+		definitions = append(definitions, tools.SkillDefinition(offered))
+	}
+	return definitions, nil
 }
 
-func (c miningCommand) scan(ctx context.Context, args []string) error {
-	flags := flag.NewFlagSet("mine scan", flag.ContinueOnError)
-	flags.SetOutput(c.output)
-	options := miner.ScanOptions{Workspace: c.workspace}
-	var all bool
-	var since, output string
-	flags.BoolVar(&all, "all", false, "include every workspace (default: current workspace)")
-	flags.StringVar(&options.Provider, "source-provider", "", "only sessions recorded with this provider")
-	flags.StringVar(&options.Model, "source-model", "", "only sessions recorded with this exact model ID")
-	flags.StringVar(&since, "since", "", "only sessions updated on/after YYYY-MM-DD (UTC)")
-	flags.IntVar(&options.Limit, "limit", 100, "maximum candidates, balanced across behavior signals")
-	flags.IntVar(&options.MaxBytes, "max-bytes", 48*1024, "maximum transcript plus feedback bytes; larger turns are skipped, not truncated")
-	flags.StringVar(&output, "output", "", "new directory for report.json and report.md (default: JULIA state directory)")
-	flags.StringVar(&options.Focus, "focus", miner.DefaultFocus, "behavior the judge should evaluate")
-	if err := flags.Parse(args); err != nil {
-		return miningFlagError(err)
-	}
-	if flags.NArg() != 0 || options.Limit <= 0 || options.MaxBytes <= 0 || strings.TrimSpace(options.Focus) == "" {
+func (c miningCommand) scan(ctx context.Context, f scanFlags) error {
+	options := f.options
+	if options.Limit <= 0 || options.MaxBytes <= 0 || strings.TrimSpace(options.Focus) == "" {
 		return errors.New("scan needs positive limits and a nonempty focus; use julia mine scan --help")
 	}
-	if all {
-		options.Workspace = ""
+	if !f.all {
+		options.Workspace = c.workspace
 	}
-	if since != "" {
+	if f.since != "" {
 		var err error
-		options.Since, err = time.Parse("2006-01-02", since)
+		options.Since, err = time.Parse("2006-01-02", f.since)
 		if err != nil {
 			return errors.New("--since must be YYYY-MM-DD")
 		}
 	}
+	output := f.output
 	if output == "" {
 		output = filepath.Join(filepath.Dir(c.sessions), "mining", time.Now().UTC().Format("20060102T150405.000000000Z"))
 	}
@@ -182,28 +237,11 @@ func (c miningCommand) scan(ctx context.Context, args []string) error {
 	return nil
 }
 
-func (c miningCommand) withReport(ctx context.Context, action string, args []string) error {
-	flags := flag.NewFlagSet("mine "+action, flag.ContinueOnError)
-	flags.SetOutput(c.output)
-	var output string
-	timeout := 2 * time.Minute
-	options := miner.ExportOptions{MinRank: 1, ValidationPercent: 10}
-	if action == "judge" {
-		flags.DurationVar(&timeout, "call-timeout", timeout, "deadline per candidate model call")
+func (c miningCommand) withReport(ctx context.Context, action, path string, f reportFlags) error {
+	if action == "judge" && f.callTimeout <= 0 {
+		return errors.New("--call-timeout must be positive")
 	}
-	// Review exports too, after e and y, so it takes the same export flags.
-	if action == "export" || action == "review" {
-		flags.StringVar(&output, "output", "", "new dataset directory (default: dataset beside report.json)")
-		flags.IntVar(&options.MinRank, "min-rank", 1, "lowest accepted human rank to export, 1–5")
-		flags.IntVar(&options.ValidationPercent, "validation-percent", 10, "hold out 0–50 percent by whole conversation group")
-	}
-	if err := flags.Parse(args); err != nil {
-		return miningFlagError(err)
-	}
-	if flags.NArg() != 1 || timeout <= 0 {
-		return errors.New("provide one report path after command flags; use julia mine --help")
-	}
-	path, err := filepath.Abs(flags.Arg(0))
+	path, err := filepath.Abs(path)
 	if err != nil {
 		return err
 	}
@@ -225,11 +263,12 @@ func (c miningCommand) withReport(ctx context.Context, action string, args []str
 		return err
 	}
 	save := func() error { return miner.Checkpoint(path, report) }
+	output := f.output
 	if output == "" {
 		output = filepath.Join(filepath.Dir(path), "dataset")
 	}
 	export := func() (string, error) {
-		result, err := miner.Export(report, output, options)
+		result, err := miner.Export(report, output, f.export)
 		if err != nil {
 			return "", err
 		}
@@ -237,7 +276,7 @@ func (c miningCommand) withReport(ctx context.Context, action string, args []str
 	}
 	switch action {
 	case "judge":
-		err = c.judge(ctx, path, report, timeout, save)
+		err = c.judge(ctx, path, report, f.callTimeout, save)
 	case "review":
 		if c.review == nil {
 			return errors.New("interactive review is unavailable")
@@ -298,13 +337,6 @@ func (c miningCommand) judge(ctx context.Context, path string, report *miner.Rep
 	}
 	fmt.Fprintf(c.output, "Open for review: %d. Excluded by the judge's flags, hidden in review: %d.\n", open, excluded)
 	fmt.Fprintf(c.output, "Report: %s\nJudge usage: %d input, %d output tokens.\nNext: julia mine review %q\n", safe(path), report.Usage.Prompt(), report.Usage.Output, path)
-	return err
-}
-
-func miningFlagError(err error) error {
-	if errors.Is(err, flag.ErrHelp) {
-		return nil
-	}
 	return err
 }
 
