@@ -10,10 +10,7 @@ import (
 	"julia/internal/core"
 	"julia/internal/miner"
 
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // MiningReviewConfig supplies a report working copy and its persistence operations.
@@ -31,31 +28,17 @@ func RunMiningReview(ctx context.Context, cfg MiningReviewConfig) error {
 	if cfg.Report == nil {
 		return errors.New("mining review requires a report")
 	}
-	options := []tea.ProgramOption{}
-	if ctx != nil {
-		options = append(options, tea.WithContext(ctx))
-	}
-	if cfg.Input != nil {
-		options = append(options, tea.WithInput(cfg.Input))
-	}
-	if cfg.Output != nil {
-		options = append(options, tea.WithOutput(cfg.Output))
-	}
-	_, err := tea.NewProgram(newMiningReview(cfg), options...).Run()
-	if err != nil {
+	if err := runCardReview(ctx, newMiningReview(cfg), cfg.Input, cfg.Output); err != nil {
 		return fmt.Errorf("run mining review: %w", err)
 	}
 	return nil
 }
 
 type miningReview struct {
+	cardScreen
 	cfg        MiningReviewConfig
-	viewport   viewport.Model
-	width      int
-	height     int
 	selected   int
 	confirming bool
-	notice     string
 
 	// Cards the judge's flags exclude cannot be accepted, so the review
 	// hides them unless the reviewer asks to see them.
@@ -63,7 +46,7 @@ type miningReview struct {
 }
 
 func newMiningReview(cfg MiningReviewConfig) *miningReview {
-	m := &miningReview{cfg: cfg, viewport: viewport.New(), width: 80, height: 24}
+	m := &miningReview{cardScreen: newCardScreen(), cfg: cfg}
 	m.selectOpenCard(-1)
 	m.refresh()
 	return m
@@ -72,17 +55,13 @@ func newMiningReview(cfg MiningReviewConfig) *miningReview {
 func (m *miningReview) Init() tea.Cmd { return nil }
 
 func (m *miningReview) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.scrollCard(msg) {
+		return m, nil
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = max(1, msg.Width), max(1, msg.Height)
 		m.refresh()
-	case tea.MouseWheelMsg:
-		switch msg.Button {
-		case tea.MouseWheelUp:
-			m.viewport.ScrollUp(3)
-		case tea.MouseWheelDown:
-			m.viewport.ScrollDown(3)
-		}
 	case tea.KeyPressMsg:
 		key := msg.String()
 		if key == "q" || key == "esc" || key == "ctrl+c" {
@@ -104,14 +83,6 @@ func (m *miningReview) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirming = false
 				m.notice = "Export cancelled."
 				m.refresh()
-			case "up":
-				m.viewport.ScrollUp(1)
-			case "down":
-				m.viewport.ScrollDown(1)
-			case "pgup":
-				m.viewport.ScrollUp(max(1, m.viewport.Height()-1))
-			case "pgdown":
-				m.viewport.ScrollDown(max(1, m.viewport.Height()-1))
 			}
 			return m, nil
 		}
@@ -125,18 +96,6 @@ func (m *miningReview) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectRelative(-1)
 		case "right", "n":
 			m.selectRelative(1)
-		case "up":
-			m.viewport.ScrollUp(1)
-		case "down":
-			m.viewport.ScrollDown(1)
-		case "home":
-			m.viewport.GotoTop()
-		case "end":
-			m.viewport.GotoBottom()
-		case "pgup":
-			m.viewport.ScrollUp(max(1, m.viewport.Height()-1))
-		case "pgdown":
-			m.viewport.ScrollDown(max(1, m.viewport.Height()-1))
 		case "1", "2", "3", "4", "5":
 			m.decide(miner.Review{Decision: "keep", Rank: int(key[0] - '0')})
 		case "r":
@@ -286,41 +245,12 @@ func (m *miningReview) counts() miningCounts {
 }
 
 func (m *miningReview) refresh() {
-	framed := m.width >= 4 && m.height >= 8
-	bodyWidth := m.width
-	if framed {
-		bodyWidth -= 2
-	}
-	reserved := 1 // title
-	if m.height >= 4 {
-		reserved++ // selection
-	}
-	if m.height >= 5 {
-		reserved++ // status
-	}
-	if m.height >= 3 {
-		reserved++ // first help row
-	}
-	if m.height >= 8 {
-		reserved++ // second help row
-	}
-	if framed {
-		reserved += 2
-	}
-	m.viewport.SetWidth(max(1, bodyWidth))
-	m.viewport.SetHeight(max(1, m.height-reserved))
-
-	var content string
 	if m.confirming {
 		counts := m.counts()
-		content = fmt.Sprintf("CONFIRM EXPORT\n\nAccepted: %d  Rejected: %d  Deferred: %d  Open: %d  Excluded by judge: %d\n\nOnly explicitly accepted examples are eligible for export. Historical system instructions and tool definitions are missing; the report uses current tool definitions. Following user feedback is NOT EXPORTED.\n\nPress y to export, n to cancel, or q to quit.", counts.keep, counts.reject, counts.deferCount, counts.open, counts.excluded)
-	} else {
-		content = m.cardContent()
+		m.showCard(fmt.Sprintf("CONFIRM EXPORT\n\nAccepted: %d  Rejected: %d  Deferred: %d  Open: %d  Excluded by judge: %d\n\nOnly explicitly accepted examples are eligible for export. Historical system instructions and tool definitions are missing; the report uses current tool definitions. Following user feedback is NOT EXPORTED.\n\nPress y to export, n to cancel, or q to quit.", counts.keep, counts.reject, counts.deferCount, counts.open, counts.excluded))
+		return
 	}
-	// Hard wrapping preserves even long tool arguments and results, including
-	// spaces, instead of truncating them at the viewport edge.
-	content = strings.ReplaceAll(sanitize(content), "\t", "    ")
-	m.viewport.SetContent(ansi.Hardwrap(content, max(1, bodyWidth), true))
+	m.showCard(m.cardContent())
 }
 
 func (m *miningReview) cardContent() string {
@@ -405,7 +335,6 @@ func writeMiningMessages(b *strings.Builder, messages []core.Message, label stri
 }
 
 func (m *miningReview) View() tea.View {
-	width, height := m.width, m.height
 	counts := m.counts()
 	title := fmt.Sprintf("MINING REVIEW · %d cards · %d kept · %d rejected · %d deferred · %d open · %d excluded", len(m.candidates()), counts.keep, counts.reject, counts.deferCount, counts.open, counts.excluded)
 	selection := "No candidate selected"
@@ -431,38 +360,5 @@ func (m *miningReview) View() tea.View {
 		footer = "y confirm export · n cancel · q/esc quit"
 		footer2 = "↑/↓ pgup/pgdown scroll"
 	}
-	status := m.notice
-	if status == "" && !m.viewport.AtBottom() {
-		status = "More below ↓"
-	}
-	rows := []string{violetStyle.Render(ansi.Truncate(sanitize(title), width, ""))}
-	if height >= 4 {
-		rows = append(rows, mutedStyle.Render(ansi.Truncate(sanitize(selection), width, "")))
-	}
-	framed := width >= 4 && height >= 8
-	body := m.viewport.View()
-	if framed {
-		body = lipgloss.NewStyle().Background(panel).Border(cardBorder).BorderForeground(border).
-			BorderTopBackground(background).BorderBottomBackground(background).
-			BorderLeftBackground(panel).BorderRightBackground(panel).Render(body)
-	}
-	rows = append(rows, body)
-	if height >= 5 {
-		rows = append(rows, coralStyle.Render(ansi.Truncate(oneLine(status), width, "")))
-	}
-	if height >= 3 {
-		rows = append(rows, mutedStyle.Render(ansi.Truncate(footer, width, "")))
-	}
-	if height >= 8 {
-		rows = append(rows, mutedStyle.Render(ansi.Truncate(footer2, width, "")))
-	}
-	// Extremely short terminals retain the header and as much body as fits.
-	lines := strings.Split(strings.Join(rows, "\n"), "\n")
-	if len(lines) > height {
-		lines = lines[:height]
-	}
-	view := tea.NewView(strings.Join(lines, "\n"))
-	view.AltScreen = true
-	view.MouseMode = tea.MouseModeCellMotion
-	return view
+	return m.render(title, selection, footer, footer2)
 }

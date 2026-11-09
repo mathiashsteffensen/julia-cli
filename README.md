@@ -37,7 +37,7 @@ julia -p "fix the build" [--json]   # headless, one task; -p is short for --prom
 julia --demo                  # offline UI preview
 julia --profile work          # run on ~/.config/julia/config.work.toml (or .json)
 julia sessions | login | doctor | config init
-julia memory [show NAME | forget NAME | confirm NAME | pin NAME | unpin NAME | stats [--days N] [--all] | consolidate | path | workspaces]
+julia memory [review | show NAME | forget NAME | confirm NAME | pin NAME | unpin NAME | stats [--days N] [--all] | consolidate | path | workspaces]
 ```
 
 Other flags: `--model`, `--reasoning`, `--mode`, `--memory off|read|write`,
@@ -403,6 +403,7 @@ authorize an action, and the reviewer never sees one.
 
 ```sh
 julia memory                 # the notes this workspace sees, then the global ones
+julia memory review          # one card per note, from the first unverified one: c confirms, e edits, * pins, f forgets
 julia memory show NAME       # one note as its file; global/NAME or workspace/NAME picks a scope
 julia memory forget NAME
 julia memory confirm NAME    # clear a note's unverified mark once you have read it and stand behind it
@@ -415,6 +416,12 @@ julia memory path | workspaces
 The consolidation pass is offered no tool but Memory, and `--continue` passes
 over its session. `/memory`, `/memory NAME`, `/memory forget NAME` and `/memory pin|unpin NAME` do the same
 in the TUI, for the session's workspace.
+
+In `julia memory review`, `e` opens the note in `$VISUAL` or `$EDITOR`, without the
+fields the store keeps for itself. Saving makes it your note: it is verified, and
+the agent asks you before it replaces or forgets it. The old text waits in
+`.trash`. An editor that exits without a change, or with an error such as vim's
+`:cq`, saves nothing.
 
 `julia memory stats` measures whether memory earns its keep.
 

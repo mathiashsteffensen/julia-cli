@@ -495,6 +495,13 @@ func (n Note) Encode() []byte {
 	return []byte(b.String())
 }
 
+// Draft is the note's file as a person edits it: the lesson, type, cues and
+// body, without the times, source, session, counters and marks the store
+// keeps for itself.
+func (n Note) Draft() []byte {
+	return Note{Name: n.Name, Description: n.Description, Type: n.Type, Triggers: n.Triggers, Body: n.Body}.Encode()
+}
+
 // Parse reads a note from the contents of a file whose name, less its .md,
 // must be the note's. The scope is the caller's: a file does not say where it
 // lives.

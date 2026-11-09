@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,16 +16,18 @@ import (
 	"julia/internal/config"
 	"julia/internal/core"
 	"julia/internal/memory"
+	"julia/internal/ui"
 )
 
 // memoryCommand is julia memory: the notes a workspace sees, one shown as
 // its file, one forgotten, one confirmed as read and stood behind, one pinned
-// for every task it bears on or unpinned, and where the store and its
-// workspaces are, and how memory has been used. workspace gives the
-// workspace a subcommand runs for, absolute and with symlinks resolved, so it
-// names the same store directory a session in it would. Consolidation is the
-// agent's work, a headless task, so the root command adds that subcommand.
-func memoryCommand(workspace func(*cobra.Command) (string, error)) *cobra.Command {
+// for every task it bears on or unpinned, all of them reviewed one card at a
+// time, and where the store and its workspaces are, and how memory has been
+// used. workspace gives the workspace a subcommand runs for, absolute and
+// with symlinks resolved, so it names the same store directory a session in
+// it would; review runs the card review. Consolidation is the agent's work, a
+// headless task, so the root command adds that subcommand.
+func memoryCommand(workspace func(*cobra.Command) (string, error), review func(context.Context, ui.MemoryReviewConfig) error) *cobra.Command {
 	open := func(cmd *cobra.Command) (*memory.Store, string, error) {
 		dir, err := workspace(cmd)
 		if err != nil {
@@ -65,6 +70,19 @@ func memoryCommand(workspace func(*cobra.Command) (string, error)) *cobra.Comman
 			},
 		})
 	}
+
+	notes.AddCommand(&cobra.Command{
+		Use:   "review",
+		Short: "Go through the notes this workspace sees, one card each, to confirm, edit, pin or forget them",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			store, dir, err := open(cmd)
+			if err != nil {
+				return err
+			}
+			return reviewMemory(cmd.Context(), store, dir, review, cmd.InOrStdin(), cmd.OutOrStdout())
+		},
+	})
 
 	var days int
 	var all bool
@@ -166,6 +184,79 @@ func noteCommand(store *memory.Store, dir, verb, name string, out io.Writer) err
 		return fmt.Errorf("julia memory %s is not a command", verb)
 	}
 	return nil
+}
+
+// reviewMemory runs the card review of the notes a session in dir sees, in
+// the order the index lists them, after the warnings about the files that
+// could not be read. A note rewritten since the review read it is left as
+// it is: the reviewer has not seen its new text. An edit saves the note as
+// the user's own words, which verifies it.
+func reviewMemory(ctx context.Context, store *memory.Store, dir string, review func(context.Context, ui.MemoryReviewConfig) error, in io.Reader, out io.Writer) error {
+	recall, err := store.Recall(dir)
+	if err != nil {
+		return err
+	}
+	for _, warning := range recall.Warnings {
+		fmt.Fprintln(out, safe(warning))
+	}
+	if recall.Count() == 0 {
+		fmt.Fprintln(out, "No notes to review yet.")
+		return nil
+	}
+
+	// The text the card shows tells, not Updated: a note written by hand has
+	// its file's time until a confirm or pin writes the time down, to the second.
+	unchanged := func(note *memory.Note) error {
+		current, err := store.Load(note.Scope, note.Name)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(current.Draft(), note.Draft()) {
+			return fmt.Errorf("%s changed after the review opened; reopen the review to see it", note.Name)
+		}
+		return nil
+	}
+	return review(ctx, ui.MemoryReviewConfig{
+		Notes: slices.Concat(recall.Workspace, recall.Global),
+		Confirm: func(note *memory.Note) error {
+			if err := unchanged(note); err != nil {
+				return err
+			}
+			return store.Confirm(note.Scope, note.Name)
+		},
+		Forget: func(note *memory.Note) error {
+			if err := unchanged(note); err != nil {
+				return err
+			}
+			return store.Forget(note.Scope, note.Name)
+		},
+		Pin: func(note *memory.Note, pinned bool) error {
+			if err := unchanged(note); err != nil {
+				return err
+			}
+			return store.Pin(note.Scope, note.Name, pinned)
+		},
+		Edit: func(note *memory.Note, text []byte) (*memory.Note, error) {
+			if err := unchanged(note); err != nil {
+				return nil, err
+			}
+			edited, err := memory.Parse(note.Name+".md", text, note.Scope)
+			if err != nil {
+				return nil, err
+			}
+			// Save keeps the times, counters and pin the store holds, whatever
+			// the text says; who wrote it and whether it is verified are set here.
+			edited.Source, edited.Session, edited.Tainted = memory.SourceUser, "", false
+			if err := store.Save(edited); err != nil {
+				return nil, err
+			}
+			// The card holds the note as the file reads back, which the next
+			// decision compares with.
+			return store.Load(edited.Scope, edited.Name)
+		},
+		Input:  in,
+		Output: out,
+	})
 }
 
 // markdownText escapes what Markdown would read as markup, so a lesson that

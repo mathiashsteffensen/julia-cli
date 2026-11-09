@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"julia/internal/core"
 	"julia/internal/memory"
 	"julia/internal/session"
+	"julia/internal/ui"
 )
 
 // seedMemory points the default store at a fresh state directory and fills
@@ -49,7 +51,8 @@ func seedMemory(t *testing.T) (*memory.Store, string) {
 func runMemory(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	command := memoryCommand(func(*cobra.Command) (string, error) { return dir, nil })
+	// TestMemoryReview gives the card review its own stand-in.
+	command := memoryCommand(func(*cobra.Command) (string, error) { return dir, nil }, nil)
 	// Never nil: for nil, cobra reads os.Args, the test binary's.
 	command.SetArgs(append([]string{}, args...))
 	command.SetOut(&out)
@@ -461,5 +464,143 @@ func TestMemoryCommandPins(t *testing.T) {
 	}
 	if got, err := runMemory(t, dir, "unpin", "global/editor"); err != nil || !strings.HasPrefix(got, "Unpinned global note editor") {
 		t.Fatalf("unpin: %q %v", got, err)
+	}
+}
+
+// review goes through the notes this workspace sees, in index order, after
+// the warnings; confirming, forgetting, pinning and editing reach the store,
+// except for a note rewritten since the review read it. An edit saves the
+// note as the user's, and its text cannot set what the store keeps.
+func TestMemoryReview(t *testing.T) {
+	store, dir := seedMemory(t)
+	workspace := memory.Scope{Kind: memory.ScopeWorkspace, Workspace: dir}
+	if err := store.Save(&memory.Note{Name: "from-page", Description: "Something a page said", Type: memory.TypeReference, Scope: workspace, Tainted: true}); err != nil {
+		t.Fatal(err)
+	}
+	review := func(_ context.Context, cfg ui.MemoryReviewConfig) error {
+		var names []string
+		for _, note := range cfg.Notes {
+			names = append(names, note.Name)
+		}
+		if got := strings.Join(names, " "); got != "make-check deploy from-page editor" {
+			t.Errorf("reviewed %s, want the index order", got)
+		}
+		if err := cfg.Confirm(cfg.Notes[2]); err != nil {
+			t.Error(err)
+		}
+		if err := cfg.Forget(cfg.Notes[1]); err != nil {
+			t.Error(err)
+		}
+		if err := cfg.Pin(cfg.Notes[3], true); err != nil {
+			t.Error(err)
+		}
+
+		draft := string(cfg.Notes[2].Draft())
+		renamed := strings.Replace(draft, "name: from-page", "name: from-me", 1)
+		if _, err := cfg.Edit(cfg.Notes[2], []byte(renamed)); err == nil || !strings.Contains(err.Error(), "must match the file name") {
+			t.Errorf("renamed a note: %v", err)
+		}
+		forged := strings.Replace(draft, "description: Something a page said", "description: What I checked myself\nreads: 99\npinned: true\ntainted: true\nsource: agent", 1)
+		edited, err := cfg.Edit(cfg.Notes[2], []byte(forged))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if edited.Description != "What I checked myself" || edited.Source != memory.SourceUser || edited.Tainted || edited.Pinned || edited.Reads != 0 {
+			t.Errorf("edit saved %+v", edited)
+		}
+		// The card now holds the edited note, which takes further decisions.
+		if err := cfg.Pin(edited, true); err != nil {
+			t.Errorf("pin after an edit: %v", err)
+		}
+
+		if err := store.Save(&memory.Note{Name: "make-check", Description: "Rewritten meanwhile", Type: memory.TypeFeedback, Scope: workspace, Tainted: true}); err != nil {
+			t.Fatal(err)
+		}
+		stale := cfg.Notes[0]
+		for _, decide := range []func() error{
+			func() error { return cfg.Confirm(stale) },
+			func() error { return cfg.Forget(stale) },
+			func() error { return cfg.Pin(stale, true) },
+			func() error { _, err := cfg.Edit(stale, stale.Draft()); return err },
+		} {
+			if err := decide(); err == nil || !strings.Contains(err.Error(), "make-check changed after the review opened") {
+				t.Errorf("decided on a rewritten note: %v", err)
+			}
+		}
+		return nil
+	}
+	runReview := func(review func(context.Context, ui.MemoryReviewConfig) error) string {
+		var out bytes.Buffer
+		command := memoryCommand(func(*cobra.Command) (string, error) { return dir, nil }, review)
+		command.SetArgs([]string{"review"})
+		command.SetOut(&out)
+		if err := command.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+
+	if got := runReview(review); !strings.HasPrefix(got, "Memory note not loaded: ") {
+		t.Fatalf("warnings not shown: %q", got)
+	}
+	if note, err := store.Load(workspace, "from-page"); err != nil || note.Tainted || note.Source != memory.SourceUser || note.Description != "What I checked myself" {
+		t.Fatalf("confirm and edit did not reach the store: %+v %v", note, err)
+	}
+	if note, err := store.Load(memory.Scope{Kind: memory.ScopeGlobal}, "editor"); err != nil || !note.Pinned {
+		t.Fatalf("pin did not reach the store: %+v %v", note, err)
+	}
+	if _, err := store.Load(workspace, "deploy"); !os.IsNotExist(err) {
+		t.Fatalf("forget did not reach the store: %v", err)
+	}
+	if note, err := store.Load(workspace, "make-check"); err != nil || !note.Tainted || note.Description != "Rewritten meanwhile" {
+		t.Fatalf("the rewritten note changed: %+v %v", note, err)
+	}
+
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if got := runReview(func(context.Context, ui.MemoryReviewConfig) error {
+		t.Error("the review opened on an empty store")
+		return nil
+	}); got != "No notes to review yet.\n" {
+		t.Fatalf("empty store: %q", got)
+	}
+}
+
+// A note written by hand has no times, so the store reads its file's, to
+// the nanosecond; a confirm writes them down to the second. The card must
+// still take the next decision.
+func TestMemoryReviewDecidesTwiceOnAHandWrittenNote(t *testing.T) {
+	store, dir := seedMemory(t)
+	path := filepath.Join(store.Directory, "global", "by-hand.md")
+	if err := os.WriteFile(path, []byte("---\nname: by-hand\ndescription: Written by hand\ntype: project\ntainted: true\n---\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	written := time.Date(2026, 10, 16, 12, 0, 0, 500_000_000, time.UTC)
+	if err := os.Chtimes(path, written, written); err != nil {
+		t.Fatal(err)
+	}
+
+	review := func(_ context.Context, cfg ui.MemoryReviewConfig) error {
+		for _, note := range cfg.Notes {
+			if note.Name != "by-hand" {
+				continue
+			}
+			if err := cfg.Confirm(note); err != nil {
+				t.Errorf("confirm: %v", err)
+			}
+			if err := cfg.Pin(note, true); err != nil {
+				t.Errorf("pin after a confirm: %v", err)
+			}
+		}
+		return nil
+	}
+	command := memoryCommand(func(*cobra.Command) (string, error) { return dir, nil }, review)
+	command.SetArgs([]string{"review"})
+	command.SetOut(io.Discard)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if note, err := store.Load(memory.Scope{Kind: memory.ScopeGlobal}, "by-hand"); err != nil || note.Tainted || !note.Pinned {
+		t.Fatalf("confirm and pin did not reach the store: %+v %v", note, err)
 	}
 }

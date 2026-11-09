@@ -13,6 +13,7 @@ import (
 	"julia/internal/core"
 	"julia/internal/memory"
 	"julia/internal/session"
+	"julia/internal/ui"
 )
 
 // options are the command line's flags. The persistent ones choose what
@@ -156,7 +157,7 @@ func newCommand(configPath string) *cobra.Command {
 			return "", err
 		}
 		return l.dir, nil
-	})
+	}, ui.RunMemoryReview)
 	consolidate := &cobra.Command{
 		Use:   "consolidate",
 		Short: "Merge, tighten and prune the notes in a headless pass with the Memory tool alone",
