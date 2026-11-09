@@ -51,8 +51,9 @@ func DefaultDir(home string) string {
 type Skill struct {
 	Name        string
 	Description string
-	// Dir is the skill's folder with symlinks resolved; every file the skill
-	// offers lies inside it.
+	// Dir is the skill's folder with symlinks resolved. Every file the skill
+	// offers lies inside it, but for a SKILL.md that links elsewhere (see
+	// readEntry).
 	Dir string
 	// UserOnly marks a skill whose frontmatter sets disable-model-invocation:
 	// the user runs it as a slash command, and the model is never offered it.
@@ -115,10 +116,10 @@ func load(root, name string) (skill Skill, found bool, err error) {
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return skill, false, err
 	}
-	text, err := readText(filepath.Join(dir, Entry))
-	if errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Lstat(filepath.Join(dir, Entry)); errors.Is(err, fs.ErrNotExist) {
 		return skill, false, nil
 	}
+	text, err := readEntry(dir)
 	if err != nil {
 		return skill, false, err
 	}
@@ -219,7 +220,7 @@ func (c Catalog) Names() []string {
 
 // Read returns one file of a skill: its SKILL.md when file is empty, else a
 // path relative to the skill's folder. Nothing outside that folder can be
-// read, through ".." or through a symlink.
+// read, through ".." or through a symlink, but for SKILL.md (see readEntry).
 func (s Skill) Read(file string) (string, error) {
 	if file == "" {
 		file = Entry
@@ -227,6 +228,10 @@ func (s Skill) Read(file string) (string, error) {
 	if !filepath.IsLocal(file) {
 		return "", fmt.Errorf("file %q must be a path inside the %s skill's folder", file, s.Name)
 	}
+	if filepath.Clean(file) == Entry {
+		return readEntry(s.Dir)
+	}
+
 	path, err := filepath.EvalSymlinks(filepath.Join(s.Dir, file))
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", fmt.Errorf("the %s skill has no file %q", s.Name, file)
@@ -269,6 +274,21 @@ func (s Skill) Files() ([]string, error) {
 		return nil
 	})
 	return files, err
+}
+
+// readEntry reads the SKILL.md in a skill's folder. Unlike the files beside
+// it, SKILL.md may link to another folder's SKILL.md, as the folder itself may
+// be a link: a tool that keeps its skill up to date, such as Kero, installs a
+// folder holding a link to its own copy.
+func readEntry(dir string) (string, error) {
+	path, err := filepath.EvalSymlinks(filepath.Join(dir, Entry))
+	if err != nil {
+		return "", err
+	}
+	if filepath.Base(path) != Entry {
+		return "", fmt.Errorf("%s links to %q, which is not a %s", Entry, path, Entry)
+	}
+	return readText(path)
 }
 
 // readText reads a regular file of nonempty UTF-8 text of at most

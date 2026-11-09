@@ -124,6 +124,55 @@ func TestReadStaysInsideTheSkillFolder(t *testing.T) {
 	}
 }
 
+// Kero installs its skill as a folder holding a link to its own SKILL.md,
+// which it replaces as Kero updates.
+func TestALinkedSKILLmdIsFollowed(t *testing.T) {
+	dir := t.TempDir()
+	elsewhere := t.TempDir()
+	write(t, filepath.Join(elsewhere, "kero", Entry), "---\nname: kero\ndescription: Drive terminal sessions.\n---\nUse kero panes.")
+	write(t, filepath.Join(elsewhere, "misnamed.md"), "---\nname: misnamed\ndescription: Not a SKILL.md.\n---\nBody")
+
+	links := map[string]string{
+		"kero":     filepath.Join(elsewhere, "kero", Entry),
+		"misnamed": filepath.Join(elsewhere, "misnamed.md"),
+		"dangling": filepath.Join(elsewhere, "gone", Entry),
+	}
+	for name, target := range links {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(dir, name, Entry)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	catalog, warnings, err := Discover(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := catalog.Names(), []string{"kero"}; !slices.Equal(got, want) {
+		t.Fatalf("found %v, want %v; warnings:\n%s", got, want, strings.Join(warnings, "\n"))
+	}
+
+	// The link must lead to a file named SKILL.md, as a linked folder must
+	// hold one, and a link that leads nowhere is reported, not passed over.
+	if len(warnings) != 2 {
+		t.Fatalf("misnamed and dangling must warn once each, got %d:\n%s", len(warnings), strings.Join(warnings, "\n"))
+	}
+	for _, name := range []string{"misnamed", "dangling"} {
+		if !slices.ContainsFunc(warnings, func(w string) bool { return strings.Contains(w, `"`+name+`"`) }) {
+			t.Errorf("no warning names %s", name)
+		}
+	}
+
+	kero, _ := catalog.Find("kero")
+	for _, file := range []string{"", Entry, "./" + Entry} {
+		if text, err := kero.Read(file); err != nil || !strings.Contains(text, "Use kero panes.") {
+			t.Errorf("read %q: %q %v", file, text, err)
+		}
+	}
+}
+
 func TestReadRefusesFilesThatAreNotText(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "s", Entry), "---\nname: s\ndescription: S.\n---\n")
