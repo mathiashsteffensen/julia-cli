@@ -21,7 +21,7 @@ func newBackend(ctx context.Context, cfg config.Config, checkpoint func(*core.Se
 		if err != nil {
 			return nil, nil, err
 		}
-		backend := &provider.Codex{Binary: binary, Model: cfg.Model, Reasoning: cfg.Reasoning, ReadOnly: cfg.Mode == "read-only", Checkpoint: checkpoint, ReviewModel: reviewModel}
+		backend := &provider.Codex{Binary: binary, Model: cfg.Model, Reasoning: cfg.Reasoning, ReadOnly: cfg.Mode == "read-only", UseUsageResets: cfg.UseUsageResets, Checkpoint: checkpoint, ReviewModel: reviewModel}
 		if reviewer == "codex" {
 			return backend, backend.Review, nil
 		}
@@ -58,7 +58,7 @@ func approvalReviewer(cfg config.Config) core.Approver {
 	reviewer, model := cfg.Reviewer()
 	switch reviewer {
 	case "codex":
-		return codexApprovalReviewer(cfg.CodexBinary, model)
+		return codexApprovalReviewer(cfg.CodexBinary, model, cfg.UseUsageResets)
 	case "claude":
 		return claudeApprovalReviewer(cfg.ClaudeBinary, model)
 	}
@@ -79,13 +79,13 @@ func claudeApprovalReviewer(binary, model string) core.Approver {
 
 // Resolve lazily so API sessions can still use reads and human approval when
 // Codex is unavailable. Review failures use the existing human fallback.
-func codexApprovalReviewer(binary, model string) core.Approver {
+func codexApprovalReviewer(binary, model string, useUsageResets bool) core.Approver {
 	return func(ctx context.Context, approval core.Approval) (core.Decision, error) {
 		resolved, err := findCodex(binary)
 		if err != nil {
 			return core.Decision{}, fmt.Errorf("Codex approval reviewer unavailable: %w", err)
 		}
-		return (&provider.Codex{Binary: resolved, ReviewModel: model}).Review(ctx, approval)
+		return (&provider.Codex{Binary: resolved, ReviewModel: model, UseUsageResets: useUsageResets}).Review(ctx, approval)
 	}
 }
 

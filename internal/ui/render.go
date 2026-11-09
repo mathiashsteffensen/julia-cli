@@ -631,8 +631,8 @@ func toolSummary(call core.ToolCall) string {
 			return summary
 		}
 	}
-	if call.Name == "GitHub" {
-		if summary, ok := githubSummary(call.Arguments); ok {
+	if call.Name == "GitHub" || call.Name == "Bugsnag" {
+		if summary, ok := apiRequestSummary(call.Arguments); ok {
 			return summary
 		}
 	}

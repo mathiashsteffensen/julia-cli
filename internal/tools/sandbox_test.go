@@ -76,6 +76,7 @@ func TestSandboxIntegration(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "secret")
 	os.WriteFile(outside, []byte("outside-secret"), 0600)
 	os.WriteFile(filepath.Join(dir, ".env"), []byte("inside-secret"), 0600)
+	os.WriteFile(filepath.Join(dir, "bugsnag.json"), []byte("bugsnag-secret"), 0600)
 	tests := []struct {
 		name, command string
 		fail          bool
@@ -83,6 +84,8 @@ func TestSandboxIntegration(t *testing.T) {
 		{"workspace write", "printf allowed > allowed; cat allowed", false},
 		{"outside read", "cat " + outside, true},
 		{"secret read", "cat .env", true},
+		{"Bugsnag credential read", "cat bugsnag.json", true},
+		{"Bugsnag credential case alias", "cat BUGSNAG.JSON", true},
 		{"secret case alias", "cat .ENV", true},
 		{"secret symlink", "ln -s .env alias; cat alias", true},
 		{"secret hardlink", "ln .env hardalias; cat hardalias", true},
@@ -104,8 +107,9 @@ func TestSandboxIntegration(t *testing.T) {
 		t.Fatal("timeout failed", err, time.Since(start))
 	}
 	t.Setenv("JULIA_TEST_SECRET", "must-not-leak")
-	out, err := e.runSandbox(context.Background(), "printf '%s' \"${JULIA_TEST_SECRET-unset}\"", false, 5*time.Second)
-	if err != nil || out != "unset" {
+	t.Setenv(BugsnagTokenEnv, bugsnagFixtureToken)
+	out, err := e.runSandbox(context.Background(), "printf '%s %s' \"${JULIA_TEST_SECRET-unset}\" \"${BUGSNAG_AUTH_TOKEN-unset}\"", false, 5*time.Second)
+	if err != nil || out != "unset unset" {
 		t.Fatal("environment leaked", out, err)
 	}
 	if os.Getenv("JULIA_NETWORK_TEST") == "1" {

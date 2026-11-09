@@ -21,7 +21,7 @@ func TestGitHubSummary(t *testing.T) {
 		}
 	}
 	for _, args := range []string{`{}`, `{"method":"GET"}`, `{"path":`} {
-		if summary, ok := githubSummary(json.RawMessage(args)); ok {
+		if summary, ok := apiRequestSummary(json.RawMessage(args)); ok {
 			t.Errorf("%s: unexpected summary %q", args, summary)
 		}
 	}

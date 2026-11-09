@@ -271,8 +271,9 @@ func TestEscalationPreservesSanitizedEnvironmentAndLimits(t *testing.T) {
 	e, _ := fixture(t, "auto", nil)
 	e.config.Review = func(context.Context, core.Approval) (core.Decision, error) { return core.Decision{Allow: true}, nil }
 	t.Setenv("JULIA_ESCALATION_SECRET", "must-not-leak")
-	result := invoke(e, "Bash", escalationArgs("printf '%s' \"${JULIA_ESCALATION_SECRET-unset}\""))
-	if result.IsError || result.Content != "unset" {
+	t.Setenv(BugsnagTokenEnv, bugsnagFixtureToken)
+	result := invoke(e, "Bash", escalationArgs("printf '%s %s' \"${JULIA_ESCALATION_SECRET-unset}\" \"${BUGSNAG_AUTH_TOKEN-unset}\""))
+	if result.IsError || result.Content != "unset unset" {
 		t.Fatal("inherited credential leaked", result)
 	}
 	result = invoke(e, "Bash", escalationArgs("head -c 100000 /dev/zero | tr '\\0' x"))

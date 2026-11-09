@@ -54,6 +54,7 @@ type codexFixture struct {
 	threadModelOverride string
 	modelPages          []any
 	modelRequests       int
+	rpc                 func(string, map[string]json.RawMessage) bool
 }
 
 func newCodexFixture(t *testing.T) *codexFixture {
@@ -77,6 +78,9 @@ func (f *codexFixture) start(context.Context, string, string) (*codexClient, err
 		f.requests = append(f.requests, request)
 		var method string
 		_ = json.Unmarshal(request["method"], &method)
+		if f.rpc != nil && f.rpc(method, request) {
+			return len(p), nil
+		}
 		switch method {
 		case "initialize":
 			f.respond(request["id"], map[string]any{})

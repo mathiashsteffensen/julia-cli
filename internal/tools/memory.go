@@ -293,7 +293,7 @@ func (e *Memory) observe(call core.ToolCall, result core.ToolResult) {
 	unsandboxed := e.options.WorkspaceMode == "yolo" || e.options.WorkspaceMode == "" && e.options.Mode == "yolo"
 	source := ""
 	switch call.Name {
-	case "WebFetch", "WebSearch", "Browser", "Slack", "Linear", "GitHub", "Mail", "Subagent":
+	case "WebFetch", "WebSearch", "Browser", "Slack", "Linear", "GitHub", "Bugsnag", "Mail", "Subagent":
 		source = call.Name
 	case "Read", "List", "Grep", "Edit", "MultiEdit", "Write":
 		if _, inside := memoryWorkspacePath(args.Path, e.options.Workspace); !inside {

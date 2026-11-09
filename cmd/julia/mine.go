@@ -155,7 +155,7 @@ func (o *options) openMining(cmd *cobra.Command) (miningCommand, error) {
 // saw. Private integration tools are not mined.
 func miningDefinitions(roles []agents.Role, output io.Writer) ([]core.ToolDefinition, error) {
 	var definitions []core.ToolDefinition
-	for _, definition := range tools.Definitions(roles, false, false, false) {
+	for _, definition := range tools.Definitions(roles, false, false, false, false) {
 		if definition.Name != "Slack" {
 			definitions = append(definitions, definition)
 		}

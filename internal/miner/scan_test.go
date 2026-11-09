@@ -411,7 +411,7 @@ func TestSensitiveTextCommonFormats(t *testing.T) {
 }
 
 func TestScanExcludesPrivateCorrespondenceAcrossTurns(t *testing.T) {
-	for _, tool := range []string{"Mail", "Linear", "GitHub"} {
+	for _, tool := range []string{"Mail", "Linear", "GitHub", "Bugsnag"} {
 		t.Run(tool, func(t *testing.T) {
 			dir := t.TempDir()
 			messages := turn("read my mail", "mail-1", `{"path":"unused"}`)
@@ -428,7 +428,7 @@ func TestScanExcludesPrivateCorrespondenceAcrossTurns(t *testing.T) {
 
 // A compacted session can have lost the call and kept only the taint it left.
 func TestScanExcludesSessionsTaintedByPrivateTools(t *testing.T) {
-	for _, tool := range []string{"Mail", "Linear", "GitHub"} {
+	for _, tool := range []string{"Mail", "Linear", "GitHub", "Bugsnag"} {
 		t.Run(tool, func(t *testing.T) {
 			dir := t.TempDir()
 			s := sessionFor(id("a"), turn("Read this file", "read", `{"path":"file"}`))
@@ -443,7 +443,7 @@ func TestScanExcludesSessionsTaintedByPrivateTools(t *testing.T) {
 }
 
 func TestScanExcludesPrivateChildGroupsBeforeSourceFiltering(t *testing.T) {
-	for _, tool := range []string{"Mail", "Linear", "GitHub"} {
+	for _, tool := range []string{"Mail", "Linear", "GitHub", "Bugsnag"} {
 		t.Run(tool, func(t *testing.T) {
 			dir := t.TempDir()
 			parent := sessionFor(id("a"), []core.Message{{Role: "user", Content: "Summarize the subagent result."}, {Role: "assistant", Content: "A quotation from private correspondence."}})

@@ -85,6 +85,10 @@ func (o *options) runSession(cmd *cobra.Command) error {
 		return fmt.Errorf("linear token: %w", err)
 	}
 	githubAuth, githubWarning := loadGitHubAuth()
+	bugsnagAuth, err := tools.LoadBugsnagAuth(bugsnagAuthFile(l.path))
+	if err != nil {
+		return fmt.Errorf("bugsnag auth: %w", err)
+	}
 	mailConfig, err := tools.LoadMailConfig(mailConfigFile(l.path))
 	if err != nil {
 		return fmt.Errorf("mail config: %w", err)
@@ -110,7 +114,7 @@ func (o *options) runSession(cmd *cobra.Command) error {
 	default:
 		return errors.New("--memory must be off, read or write")
 	}
-	demoTools := append(tools.Definitions(l.roles, linearToken != "", mailConfig.Enabled(), githubAuth.Enabled()), tools.QuestionDefinition(), tools.ReviewDefinition())
+	demoTools := append(tools.Definitions(l.roles, linearToken != "", mailConfig.Enabled(), githubAuth.Enabled(), bugsnagAuth.Enabled()), tools.QuestionDefinition(), tools.ReviewDefinition())
 	if o.snapshot > 0 {
 		fmt.Print(ui.RenderDemo(o.snapshot, 40, demoTools...))
 		return nil
@@ -175,7 +179,7 @@ func (o *options) runSession(cmd *cobra.Command) error {
 		ask, triage, questions = ui.NewBridge()
 	}
 	duration, _ := time.ParseDuration(cfg.Timeout)
-	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: l.roles, approve: approve, review: review, ask: ask, triage: triage, makeBackend: factory, timeout: duration, parent: ctx, headless: o.prompt != "", checkpoint: l.store.Save, searchKeyFile: searchKeyFile(l.path), linearToken: linearToken, github: githubAuth, githubWarning: githubWarning, mail: mailConfig, memory: memoryStore, memoryReadOnly: memoryFlag == "read", consolidating: o.consolidate, configDir: configDir}
+	runner := &runtimeBackend{backend: raw, cfg: cfg, roles: l.roles, approve: approve, review: review, ask: ask, triage: triage, makeBackend: factory, timeout: duration, parent: ctx, headless: o.prompt != "", checkpoint: l.store.Save, searchKeyFile: searchKeyFile(l.path), linearToken: linearToken, github: githubAuth, githubWarning: githubWarning, bugsnag: bugsnagAuth, mail: mailConfig, memory: memoryStore, memoryReadOnly: memoryFlag == "read", consolidating: o.consolidate, configDir: configDir}
 	if o.consolidate {
 		// The pass rewrites notes and nothing else: no one is asked, and a
 		// note it rewrites keeps its unverified mark, as a yolo save would.
@@ -441,6 +445,8 @@ type runtimeBackend struct {
 	// unusable at startup. The first turn shows it, once.
 	githubWarning string
 	githubWarned  sync.Once
+	// bugsnag grants read-only API access to the configured cloud account.
+	bugsnag tools.BugsnagAuth
 	// mail is the mailbox from the mail.json file beside the configuration;
 	// without credentials there is no Mail tool.
 	mail tools.MailConfig
@@ -545,7 +551,7 @@ func headlessTriager(context.Context, core.Review) (core.Answer, error) {
 }
 
 func (r *runtimeBackend) Definitions() []core.ToolDefinition {
-	definitions := tools.Definitions(r.subagentRoles(), r.linearToken != "", r.mail.Enabled(), r.github.Enabled())
+	definitions := tools.Definitions(r.subagentRoles(), r.linearToken != "", r.mail.Enabled(), r.github.Enabled(), r.bugsnag.Enabled())
 
 	// As in Run: the skills offered to the model, and none when the folder
 	// cannot be read.
@@ -650,7 +656,7 @@ func (r *runtimeBackend) Run(ctx context.Context, s *core.Session, prompt core.P
 		invoked = &skill
 	}
 	task := newTaskContext(s.Messages, prompt.Text)
-	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: cfg.BrowserPath(), BrowserAuth: cfg.BrowserAuth, SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv), LinearToken: r.linearToken, GitHub: r.github, Mail: r.mail})
+	executor, err := tools.New(tools.Config{Directory: s.Directory, Mode: cfg.Mode, Approve: r.approve, Review: guard, Task: task.String(), Emit: emit, SearchKey: os.Getenv(tools.WebSearchKeyEnv), SearchKeyFile: r.searchKeyFile, ScratchDir: filepath.Join(os.TempDir(), "julia-scratch", s.ID), Browser: cfg.BrowserPath(), BrowserAuth: cfg.BrowserAuth, SlackToken: os.Getenv(tools.SlackTokenEnv), SlackOwner: os.Getenv(tools.SlackOwnerEnv), LinearToken: r.linearToken, GitHub: r.github, Bugsnag: r.bugsnag, Mail: r.mail})
 	if err != nil {
 		return err
 	}
@@ -1156,6 +1162,7 @@ func doctor(ctx context.Context, c config.Config, path string, roles []agents.Ro
 		fmt.Printf("Linear    off; save a token in %s\n", linearTokenFile(path))
 	}
 	fmt.Println(githubSummary())
+	fmt.Println(bugsnagSummary(path))
 	if mailConfig, err := tools.LoadMailConfig(mailConfigFile(path)); err != nil {
 		fmt.Printf("Mail      config unreadable: %s\n", safe(err.Error()))
 	} else if mailConfig.Enabled() {

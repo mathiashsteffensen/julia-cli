@@ -63,6 +63,8 @@ type Config struct {
 	// GitHub resolves the user's GitHub credential inside the harness, never
 	// through a model-controlled shell. Without it there is no GitHub tool.
 	GitHub GitHubAuth
+	// Bugsnag reads issues and events using a personal auth token.
+	Bugsnag BugsnagAuth
 	// Mail is the mailbox the Mail tool reads, from the mail.json file
 	// beside the configuration (see LoadMailConfig); without credentials
 	// there is no Mail tool.
@@ -172,7 +174,7 @@ func integer(description string) map[string]any {
 	return map[string]any{"type": "integer", "description": description}
 }
 func (e *Executor) Definitions() []core.ToolDefinition {
-	return definitions(nil, e.config.SlackToken != "", e.config.SlackOwner, e.config.LinearToken != "", e.config.Mail.Enabled(), e.config.GitHub.Enabled())
+	return definitions(nil, e.config.SlackToken != "", e.config.SlackOwner, e.config.LinearToken != "", e.config.Mail.Enabled(), e.config.GitHub.Enabled(), e.config.Bugsnag.Enabled())
 }
 
 // Definitions returns the same registry used by execution, without opening a
@@ -183,11 +185,12 @@ func (e *Executor) Definitions() []core.ToolDefinition {
 // mail is set: the caller has a mailbox's credentials (see LoadMailConfig).
 // GitHub is offered when github is set: the caller has a token or gh installed
 // (see LoadGitHubAuth); gh resolves its signed-in account on first use.
-func Definitions(roles []agents.Role, linear, mail, github bool) []core.ToolDefinition {
-	return definitions(roles, SlackEnabled(), os.Getenv(SlackOwnerEnv), linear, mail, github)
+// Bugsnag is offered when bugsnag is set (see LoadBugsnagAuth).
+func Definitions(roles []agents.Role, linear, mail, github, bugsnag bool) []core.ToolDefinition {
+	return definitions(roles, SlackEnabled(), os.Getenv(SlackOwnerEnv), linear, mail, github, bugsnag)
 }
 
-func definitions(roles []agents.Role, slack bool, slackOwner string, linear, mail, github bool) []core.ToolDefinition {
+func definitions(roles []agents.Role, slack bool, slackOwner string, linear, mail, github, bugsnag bool) []core.ToolDefinition {
 	path := str("Workspace-relative or absolute path. Inside the workspace, both use the same rules. Outside paths need review in auto mode, human approval in ask mode, and are blocked in read-only mode; yolo grants them. Symlinks, parent traversal and protected credential/git paths are forbidden.")
 	edits := map[string]any{"type": "array", "minItems": 1, "maxItems": 100, "items": schema(map[string]any{"old_string": str("Nonempty exact text occurring once"), "new_string": str("Replacement text")}, "old_string", "new_string")}
 	// Reading, editing, running, then the web: the sidebar packs the names in
@@ -217,6 +220,9 @@ func definitions(roles []agents.Role, slack bool, slackOwner string, linear, mai
 	}
 	if github {
 		definitions = append(definitions, githubDefinition())
+	}
+	if bugsnag {
+		definitions = append(definitions, bugsnagDefinition())
 	}
 	if len(roles) > 0 {
 		definitions = append(definitions, subagentDefinition(roles))
@@ -291,6 +297,8 @@ func (e *Executor) execute(ctx context.Context, call core.ToolCall, scope int) c
 		content, err = e.linear(ctx, call)
 	case "GitHub":
 		content, err = e.github(ctx, call)
+	case "Bugsnag":
+		content, err = e.bugsnag(ctx, call)
 	case "Mail":
 		content, err = e.mail(ctx, call)
 	case "Write", "Edit", "MultiEdit":
@@ -335,7 +343,7 @@ func bounded(s string) string {
 func protected(name string) bool {
 	for _, part := range strings.Split(filepath.ToSlash(name), "/") {
 		p := strings.ToLower(part)
-		if p == ".git" || p == ".ssh" || p == ".aws" || p == ".azure" || p == ".config" || p == ".codex" || p == ".julia" || p == ".gnupg" || p == ".netrc" || p == ".npmrc" || p == ".pypirc" || p == ".kube" || p == "credentials" || p == "credentials.json" || p == "auth.json" || strings.HasPrefix(p, ".env") || strings.HasPrefix(p, "id_rsa") || strings.HasPrefix(p, "id_ed25519") || strings.HasSuffix(p, ".pem") || strings.HasSuffix(p, ".key") {
+		if p == ".git" || p == ".ssh" || p == ".aws" || p == ".azure" || p == ".config" || p == ".codex" || p == ".julia" || p == ".gnupg" || p == ".netrc" || p == ".npmrc" || p == ".pypirc" || p == ".kube" || p == "credentials" || p == "credentials.json" || p == "auth.json" || p == "bugsnag.json" || strings.HasPrefix(p, ".env") || strings.HasPrefix(p, "id_rsa") || strings.HasPrefix(p, "id_ed25519") || strings.HasSuffix(p, ".pem") || strings.HasSuffix(p, ".key") {
 			return true
 		}
 	}

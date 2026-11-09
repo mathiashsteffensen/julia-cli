@@ -25,7 +25,8 @@ func loadRoles(configPath string, cfg config.Config) ([]agents.Role, error) {
 	linearToken, _ := tools.LoadLinearToken(linearTokenFile(configPath))
 	mailConfig, _ := tools.LoadMailConfig(mailConfigFile(configPath))
 	githubAuth, _ := tools.LoadGitHubAuth()
-	for _, definition := range tools.Definitions(nil, linearToken != "", mailConfig.Enabled(), githubAuth.Enabled()) {
+	bugsnagAuth, _ := tools.LoadBugsnagAuth(bugsnagAuthFile(configPath))
+	for _, definition := range tools.Definitions(nil, linearToken != "", mailConfig.Enabled(), githubAuth.Enabled(), bugsnagAuth.Enabled()) {
 		names = append(names, definition.Name)
 	}
 	roles, err := agents.Load(rolesDir(configPath), names)

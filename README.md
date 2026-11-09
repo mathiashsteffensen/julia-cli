@@ -59,7 +59,7 @@ metadata was added use the launch default instead.
 | Ctrl+N                        | Switch to the next of your `enabled_models`                                                                            |
 | Shift+Tab or `/reasoning`     | Change reasoning effort                                                                                                |
 | `/profile` or `/profile NAME` | Switch configuration profile                                                                                           |
-| Ctrl+O                        | Expand/collapse tool output, full subagent tasks, and the arguments of Slack, Linear, GitHub and Mail calls                    |
+| Ctrl+O                        | Expand/collapse tool output, full subagent tasks, and service-tool arguments                    |
 | Ctrl+T                        | Show/hide provider thinking, live or saved, in the conversation and fleet                                               |
 | Ctrl+F                        | The fleet: every subagent of the session, with its task, tool calls and report                                         |
 | Ctrl+V                        | Attach the clipboard's image (a screenshot, or an image file copied in Finder)                                         |
@@ -149,6 +149,7 @@ mode = "auto"
 max_steps = 256
 context_tokens = 256000
 timeout = "4h"
+use_usage_resets = false
 enabled_models = [
   "codex/gpt-6-astra",
   { id = "openrouter/vendor/model-b", reasoning = "high", context_window = 1000000 },
@@ -179,6 +180,7 @@ index_bytes = 16384
 
 - A nonempty `enabled_models` is the allowlist for model selection: the picker, `/model provider/ID`, `--model`, and Ctrl+N offer only those models. When it is absent or empty, selection is unrestricted and Ctrl+N has no list to cycle. The configured profile model and a resumed session's model can remain active even when not on the list; they are not offered for selection. Switching profiles loads the new profile's model and allowlist.
 - `model` and each `enabled_models` entry are `provider/<model-id>`, or a TOML inline table such as `{ id = "provider/<model-id>", reasoning = "high", context_window = 128000 }` (a JSON object in JSON). The model starts at that effort when you launch with it or switch to it, and has a context window of its own. `reasoning` and `context_window` are optional.
+- `use_usage_resets` defaults to `false`. When enabled, Codex can redeem an available reset credit after included usage runs out and continue the task, with at most one redemption attempt per provider run. It never buys credits or enables paid extra usage. Claude is not supported because no reset-redemption operation has been verified for its headless protocol.
 - `context_tokens` is the assumed window for every model without a `context_window` of its own. API providers compact the history at 85% of the model's window. The sidebar uses the window reported by Codex or Claude Code when available, with these settings as the fallback.
 - `workspace_instructions` names files at the workspace root, such as `AGENTS.md` or `CLAUDE.md`, whose contents join every turn as the repository's own context, labelled as such and without authority over the task. Omitted, nothing is read from a repository: a cloned project's files are not trusted by default. A missing file is skipped; a symlink or a file over 64 KiB is a warning.
 - `system_prompt` is `full` (the default) or `compact`: the same system prompt with JULIA's working rules in a shorter form (`internal/core/system-compact.md`), for a small local model trained on them. Your `system.md`, the runtime context and the skills stay the same; subagents get the same form.
@@ -264,6 +266,7 @@ They contain transcripts and command output.
 `Read`, `ViewImage`, `List`, `Grep`, `Edit`, `MultiEdit`, `Write`, `Bash`,
 `Terminal`, `Browser`, `WebSearch`, `WebFetch`, `Slack` (when a bot token is set),
 `Linear` (when an access token is saved), `GitHub` (with `gh` or a token),
+`Bugsnag` (read-only, with a personal auth token),
 `Mail` (when a mailbox's credentials are saved), `Subagent` (up to 3 parallel child tasks), `Memory` (see [Memory](#memory)),
 `Skill` (see [Skills](#skills)), and `AskUserQuestion` (interactive only).
 `Read`, `List`, `Grep`, `Edit`, `MultiEdit` and `Write` accept relative or absolute paths.
@@ -325,11 +328,46 @@ redirects or redirects for writes. Control characters and invalid UTF-8 in raw
 and diff text become U+FFFD, and the result says so. An existing `gh` credential may itself have write permissions:
 the tool's approval gate does not restrict a separately approved host shell.
 
+`Bugsnag` reads every organization and project your personal auth token can see,
+including issues and events with stack traces, breadcrumbs and metadata. In your
+Bugsnag dashboard, open **My account > Personal auth tokens**. Use a personal auth
+token, not a project API key used by notifier SDKs. Save
+`{"auth_token":"..."}` in `bugsnag.json` beside your configuration, normally
+`~/.config/julia/bugsnag.json`, and run `chmod 600 ~/.config/julia/bugsnag.json`.
+Alternatively, set `BUGSNAG_AUTH_TOKEN`. Restart JULIA after setup.
+
+The optional `endpoint` field accepts only `https://api.bugsnag.com` (default,
+for `app.bugsnag.com`) or `https://api.bugsnag.smartbear.com` (for
+`app.bugsnag.smartbear.com`). Select the endpoint that matches your dashboard.
+`julia doctor` shows the configured host without the token. Calls take an
+API-relative absolute `path` and an optional byte `offset` to continue long output.
+The tool sends only GET requests to the configured API origin. It has no mutation
+operations, even in yolo mode. Results are private, untrusted API data.
+
 `Mail` appears when `~/.config/julia/mail.json` holds a mailbox's IMAP
 credentials. It is made for [Proton Mail Bridge](https://proton.me/mail/bridge),
 which decrypts your account on this machine and serves it over IMAP on `127.0.0.1:1143` with a password of its own
 (a paid plan is needed): save `{"username": "you@proton.me", "password": "<the Bridge password>"}`,
 and JULIA connects with STARTTLS.
+
+For Gmail or Google Workspace, create an [app password](https://myaccount.google.com/apppasswords)
+with 2-Step Verification enabled, if your account policy allows it. Save this in
+`~/.config/julia/mail.json`, using the app password without spaces:
+
+```json
+{
+  "username": "you@example.com",
+  "password": "<Google app password>",
+  "address": "imap.gmail.com:993",
+  "security": "tls"
+}
+```
+
+Set the file permissions with `chmod 600 ~/.config/julia/mail.json` and restart JULIA.
+Do not use your normal Google password. Gmail archiving accepts only INBOX message
+IDs and moves messages to All Mail after your approval. All Mail must be visible
+in IMAP. Proton Bridge and Gmail share one configuration file, so saving one
+replaces the other.
 
 ### Subagent roles
 

@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// githubSummary identifies the API request without putting its body in the title.
-func githubSummary(arguments json.RawMessage) (string, bool) {
+// apiRequestSummary identifies a request without putting its body in the title.
+func apiRequestSummary(arguments json.RawMessage) (string, bool) {
 	var a struct{ Method, Path string }
 	if json.Unmarshal(arguments, &a) != nil || a.Path == "" {
 		return "", false
@@ -322,7 +322,7 @@ func callArguments(raw json.RawMessage) []argument {
 // only hint at, such as a message, an issue description or a note's body.
 func argumentsShown(name string) bool {
 	switch name {
-	case "Slack", "Linear", "Mail", "Memory", "GitHub":
+	case "Slack", "Linear", "Mail", "Memory", "GitHub", "Bugsnag":
 		return true
 	}
 	return false

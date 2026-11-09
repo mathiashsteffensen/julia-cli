@@ -290,6 +290,8 @@ func runReviewerProtocolProcess() int {
 			continue
 		case "initialize":
 			result = map[string]any{}
+		case "account/rateLimits/read":
+			result = map[string]any{"ordinaryUsageAllowed": true}
 		case "account/read":
 			result = map[string]any{"account": map[string]any{"type": "chatgpt"}, "requiresOpenaiAuth": true}
 		case "config/read":

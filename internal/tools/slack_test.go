@@ -50,12 +50,12 @@ func slackOK(body string) func(url.Values, int) *http.Response {
 
 func TestSlackOfferedOnlyWithToken(t *testing.T) {
 	t.Setenv(SlackTokenEnv, "")
-	if names := toolNames(Definitions(nil, false, false, false)); strings.Contains(strings.Join(names, " "), "Slack") {
+	if names := toolNames(Definitions(nil, false, false, false, false)); strings.Contains(strings.Join(names, " "), "Slack") {
 		t.Fatalf("Slack offered without a token: %v", names)
 	}
 	t.Setenv(SlackTokenEnv, "xoxb-test")
 	t.Setenv(SlackOwnerEnv, "U0OWNER")
-	definitions := Definitions(nil, false, false, false)
+	definitions := Definitions(nil, false, false, false, false)
 	last := definitions[len(definitions)-1]
 	if last.Name != "Slack" || !strings.Contains(last.Parameters["properties"].(map[string]any)["channel"].(map[string]any)["description"].(string), "U0OWNER") {
 		t.Fatalf("Slack definition %+v", last)

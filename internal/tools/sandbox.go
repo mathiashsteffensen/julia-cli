@@ -452,7 +452,7 @@ func seatbeltProfile(directory, tmp, scratch string, reach netAccess, closed []i
 		}
 	}
 	// Explicit denials override workspace grants, including symlink resolution.
-	pattern := `^.*/([.]ssh|[.]aws|[.]azure|[.]config|[.]codex|[.]julia|[.]gnupg|[.]kube|[.]netrc|[.]npmrc|[.]pypirc|[.]env[^/]*|credentials|credentials[.]json|auth[.]json|id_rsa[^/]*|id_ed25519[^/]*|[^/]+[.]pem|[^/]+[.]key)(/.*)?$`
+	pattern := `^.*/([.]ssh|[.]aws|[.]azure|[.]config|[.]codex|[.]julia|[.]gnupg|[.]kube|[.]netrc|[.]npmrc|[.]pypirc|[.]env[^/]*|credentials|credentials[.]json|auth[.]json|bugsnag[.]json|id_rsa[^/]*|id_ed25519[^/]*|[^/]+[.]pem|[^/]+[.]key)(/.*)?$`
 	// Seatbelt regex literals do not use Go's backslash escaping. Character
 	// classes keep punctuation literal and explicit letter classes also protect
 	// aliases on case-insensitive APFS volumes.

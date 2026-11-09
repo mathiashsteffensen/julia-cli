@@ -47,6 +47,9 @@ type Config struct {
 	// Providers are named OpenAI-compatible endpoints. Each id is a provider
 	// a model ID may name, as <id>/<model-id>.
 	Providers []ProviderConfig `json:"providers,omitempty"`
+	// UseUsageResets redeems available Codex reset credits when included usage is exhausted.
+	// Reset redemption is currently supported only by the Codex provider.
+	UseUsageResets bool `json:"use_usage_resets"`
 	// Mode is the approval mode: auto, ask, read-only, or yolo. Yolo runs
 	// Bash and terminals directly on the host, outside any sandbox and with
 	// the process environment, and grants every action without review. It is

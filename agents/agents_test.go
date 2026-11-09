@@ -17,7 +17,7 @@ import (
 // childTools are the tools a subagent has, which a role may list.
 func childTools() []string {
 	var names []string
-	for _, definition := range tools.Definitions(nil, false, false, false) {
+	for _, definition := range tools.Definitions(nil, false, false, false, false) {
 		names = append(names, definition.Name)
 	}
 	return names

@@ -530,7 +530,7 @@ func TestGitHubRegistryAndExecutorAgree(t *testing.T) {
 		return webResponse(http.StatusOK, "application/json", "{\"login\":\"fixture\"}"), nil
 	})
 	actual, _ := json.Marshal(e.Definitions())
-	registered, _ := json.Marshal(Definitions(nil, false, false, true))
+	registered, _ := json.Marshal(Definitions(nil, false, false, true, false))
 	if string(actual) != string(registered) {
 		t.Fatal("GitHub display registry differs from executor")
 	}

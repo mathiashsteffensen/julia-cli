@@ -192,7 +192,7 @@ func TestSubagentRoleIsOneLine(t *testing.T) {
 func TestSidebarFitsRegisteredTools(t *testing.T) {
 	for _, provider := range []string{"codex", "anthropic"} {
 		for _, height := range []int{24, 56} {
-			definitions := tools.Definitions(agents.Builtin(), false, false, false)
+			definitions := tools.Definitions(agents.Builtin(), false, false, false, true)
 			m := testModel(t, Config{
 				Session:         &core.Session{Provider: provider},
 				ToolDefinitions: definitions,

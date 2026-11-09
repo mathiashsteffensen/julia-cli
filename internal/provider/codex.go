@@ -25,11 +25,12 @@ import (
 // JULIA never opens, copies, or manages the user's OAuth credentials.
 // Dynamic tool execution is owned by ToolExecutor, not Codex's sandbox.
 type Codex struct {
-	Binary     string
-	Model      string
-	Reasoning  string
-	ReadOnly   bool
-	Checkpoint func(*core.Session) error
+	Binary         string
+	Model          string
+	Reasoning      string
+	ReadOnly       bool
+	UseUsageResets bool
+	Checkpoint     func(*core.Session) error
 	// ReviewModel is the model Review uses; empty is CodexReviewerModel.
 	ReviewModel string
 	start       func(context.Context, string, string) (*codexClient, error)
@@ -244,7 +245,7 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 		return err
 	}
 	if journal.PendingContinuation != "" {
-		return errors.New("Codex interaction continuation was interrupted with an uncertain outcome; inspect the thread before starting a new session")
+		return errors.New("Codex continuation was interrupted with an uncertain outcome; inspect the thread before starting a new session")
 	}
 	for _, entry := range journal.Calls {
 		if entry.Result == nil {
@@ -422,6 +423,8 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 	if schema != nil {
 		turnParams["outputSchema"] = schema
 	}
+	usageReset := codexUsageReset{enabled: c.UseUsageResets}
+	usageReset.try(setupCtx, client, emit)
 	// Save the prompt before Codex can accept it, so a crash in between does
 	// not leave a thread that holds a request the session lacks.
 	session.Messages = append(session.Messages, core.Message{Role: "user", Content: prompt.Text, Images: prompt.Images})
@@ -688,7 +691,8 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 				ID     string `json:"id"`
 				Status string `json:"status"`
 				Error  *struct {
-					Message string `json:"message"`
+					Message        string          `json:"message"`
+					CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
 				} `json:"error"`
 			} `json:"turn"`
 			TokenUsage struct {
@@ -818,6 +822,37 @@ func (c *Codex) run(ctx context.Context, session *core.Session, prompt core.Prom
 				return fmt.Errorf("save completed turn: %w", err)
 			}
 			if notification.Turn.Status != "completed" {
+				// Only included-usage exhaustion qualifies, not transient rate limits.
+				if notification.Turn.Status == "failed" && notification.Turn.Error != nil &&
+					bytes.Equal(notification.Turn.Error.CodexErrorInfo, []byte(`"usageLimitExceeded"`)) &&
+					usageReset.try(ctx, client, emit) {
+					turnParams["input"] = codexUserInput("JULIA system continuation: an available usage reset credit restored usage after the preceding turn stopped. Continue the existing task from this thread's saved progress and tool results. Do not repeat completed actions or replay the original request.", nil)
+					journal.PendingContinuation = session.RemoteID
+					if err = saveCodexJournal(session, journal, checkpoint); err != nil {
+						return fmt.Errorf("save usage reset continuation intent: %w", err)
+					}
+					continuationCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+					turnData, err = client.call(continuationCtx, "turn/start", turnParams)
+					cancel()
+					if err != nil {
+						return fmt.Errorf("start usage reset continuation (outcome uncertain): %w", err)
+					}
+					turn.Turn.ID = ""
+					if json.Unmarshal(turnData, &turn) != nil || turn.Turn.ID == "" {
+						return errors.New("Codex returned no usage reset continuation turn ID; outcome uncertain")
+					}
+					journal.PendingContinuation = ""
+					if err = saveCodexJournal(session, journal, checkpoint); err != nil {
+						return fmt.Errorf("save accepted usage reset continuation: %w", err)
+					}
+					lateInteraction = nil
+					interactionResult = nil
+					interactionSent = time.Time{}
+					clear(streamed)
+					clear(reasoningParts)
+					clear(completedReasoning)
+					continue
+				}
 				if notification.Turn.Error != nil {
 					return fmt.Errorf("Codex turn %s: %s", notification.Turn.Status, notification.Turn.Error.Message)
 				}
