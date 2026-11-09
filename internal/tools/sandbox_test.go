@@ -3,6 +3,7 @@ package tools
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +41,43 @@ func TestReviewFallsBackToHuman(t *testing.T) {
 		t.Fatal(r, calls)
 	}
 }
+func TestBashStreamsOutputBeforeCompletion(t *testing.T) {
+	e, _ := fixture(t, "yolo", nil)
+	events := make(chan core.Event, 3)
+	e.config.Emit = func(event core.Event) { events <- event }
+
+	done := make(chan core.ToolResult, 1)
+	go func() {
+		done <- e.Execute(context.Background(), core.ToolCall{ID: "stream", Name: "Bash", Arguments: json.RawMessage(`{"command":"printf 'first\\n'; sleep 0.2; printf 'second\\n'"}`)})
+	}()
+
+	var first core.Event
+	for first.Kind != "tool_output" {
+		select {
+		case first = <-events:
+		case <-time.After(5 * time.Second):
+			t.Fatal("command produced no streaming event")
+		}
+	}
+	if first.Kind != "tool_output" || first.Text != "first\n" || first.Call == nil || first.Call.ID != "stream" {
+		t.Fatalf("first event = %+v", first)
+	}
+	select {
+	case result := <-done:
+		t.Fatalf("command finished before its second output: %+v", result)
+	default:
+	}
+
+	result := <-done
+	var second core.Event
+	for second.Kind != "tool_output" {
+		second = <-events
+	}
+	if result.IsError || result.Content != "first\nsecond\n" || second.Text != "second\n" {
+		t.Fatalf("result = %+v, second event = %+v", result, second)
+	}
+}
+
 func TestSeatbeltProfile(t *testing.T) {
 	p := seatbeltProfile("/tmp/project", "/tmp/run", "/tmp/scratch", offline, []int{5432})
 	if !strings.Contains(p, "(deny default)") || strings.Contains(p, "network") || !strings.Contains(p, "(deny file-read* file-write*") {

@@ -137,9 +137,11 @@ type Session struct {
 }
 
 // Event is the single provider-independent stream consumed by the UI and headless CLI.
-// Kinds: status, text, reasoning, tool_start, tool_end, usage, warning, steer,
-// subagent_start, subagent_end. Reasoning carries incremental provider-exposed
-// thinking, separate from reply text. A steer event reports a message the user sent
+// Kinds: status, text, reasoning, tool_start, tool_output, tool_end, usage,
+// warning, steer, subagent_start, subagent_end. Reasoning carries incremental
+// provider-exposed thinking, separate from reply text. tool_output carries an
+// incremental command-output chunk in Text, with Call identifying its open tool.
+// A steer event reports a message the user sent
 // mid-turn that the model now has, in Text; see Steering.
 //
 // A subagent's events reach the stream too, each carrying the Subagent it came

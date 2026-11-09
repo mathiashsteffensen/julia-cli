@@ -82,6 +82,34 @@ func ended(call *core.ToolCall, output string) core.Event {
 	return core.Event{Kind: "tool_end", Call: call, Result: &core.ToolResult{Content: output}}
 }
 
+func TestTerminalStreamsCallOutputWithoutRepeatingIt(t *testing.T) {
+	f := onTerminal()
+	call := bashCall("1", "go test ./...")
+
+	f.Show(started(call))
+	f.Show(core.Event{Kind: "tool_output", Call: call, Text: "ok\tfirst\n"})
+	f.Show(core.Event{Kind: "tool_output", Call: call, Text: "ok\tsecond"})
+	if got := ansi.Strip(f.work.String()); !strings.Contains(got, "ok") || !strings.Contains(got, "second") {
+		t.Fatalf("output was not streamed: %q", got)
+	}
+	f.Show(ended(call, "ok\tfirst\nok\tsecond"))
+
+	if got := strings.Count(ansi.Strip(f.work.String()), "first"); got != 1 {
+		t.Fatalf("streamed output appeared %d times: %q", got, f.work.String())
+	}
+}
+
+func TestPipedLogDoesNotStreamToolOutput(t *testing.T) {
+	f := piped()
+	call := bashCall("1", "printenv TOKEN")
+	f.Show(started(call))
+	f.Show(core.Event{Kind: "tool_output", Call: call, Text: "sk-secret"})
+	f.Show(ended(call, "sk-secret"))
+	if strings.Contains(f.work.String(), "sk-secret") {
+		t.Fatal("tool output leaked into the nonterminal log")
+	}
+}
+
 func TestPipedReplyStaysTheModelsTextWithoutColor(t *testing.T) {
 	f := piped()
 	call := bashCall("1", "git status")

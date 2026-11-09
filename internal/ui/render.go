@@ -466,8 +466,9 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 				}
 			}
 			first, _, _ := strings.Cut(result, "\n")
+			streamingBash := !item.done && item.call != nil && item.call.Name == "Bash"
 			merged := false
-			if plain := !isOther && !isPage && !isScreen && !m.expandTools && !in.resultBelow && result != ""; plain && ansi.StringWidth(title)+5+ansi.StringWidth(first) <= w {
+			if plain := !streamingBash && !isOther && !isPage && !isScreen && !m.expandTools && !in.resultBelow && result != ""; plain && ansi.StringWidth(title)+5+ansi.StringWidth(first) <= w {
 				style := faintStyle
 				if item.result.IsError {
 					style = coralStyle
@@ -519,7 +520,7 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 				}
 			} else if isScreen {
 				add(bar+"  "+ansi.Truncate(screen.summary(), w-2, "…"), rowMeta{gutter: 4, target: 1})
-			} else if m.expandTools {
+			} else if m.expandTools || streamingBash {
 				parts := strings.Split(ansi.Hardwrap(result, w-2, false), "\n")
 				if len(parts) > 100 {
 					parts = append(parts[:100], "… output truncated in the display")

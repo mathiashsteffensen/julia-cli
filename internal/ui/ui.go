@@ -115,6 +115,8 @@ type entry struct {
 	call           *core.ToolCall
 	result         *core.ToolResult
 	done           bool
+	streamed       bool // a plain terminal transcript already printed this call's output
+	streamMidLine  bool
 	revision       uint64
 	cachedRevision uint64
 	cachedWidth    int
@@ -945,6 +947,17 @@ func (m *model) applyEvent(event core.Event) tea.Cmd {
 		m.entries = append(m.entries, entry{role: "tool", call: event.Call, text: event.Text})
 		if event.Call != nil {
 			m.status = "Running " + event.Call.Name
+		}
+	case "tool_output":
+		for i := len(m.entries) - 1; i >= 0; i-- {
+			if m.entries[i].role == "tool" && !m.entries[i].done && m.entries[i].isCall(event.Call) {
+				if m.entries[i].result == nil {
+					m.entries[i].result = &core.ToolResult{}
+				}
+				m.entries[i].result.Content += event.Text
+				m.entries[i].revision++
+				break
+			}
 		}
 	case "tool_end":
 		for i := len(m.entries) - 1; i >= 0; i-- {

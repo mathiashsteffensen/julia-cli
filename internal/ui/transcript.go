@@ -110,6 +110,8 @@ func (t *Transcript) Show(event core.Event) {
 		t.showReplyText(event.Text)
 	case "tool_start":
 		t.startCall(event)
+	case "tool_output":
+		t.streamCallOutput(event)
 	case "tool_end":
 		t.finishCall(event)
 	case "status":
@@ -156,6 +158,26 @@ func (t *Transcript) startCall(event core.Event) {
 	t.titled = item
 }
 
+// streamCallOutput prints a command's output as it arrives. Logs keep their
+// existing privacy behavior: only an interactive terminal sees tool output.
+func (t *Transcript) streamCallOutput(event core.Event) {
+	if !t.work.terminal || event.Text == "" {
+		return
+	}
+	for i := len(t.running) - 1; i >= 0; i-- {
+		item := t.running[i]
+		if !item.isCall(event.Call) {
+			continue
+		}
+		t.closeReply()
+		item.streamed = true
+		item.streamMidLine = !strings.HasSuffix(event.Text, "\n")
+		fmt.Fprint(t.work.writer, sanitize(event.Text))
+		t.titled, t.last = nil, workRows
+		return
+	}
+}
+
 // finishCall prints a call's result. The result goes straight under the title
 // when that is still the last row. If other rows came between, or the call
 // failed, the whole entry prints again, as the conversation sets it.
@@ -179,6 +201,20 @@ func (t *Transcript) finishCall(event core.Event) {
 		result = &core.ToolResult{IsError: true}
 	}
 	item.result, item.images = result, resultImages(result)
+
+	if item.streamed {
+		if item.streamMidLine {
+			fmt.Fprintln(t.work.writer)
+		}
+		if failed {
+			// Output was already shown; repeat only the process failure, not the log.
+			first, _, _ := strings.Cut(result.Content, "\n")
+			item.result = &core.ToolResult{Content: first, IsError: true}
+			item.images = nil
+			t.writeWork(t.layoutWork(*item, false))
+		}
+		return
+	}
 
 	underTitle := t.titled == item && !failed
 	rows := t.layoutWork(*item, underTitle)

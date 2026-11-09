@@ -104,6 +104,17 @@ func (m *model) applyAgentEvent(event core.Event) {
 		if event.Call != nil {
 			a.activity = "Running " + event.Call.Name
 		}
+	case "tool_output":
+		for i := len(a.entries) - 1; i >= 0; i-- {
+			if a.entries[i].role == "tool" && !a.entries[i].done && a.entries[i].isCall(event.Call) {
+				if a.entries[i].result == nil {
+					a.entries[i].result = &core.ToolResult{}
+				}
+				a.entries[i].result.Content += event.Text
+				a.entries[i].revision++
+				break
+			}
+		}
 	case "tool_end":
 		for i := len(a.entries) - 1; i >= 0; i-- {
 			if a.entries[i].role == "tool" && !a.entries[i].done && a.entries[i].isCall(event.Call) {

@@ -27,6 +27,7 @@ type boundedBuffer struct {
 	buf       bytes.Buffer
 	limit     int
 	truncated bool
+	onWrite   func([]byte)
 }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
@@ -39,6 +40,9 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 		p = p[:max(remaining, 0)]
 	}
 	b.buf.Write(p)
+	if len(p) > 0 && b.onWrite != nil {
+		b.onWrite(p)
+	}
 	return n, nil
 }
 func (b *boundedBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.buf.String() }
@@ -166,7 +170,11 @@ func (e *Executor) bash(ctx context.Context, call core.ToolCall) (string, error)
 	if escalated {
 		e.emit("warning", "Executing the approved command outside the OS sandbox with host-user filesystem and network access.")
 	}
-	return e.runBash(ctx, a.Command, reach, time.Duration(a.Timeout)*time.Second, escalated)
+	return e.runBashStreaming(ctx, a.Command, reach, time.Duration(a.Timeout)*time.Second, escalated, func(output []byte) {
+		if e.config.Emit != nil {
+			e.config.Emit(core.Event{Kind: "tool_output", Call: &call, Text: string(output)})
+		}
+	})
 }
 
 // keyMaterial matches private keys and long-lived login files by name. It is
@@ -215,6 +223,10 @@ func (e *Executor) runSandbox(ctx context.Context, command string, network bool,
 	return e.runBash(ctx, command, reach, timeout, false)
 }
 func (e *Executor) runBash(ctx context.Context, command string, reach netAccess, timeout time.Duration, escalated bool) (string, error) {
+	return e.runBashStreaming(ctx, command, reach, timeout, escalated, nil)
+}
+
+func (e *Executor) runBashStreaming(ctx context.Context, command string, reach netAccess, timeout time.Duration, escalated bool, onOutput func([]byte)) (string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	sh, err := e.shell(runCtx, command, reach, escalated, "")
@@ -242,7 +254,7 @@ func (e *Executor) runBash(ctx context.Context, command string, reach netAccess,
 		return err
 	}
 	cmd.WaitDelay = time.Second
-	output := &boundedBuffer{limit: maxOutput}
+	output := &boundedBuffer{limit: maxOutput, onWrite: onOutput}
 	cmd.Stdout = output
 	cmd.Stderr = output
 	if err := cmd.Start(); err != nil {

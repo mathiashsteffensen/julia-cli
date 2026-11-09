@@ -11,6 +11,31 @@ import (
 	"julia/internal/tools"
 )
 
+func TestBashOutputStreamsInRunningCard(t *testing.T) {
+	m := testModel(t, Config{})
+	m.resize(100, 30)
+	call := &core.ToolCall{ID: "bash-1", Name: "Bash", Arguments: json.RawMessage(`{"command":"go test ./..."}`)}
+
+	m.applyEvent(core.Event{Kind: "tool_start", Call: call})
+	m.applyEvent(core.Event{Kind: "tool_output", Call: call, Text: "ok\tfirst\n"})
+	m.applyEvent(core.Event{Kind: "tool_output", Call: call, Text: "ok\tsecond\n"})
+
+	if len(m.entries) != 1 || m.entries[0].done || m.entries[0].result.Content != "ok\tfirst\nok\tsecond\n" {
+		t.Fatalf("running entry = %+v", m.entries)
+	}
+	rendered := ansi.Strip(m.renderEntryContent(m.entries[0]))
+	for _, want := range []string{"first", "second"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("live output is missing %q: %q", want, rendered)
+		}
+	}
+
+	m.applyEvent(core.Event{Kind: "tool_end", Call: call, Result: &core.ToolResult{Content: "all tests passed"}})
+	if !m.entries[0].done || m.entries[0].result.Content != "all tests passed" {
+		t.Fatalf("finished entry = %+v", m.entries[0])
+	}
+}
+
 func TestWebSearchToolSummary(t *testing.T) {
 	for _, tc := range []struct {
 		name string
