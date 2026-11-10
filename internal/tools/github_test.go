@@ -152,6 +152,57 @@ func TestGitHubInvalidArgumentsAndGraphQL(t *testing.T) {
 	}
 }
 
+func TestGitHubGetFollowsSignedRedirectWithoutSensitiveHeaders(t *testing.T) {
+	requests := 0
+	e := githubFixture(t, "read-only", func(req *http.Request) (*http.Response, error) {
+		requests++
+		switch requests {
+		case 1:
+			if req.URL.String() != githubOrigin+"/repos/a/b/actions/jobs/123/logs" {
+				t.Errorf("unexpected API request: %s", req.URL)
+			}
+			resp := webResponse(http.StatusFound, "text/plain", "")
+			resp.Header.Set("Location", "https://blob.example.test/signed/workflow.log?signature=fixture")
+			return resp, nil
+		case 2:
+			if req.Method != http.MethodGet || req.URL.Host != "blob.example.test" {
+				t.Errorf("unexpected redirect request: %s %s", req.Method, req.URL)
+			}
+			for _, name := range []string{"Authorization", "Referer"} {
+				if value := req.Header.Get(name); value != "" {
+					t.Errorf("%s forwarded to signed URL: %q", name, value)
+				}
+			}
+			return webResponse(http.StatusOK, "text/plain", "workflow log"), nil
+		default:
+			return nil, errors.New("unexpected extra request")
+		}
+	})
+
+	out, err := githubCall(e, map[string]any{"path": "/repos/a/b/actions/jobs/123/logs", "accept": "raw"})
+	if err != nil || requests != 2 || !strings.Contains(out, "workflow log") {
+		t.Fatalf("out=%q err=%v requests=%d", out, err, requests)
+	}
+}
+
+func TestGitHubSignedRedirectErrorIdentifiesDownloadHost(t *testing.T) {
+	requests := 0
+	e := githubFixture(t, "read-only", func(req *http.Request) (*http.Response, error) {
+		requests++
+		if requests == 1 {
+			resp := webResponse(http.StatusFound, "text/plain", "")
+			resp.Header.Set("Location", "https://blob.example.test/signed/workflow.log?signature=expired")
+			return resp, nil
+		}
+		return webResponse(http.StatusForbidden, "text/plain", "signature expired"), nil
+	})
+
+	_, err := githubCall(e, map[string]any{"path": "/repos/a/b/actions/jobs/123/logs", "accept": "raw"})
+	if err == nil || !strings.Contains(err.Error(), "Download host blob.example.test HTTP 403") || !strings.Contains(err.Error(), "fresh signed URL") || strings.Contains(err.Error(), "token permissions") {
+		t.Fatalf("err=%v requests=%d", err, requests)
+	}
+}
+
 func TestGitHubRedirectConfinement(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, location string
@@ -159,7 +210,8 @@ func TestGitHubRedirectConfinement(t *testing.T) {
 	}{
 		{"same origin", "GET", "https://api.github.com/repos/new", 2},
 		{"relative", "HEAD", "/repos/new", 2},
-		{"cross origin", "GET", "https://evil.test/repos/new", 1},
+		{"cross origin GET", "GET", "https://download.test/repos/new", 2},
+		{"cross origin HEAD", "HEAD", "https://download.test/repos/new", 1},
 		{"cross scheme", "GET", "http://api.github.com/repos/new", 1},
 		{"userinfo", "GET", "https://user@api.github.com/repos/new", 1},
 		{"graphql", "GET", "/%67raphql", 1},
@@ -170,8 +222,12 @@ func TestGitHubRedirectConfinement(t *testing.T) {
 			requests := 0
 			e := githubFixture(t, "yolo", func(req *http.Request) (*http.Response, error) {
 				requests++
-				if req.URL.Host != "api.github.com" || req.Header.Get("Authorization") != "Bearer "+githubFixtureToken {
-					t.Errorf("unsafe redirect: %s auth=%q", req.URL, req.Header.Get("Authorization"))
+				authorization := req.Header.Get("Authorization")
+				switch {
+				case req.URL.Host == "api.github.com" && authorization != "Bearer "+githubFixtureToken:
+					t.Errorf("missing API credential: %s auth=%q", req.URL, authorization)
+				case req.URL.Host != "api.github.com" && (tc.method != http.MethodGet || authorization != ""):
+					t.Errorf("unsafe redirect: %s auth=%q", req.URL, authorization)
 				}
 				if requests == 1 {
 					resp := webResponse(302, "text/plain", "moved")

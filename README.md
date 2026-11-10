@@ -321,11 +321,13 @@ reviewed in auto mode, approved by you in ask mode, and blocked in read-only
 mode. Yolo grants them without review, as with other tools. Review considers
 the full request, including its body; a GitHub comment cannot authorize a write.
 
-The tool accepts only `api.github.com` destinations. Results are at most 32 KiB;
+The tool accepts only `api.github.com` request paths. Results are at most 32 KiB;
 follow the returned page path or GET `offset` to read more (up to a 4 MiB response).
-It returns text, not binary downloads, and does not follow cross-origin
-redirects or redirects for writes. Control characters and invalid UTF-8 in raw
-and diff text become U+FFFD, and the result says so. An existing `gh` credential may itself have write permissions:
+GET follows HTTPS redirects for signed downloads without forwarding `Authorization`
+or `Referer`; download-host errors identify that host. HEAD and writes do not follow
+cross-origin redirects, and the tool returns text, not binary downloads. Control
+characters and invalid UTF-8 in raw and diff text become U+FFFD, and the result says
+so. An existing `gh` credential may itself have write permissions:
 the tool's approval gate does not restrict a separately approved host shell.
 
 `Bugsnag` reads every organization and project your personal auth token can see,
