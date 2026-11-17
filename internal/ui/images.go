@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"regexp"
 	"strconv"
 	"strings"
@@ -207,15 +208,16 @@ func splitImageMarkers(content string) (string, []string) {
 }
 
 // highlightImageTokens draws [Image #N] tokens in a line of the user's message
-// in the accent color, and the rest in the message color.
-func highlightImageTokens(line string) string {
+// in the accent color, and the rest in the message color, on the card's
+// surface.
+func highlightImageTokens(surface color.Color, line string) string {
 	var out strings.Builder
 	last := 0
 	for _, span := range imageTokenPattern.FindAllStringIndex(line, -1) {
-		out.WriteString(ink(panel, cream).Render(line[last:span[0]]))
-		out.WriteString(ink(panel, violet).Render(line[span[0]:span[1]]))
+		out.WriteString(ink(surface, cream).Render(line[last:span[0]]))
+		out.WriteString(ink(surface, violet).Render(line[span[0]:span[1]]))
 		last = span[1]
 	}
-	out.WriteString(ink(panel, cream).Render(line[last:]))
+	out.WriteString(ink(surface, cream).Render(line[last:]))
 	return out.String()
 }

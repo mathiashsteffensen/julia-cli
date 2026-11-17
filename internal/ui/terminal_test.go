@@ -53,7 +53,7 @@ func TestTerminalScreenCard(t *testing.T) {
 	m.expandTools = true
 	layout := m.layoutEntry(item)
 	plain := ansi.Strip(layout.text)
-	for _, want := range []string{"    The screen was still changing after 10s.", "t1 · bash", "running · 40×6", "  $ echo 界 hi", "  rows 3–6 blank"} {
+	for _, want := range []string{"  The screen was still changing after 10s.", "t1 · bash", "running · 40×6", "  $ echo 界 hi", "  rows 3–6 blank"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("expanded card lacks %q:\n%s", want, plain)
 		}

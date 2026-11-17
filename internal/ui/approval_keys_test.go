@@ -110,8 +110,8 @@ func TestApprovalMouseWheelInspectsWithoutDeciding(t *testing.T) {
 		t.Fatal("mouse scrolling decided the request")
 	default:
 	}
-	view := strings.ToLower(ansi.Strip(m.approvalView() + "\n" + m.footer()))
-	if !strings.Contains(view, "mouse wheel") || strings.Contains(view, "pgup") || strings.Contains(view, "pgdown") {
+	view := strings.ToLower(ansi.Strip(m.approvalView() + "\n" + m.footer(m.mainWidth)))
+	if !strings.Contains(view, "wheel scrolls") || strings.Contains(view, "pgup") || strings.Contains(view, "pgdown") {
 		t.Fatal("approval advertises keys that now deny")
 	}
 }

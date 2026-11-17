@@ -9,12 +9,13 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Code blocks are drawn by JULIA rather than Glamour: a filled card with a
-// language label, highlighting in the house palette, and wrapped lines marked
-// as continuations so a copied command stays one command.
+// Code blocks are drawn by JULIA rather than Glamour: a well, darker than the
+// page, with a language label, highlighting in the house palette, and wrapped
+// lines marked as continuations so a copied command stays one command. The
+// header is the well's own first row, not a band across it.
 var (
-	codeBackground   = lipgloss.Color("#1C1924")
-	codeHeaderColor  = lipgloss.Color("#272231")
+	codeBackground   = well
+	codeHeaderColor  = well
 	codeCommentColor = lipgloss.Color("#7D7789")
 	codeGold         = lipgloss.Color("#E9C891")
 	codeBlue         = lipgloss.Color("#A6C8E8")
@@ -127,10 +128,10 @@ func renderCodeCard(code, language string, width int, hint string) (rows []strin
 	if label == "" {
 		label = "code"
 	}
-	left := header.Render(strings.Repeat(" ", codeGutter)) + header.Foreground(violet).Bold(true).Render(ansi.Truncate(label, max(1, width-codeGutter-12), "…"))
+	left := header.Render(strings.Repeat(" ", codeGutter)) + header.Foreground(subtle).Render(ansi.Truncate(label, max(1, width-codeGutter-12), "…"))
 	right := ""
 	if hint != "" {
-		right = header.Foreground(muted).Render(hint) + header.Render(" ")
+		right = header.Foreground(subtle).Render(hint) + header.Render(" ")
 	}
 	if ansi.StringWidth(left)+ansi.StringWidth(right) >= width {
 		right = ""

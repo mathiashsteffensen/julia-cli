@@ -54,15 +54,14 @@ func NewApprover() (core.Approver, <-chan ApprovalRequest) {
 }
 
 type Config struct {
-	Session         *core.Session
-	Backend         core.Backend
-	Tools           core.ToolExecutor
-	ToolDefinitions []core.ToolDefinition
-	Mode            string
-	Save            func(*core.Session) error
-	Approvals       <-chan ApprovalRequest
-	Questions       <-chan QuestionRequest
-	Demo            bool
+	Session   *core.Session
+	Backend   core.Backend
+	Tools     core.ToolExecutor
+	Mode      string
+	Save      func(*core.Session) error
+	Approvals <-chan ApprovalRequest
+	Questions <-chan QuestionRequest
+	Demo      bool
 	// NamedProviders are the configured OpenAI-compatible providers by id,
 	// each true when it takes a reasoning effort.
 	NamedProviders map[string]bool
@@ -117,11 +116,13 @@ type entry struct {
 	done           bool
 	streamed       bool // a plain terminal transcript already printed this call's output
 	streamMidLine  bool
+	pillWidth      int // a tool call's pill width: the widest name in its run of calls
 	revision       uint64
 	cachedRevision uint64
 	cachedWidth    int
 	cachedExpanded bool
 	cachedGraphics uint64
+	cachedPill     int
 	layout         entryLayout
 }
 
@@ -156,7 +157,8 @@ type model struct {
 	height        int
 	mainWidth     int
 	bodyHeight    int
-	sidebarOffset int // rows of the sidebar scrolled out of view
+	sidebarShown  bool // the layout as last measured carries the sidebar
+	sidebarOffset int  // rows of the sidebar scrolled out of view
 	entries       []entry
 	markdown      markdownCache
 	lines         []string // the conversation as rendered, one per row
@@ -180,8 +182,6 @@ type model struct {
 	started                time.Time
 	lastDuration           time.Duration
 	now                    time.Time
-	inputTokens            int               // last model call: the whole prompt, cached tokens included
-	outputTokens           int               // last model call
 	live                   core.SessionUsage // usage reported by the running task, added to the session's until the stream finishes
 	toolCount              int
 	expandTools            bool
@@ -298,7 +298,6 @@ func newModel(cfg Config) *model {
 		m.fleet = m.demoFleet()
 		m.toolCount = 4
 		m.lastDuration = 28 * time.Second
-		m.inputTokens, m.outputTokens = 117_300, 1_284
 		if cfg.Session.Usage == (core.SessionUsage{}) {
 			cfg.Session.Usage = demoUsage()
 		}
@@ -352,8 +351,9 @@ func waitStream(stream <-chan streamMsg, ctx context.Context) tea.Cmd {
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
 	m.syncMenu()
-	if m.input.Height() != m.composerRows || len(m.queueStrip()) != m.queueRows {
-		// The draft or the queue grew or shrank a row: give the transcript the difference.
+	if m.input.Height() != m.composerRows || len(m.queueStrip()) != m.queueRows || m.wantsSidebar() != m.sidebarShown {
+		// The draft or the queue grew or shrank a row, or the conversation began
+		// or was cleared and the sidebar comes or goes: lay the screen out again.
 		m.resize(m.width, m.height)
 	}
 	return next, cmd

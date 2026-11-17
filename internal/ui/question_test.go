@@ -351,8 +351,8 @@ func TestQuestionKeepsTheComposerDraftAndFocus(t *testing.T) {
 	if m.input.Value() != "draft for later" || !m.input.Focused() {
 		t.Fatal("composer draft or focus lost after answering")
 	}
-	if !strings.Contains(ansi.Strip(m.View().Content), "Enter queues") {
-		t.Fatal("composer should say a message sent now waits for the task")
+	if !strings.Contains(ansi.Strip(m.View().Content), "enter queue") {
+		t.Fatal("the keys should say a message sent now waits for the task")
 	}
 }
 
@@ -502,7 +502,7 @@ func TestCardCaptionsAndAnswerPreviewHideNothingImportant(t *testing.T) {
 		t.Fatal("the marker should become a badge, not repeat in the label")
 	}
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Waiting for your answer", "answering"} {
+	for _, want := range []string{"Waiting for your answer", "ctrl+c stops the task"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view is missing %q", want)
 		}
@@ -897,7 +897,7 @@ func TestQuestionFooterNeverWraps(t *testing.T) {
 	for width := 24; width <= 140; width++ {
 		m, _ := askModel(t, sampleChoices)
 		m.resize(width, 40)
-		if got, limit := ansi.StringWidth(m.footer()), width-2*m.margin(); got > limit {
+		if got, limit := ansi.StringWidth(m.statusRow()), width-2*m.margin(); got > limit {
 			t.Fatalf("width %d: footer is %d cells for %d", width, got, limit)
 		}
 	}

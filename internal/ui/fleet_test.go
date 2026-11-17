@@ -76,6 +76,7 @@ func TestSubagentEventsBuildTheFleetNotTheConversation(t *testing.T) {
 // arrows move through the agents, and Esc closes it and returns the composer.
 func TestFleetOpensOnTheRunningAgentAndCycles(t *testing.T) {
 	m := testModel(t, Config{})
+	m.entries = []entry{{role: "assistant", text: "A conversation, so the sidebar is shown."}}
 	m.resize(120, 40)
 	m.input.SetValue("my draft")
 	for _, id := range []string{"a", "b"} {
@@ -94,7 +95,7 @@ func TestFleetOpensOnTheRunningAgentAndCycles(t *testing.T) {
 		t.Fatal("composer still focused under the fleet")
 	}
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"FLEET", "4 subagents", "2 running · 2 done", "3 / 4", "worker", "Task c", "DRAFT", "esc close"} {
+	for _, want := range []string{"FLEET", "4 subagents", "2 running · 2 done", "3 / 4", "worker", "Task c", "Draft · kept", "esc close"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("fleet view omits %q:\n%s", want, view)
 		}
@@ -124,7 +125,7 @@ func TestFleetOpensOnTheRunningAgentAndCycles(t *testing.T) {
 	if m.fleetView != nil || !m.input.Focused() || m.input.Value() != "my draft" {
 		t.Fatalf("esc did not close the fleet and return the composer: view %v focused %v draft %q", m.fleetView, m.input.Focused(), m.input.Value())
 	}
-	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "ctrl+f fleet") || !strings.Contains(view, "FLEET") {
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "ctrl+f") || !strings.Contains(view, "FLEET") {
 		t.Fatalf("the conversation does not point at the fleet:\n%s", view)
 	}
 }
@@ -151,7 +152,7 @@ func TestFleetFitsEverySize(t *testing.T) {
 				}
 			}
 			plain := ansi.Strip(view)
-			if !strings.Contains(plain, "▁") || !strings.Contains(plain, "DRAFT") {
+			if !strings.Contains(plain, "╭") || !strings.Contains(plain, "Draft · ") {
 				t.Errorf("%v populated %v: window or composer missing:\n%s", size, populated, plain)
 			}
 			if populated && !strings.Contains(plain, "worker") {

@@ -24,6 +24,30 @@ func usageConfig(fetch func(context.Context) (*core.UsageWindow, error)) Config 
 	}
 }
 
+// sidebarWords is the sidebar as its words, one row per line: styling and
+// gauge lines removed, each run of spaces as one. A quota row reads "week 61%".
+func sidebarWords(m *model) string {
+	return words(m.sidebar())
+}
+
+// weekly and fiveHour are a window's quota row as its words: "week 61%",
+// "5 hour 0% · stale", "week unavailable".
+func weekly(m *model) string {
+	return words(m.quotaRow(paletteOn(background), "week", m.accountUsage.weekly, sidebarCells))
+}
+
+func fiveHour(m *model) string {
+	return words(m.quotaRow(paletteOn(background), "5 hour", m.accountUsage.fiveHour, sidebarCells))
+}
+
+func words(rows string) string {
+	var out []string
+	for _, row := range strings.Split(strings.NewReplacer("━", "", "─", "").Replace(ansi.Strip(rows)), "\n") {
+		out = append(out, strings.Join(strings.Fields(row), " "))
+	}
+	return strings.Join(out, "\n")
+}
+
 func TestWeeklyUsageOnlyReadsForMainCodexProvider(t *testing.T) {
 	for _, provider := range []string{"openai", "anthropic", "google", "openrouter", "codex"} {
 		calls := 0
@@ -36,15 +60,15 @@ func TestWeeklyUsageOnlyReadsForMainCodexProvider(t *testing.T) {
 		m.resize(128, 40)
 		cmd := m.refreshAccountUsage(false)
 		if provider == "codex" {
-			if cmd == nil || !strings.Contains(ansi.Strip(m.sidebar()), "Weekly · loading") {
+			if cmd == nil || !strings.Contains(sidebarWords(m), "week loading…") {
 				t.Fatal("missing Codex loading state")
 			}
 			m.Update(cmd())
-			if calls != 1 || !strings.Contains(ansi.Strip(m.sidebar()), "Weekly · 61% left") {
+			if calls != 1 || !strings.Contains(sidebarWords(m), "week 61%") {
 				t.Fatal("Codex allowance missing")
 			}
 		} else {
-			if cmd != nil || calls != 0 || strings.Contains(ansi.Strip(m.sidebar()), "Weekly") {
+			if cmd != nil || calls != 0 || strings.Contains(sidebarWords(m), "QUOTA LEFT") {
 				t.Fatalf("%s exposed or requested Codex reviewer quota", provider)
 			}
 			m.now = m.now.Add(2 * time.Minute)
@@ -60,34 +84,34 @@ func TestWeeklyUsageZeroUnavailableAndStale(t *testing.T) {
 	var fetchErr error
 	m := testModel(t, usageConfig(func(context.Context) (*core.UsageWindow, error) { return value, fetchErr }))
 	m.Update(m.refreshAccountUsage(false)())
-	if got := ansi.Strip(m.weeklyUsageLine(paletteOn(background))); got != "Weekly · 0% left" {
+	if got := weekly(m); got != "week 0%" {
 		t.Fatalf("zero treated as unknown: %q", got)
 	}
 	fetchErr = errors.New("temporary failure")
 	m.now = m.now.Add(time.Minute)
 	m.Update(m.refreshAccountUsage(false)())
-	if got := ansi.Strip(m.weeklyUsageLine(paletteOn(background))); got != "Weekly · 0% · stale" {
+	if got := weekly(m); got != "week 0% · stale" {
 		t.Fatalf("failed refresh hid stale state: %q", got)
 	}
 	fetchErr, value = nil, &core.UsageWindow{RemainingPercent: 72, ResetsAt: m.now.Add(time.Hour)}
 	m.now = m.now.Add(time.Minute)
 	m.Update(m.refreshAccountUsage(false)())
-	if got := ansi.Strip(m.weeklyUsageLine(paletteOn(background))); got != "Weekly · 72% left" {
+	if got := weekly(m); got != "week 72%" {
 		t.Fatalf("success did not clear stale state: %q", got)
 	}
 	m.now = value.ResetsAt
-	if !strings.Contains(ansi.Strip(m.weeklyUsageLine(paletteOn(background))), "stale") {
+	if !strings.Contains(weekly(m), "stale") {
 		t.Fatal("reset time silently invented a fresh allowance")
 	}
 	value = nil
 	m.Update(m.refreshAccountUsage(false)())
-	if got := ansi.Strip(m.weeklyUsageLine(paletteOn(background))); got != "Weekly · unavailable" {
+	if got := weekly(m); got != "week unavailable" {
 		t.Fatalf("successful missing-quota response retained old account allowance: %q", got)
 	}
 	for _, unavailable := range []*core.UsageWindow{nil, {RemainingPercent: math.NaN()}, {RemainingPercent: math.Inf(1)}, {RemainingPercent: -1}, {RemainingPercent: 101}} {
 		unknown := testModel(t, usageConfig(func(context.Context) (*core.UsageWindow, error) { return unavailable, nil }))
 		unknown.Update(unknown.refreshAccountUsage(false)())
-		if got := ansi.Strip(unknown.weeklyUsageLine(paletteOn(background))); got != "Weekly · unavailable" {
+		if got := weekly(unknown); got != "week unavailable" {
 			t.Fatalf("invalid or missing reading inferred a percentage: %q", got)
 		}
 	}
@@ -207,7 +231,7 @@ func TestWeeklyUsageDemoIsOfflineAndFitsLayouts(t *testing.T) {
 		}
 		view := m.View().Content
 		// The allowance sits under the masthead, so a short sidebar scrolls to it.
-		if strings.Contains(ansi.Strip(view), "Weekly · 61% left") && !m.hasSidebar() {
+		if strings.Contains(words(view), "week 61%") && !m.hasSidebar() {
 			t.Fatalf("%v: allowance visibility differs from sidebar", size)
 		}
 		lines := strings.Split(view, "\n")
@@ -220,7 +244,7 @@ func TestWeeklyUsageDemoIsOfflineAndFitsLayouts(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(ansi.Strip(RenderDemo(128, 40)), "Weekly · 61% left") {
+	if !strings.Contains(words(RenderDemo(128, 40)), "week 61%") {
 		t.Fatal("snapshot demo does not use actual Codex provider gating")
 	}
 }
@@ -252,19 +276,19 @@ func TestAccountUsageProviderVisibilityAndCopy(t *testing.T) {
 			m := testModel(t, cfg)
 			m.resize(128, 40)
 			cmd := m.refreshAccountUsage(false)
-			loading := ansi.Strip(m.sidebar())
-			if !strings.Contains(loading, "Weekly · loading") || (strings.Contains(loading, "5-hour · loading") != (provider == "claude")) {
+			loading := sidebarWords(m)
+			if !strings.Contains(loading, "week loading…") || (strings.Contains(loading, "5 hour loading…") != (provider == "claude")) {
 				t.Fatalf("unexpected loading state: %s", loading)
 			}
 			msg := cmd()
 			usage.Weekly.RemainingPercent = 12
 			usage.FiveHour.RemainingPercent = 13
 			m.Update(msg)
-			view := ansi.Strip(m.sidebar())
-			if calls != 1 || !strings.Contains(view, "Weekly · 61% left") {
+			view := sidebarWords(m)
+			if calls != 1 || !strings.Contains(view, "week 61%") {
 				t.Fatalf("weekly data or single request missing: calls=%d view=%s", calls, view)
 			}
-			if got := strings.Contains(view, "5-hour · 38% left"); got != (provider == "claude") {
+			if got := strings.Contains(view, "5 hour 38%"); got != (provider == "claude") {
 				t.Fatalf("unexpected five-hour visibility: %s", view)
 			}
 		})
@@ -278,14 +302,13 @@ func TestClaudeAccountUsageIndependentWindows(t *testing.T) {
 		Session:      &core.Session{ID: "usage", Provider: "claude", Model: "selected"},
 		AccountUsage: func(context.Context, string) (*core.AccountUsage, error) { return usage, fetchErr },
 	})
-	p := paletteOn(background)
-	check := func(weekly, fiveHour string) {
+	check := func(wantWeekly, wantFiveHour string) {
 		t.Helper()
-		if got := ansi.Strip(m.weeklyUsageLine(p)); got != weekly {
-			t.Errorf("weekly: got %q, want %q", got, weekly)
+		if got := weekly(m); got != wantWeekly {
+			t.Errorf("weekly: got %q, want %q", got, wantWeekly)
 		}
-		if got := ansi.Strip(m.fiveHourUsageLine(p)); got != fiveHour {
-			t.Errorf("five-hour: got %q, want %q", got, fiveHour)
+		if got := fiveHour(m); got != wantFiveHour {
+			t.Errorf("five-hour: got %q, want %q", got, wantFiveHour)
 		}
 	}
 	refresh := func() {
@@ -300,36 +323,36 @@ func TestClaudeAccountUsageIndependentWindows(t *testing.T) {
 
 	usage = &core.AccountUsage{Weekly: &core.UsageWindow{RemainingPercent: 80}, FiveHour: &core.UsageWindow{RemainingPercent: 0}}
 	refresh()
-	check("Weekly · 80% left", "5-hour · 0% left")
+	check("week 80%", "5 hour 0%")
 
 	// An invalid window retains only its own old value; the other still updates.
 	usage = &core.AccountUsage{Weekly: &core.UsageWindow{RemainingPercent: 70}, FiveHour: &core.UsageWindow{RemainingPercent: math.NaN()}}
 	refresh()
-	check("Weekly · 70% left", "5-hour · 0% · stale")
+	check("week 70%", "5 hour 0% · stale")
 	usage = &core.AccountUsage{Weekly: &core.UsageWindow{RemainingPercent: 101}, FiveHour: &core.UsageWindow{RemainingPercent: 50}}
 	refresh()
-	check("Weekly · 70% · stale", "5-hour · 50% left")
+	check("week 70% · stale", "5 hour 50%")
 
 	// A failed lookup retains both old values, even if it returns partial data.
 	fetchErr = errors.New("temporary failure")
 	usage = &core.AccountUsage{Weekly: &core.UsageWindow{RemainingPercent: 99}}
 	refresh()
-	check("Weekly · 70% · stale", "5-hour · 50% · stale")
+	check("week 70% · stale", "5 hour 50% · stale")
 
 	// Successful partial responses clear only the missing window.
 	fetchErr = nil
 	usage = &core.AccountUsage{FiveHour: &core.UsageWindow{RemainingPercent: 42, ResetsAt: m.now.Add(2 * usageRefreshInterval)}}
 	refresh()
-	check("Weekly · unavailable", "5-hour · 42% left")
+	check("week unavailable", "5 hour 42%")
 	usage.Weekly = &core.UsageWindow{RemainingPercent: 60}
 	refresh()
-	check("Weekly · 60% left", "5-hour · 42% · stale")
+	check("week 60%", "5 hour 42% · stale")
 	usage = &core.AccountUsage{Weekly: &core.UsageWindow{RemainingPercent: 33, ResetsAt: m.now.Add(usageRefreshInterval)}}
 	refresh()
-	check("Weekly · 33% · stale", "5-hour · unavailable")
+	check("week 33% · stale", "5 hour unavailable")
 	usage = nil
 	refresh()
-	check("Weekly · unavailable", "5-hour · unavailable")
+	check("week unavailable", "5 hour unavailable")
 }
 
 func TestAccountUsageResetsOnAccountChange(t *testing.T) {
@@ -381,16 +404,14 @@ func TestAccountUsageResetsOnAccountChange(t *testing.T) {
 // A preview reads nothing, so its readings must last the whole preview.
 func TestDemoKeepsItsReadingsAcrossAProviderSwitch(t *testing.T) {
 	m := testModel(t, Config{Session: &core.Session{ID: "usage", Provider: "claude", Model: "selected", Reasoning: "medium"}, Demo: true})
-	p := paletteOn(background)
-
 	for _, provider := range []string{"claude", "codex", "claude"} {
 		if err := m.applySettings(provider, "selected", ""); err != nil {
 			t.Fatal(err)
 		}
-		if got := ansi.Strip(m.weeklyUsageLine(p)); got != "Weekly · 61% left" {
+		if got := weekly(m); got != "week 61%" {
 			t.Fatalf("on %s: weekly = %q", provider, got)
 		}
-		if got := ansi.Strip(m.fiveHourUsageLine(p)); got != "5-hour · 38% left" {
+		if got := fiveHour(m); got != "5 hour 38%" {
 			t.Fatalf("on %s: five-hour = %q", provider, got)
 		}
 	}

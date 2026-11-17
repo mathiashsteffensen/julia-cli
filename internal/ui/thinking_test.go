@@ -119,7 +119,7 @@ func TestThinkingLayoutIsCompleteCopyableAndSafe(t *testing.T) {
 
 func TestThinkingToggleAndStreamPreserveScrolledReader(t *testing.T) {
 	m := testModel(t, Config{})
-	m.entries = []entry{{role: "assistant", text: strings.Repeat("History row.\n", 60)}}
+	m.entries = []entry{{role: "assistant", text: strings.Repeat("History row.\n\n", 60)}}
 	m.resize(80, 20)
 	m.viewport.ScrollUp(12)
 	before := m.viewport.YOffset()
@@ -179,14 +179,14 @@ func TestFleetThinkingLiveAndRestored(t *testing.T) {
 	}
 }
 
-func TestThinkingFleetShortcutFitsTheFooter(t *testing.T) {
+func TestThinkingFleetShortcutFitsTheStatusRow(t *testing.T) {
 	m := testModel(t, Config{Demo: true})
 	m.openFleet()
 	for _, width := range []int{70, 80, 108, 120, 140} {
 		m.resize(width, 24)
-		footer := ansi.Strip(m.fleetFooter())
-		if ansi.StringWidth(footer) > m.mainWidth || !strings.Contains(footer, "ctrl+t thinking") || !strings.HasSuffix(footer, "esc close") {
-			t.Fatalf("width %d: footer does not fit: %q", width, footer)
+		row := ansi.Strip(m.statusRow())
+		if ansi.StringWidth(row) > m.mainWidth || !strings.Contains(row, "ctrl+t thinking") || !strings.Contains(row, "esc close") {
+			t.Fatalf("width %d: the fleet keys do not fit: %q", width, row)
 		}
 	}
 }

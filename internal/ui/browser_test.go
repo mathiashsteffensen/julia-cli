@@ -81,7 +81,7 @@ func TestBrowserPageCard(t *testing.T) {
 		t.Fatalf("collapsed:\n%s", strings.Join(collapsed, "\n"))
 	}
 	// Narrower, the address gives way to what needs attention.
-	m.resize(110, 40)
+	m.resize(81, 40)
 	if row := strings.Split(ansi.Strip(m.renderEntryContent(item)), "\n")[1]; !strings.HasSuffix(row, "p1 · Settings · 3 lines changed · 3 blocked · 1 error · dialog") {
 		t.Fatalf("narrow collapsed: %q", row)
 	}
@@ -243,7 +243,7 @@ func TestBrowserApprovalKeys(t *testing.T) {
 	if !strings.Contains(view, "y / Enter  Allow for this turn") || strings.Contains(view, "Allow once") || strings.Count(view, "localhost:5173") != 1 {
 		t.Fatalf("allow panel:\n%s", view)
 	}
-	if footer := ansi.Strip(m.footer()); !strings.Contains(footer, "y / enter allow for this turn") {
+	if footer := ansi.Strip(m.footer(m.mainWidth)); !strings.Contains(footer, "y / enter allow for this turn") {
 		t.Fatalf("footer: %s", footer)
 	}
 	click := `{"action":"click","target":"button \"Save\" (e3)","page":"p2","page_url":"about:blank","opened_by":"http://external.test/phish"}`

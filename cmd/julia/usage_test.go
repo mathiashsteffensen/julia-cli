@@ -358,7 +358,7 @@ func TestUIConfigCarriesTheConfiguredContextWindow(t *testing.T) {
 		cfg := config.Default()
 		cfg.ContextTokens, cfg.Mode = tokens, "ask"
 		s := session.New(t.TempDir(), "fake", "model")
-		got := baseUIConfig(s, cfg, nil)
+		got := baseUIConfig(s, cfg)
 		if got.ContextWindow != tokens || got.Session != s || got.Mode != "ask" {
 			t.Fatalf("UI config %+v does not follow the configuration", got)
 		}

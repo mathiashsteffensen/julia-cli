@@ -25,23 +25,30 @@ import (
 var (
 	background  = lipgloss.Color("#15131A")
 	panel       = lipgloss.Color("#1E1B26")
+	yours       = lipgloss.Color("#29222B") // the panel warmed toward coral: the card of what you wrote
+	well        = lipgloss.Color("#100E15") // darker than the page: code sits in it, not on it
 	cream       = lipgloss.Color("#F1EBE3")
 	muted       = lipgloss.Color("#9A94A6")
-	faint       = lipgloss.Color("#4E4860")
+	subtle      = lipgloss.Color("#7B7591") // secondary text that is still read: results, labels, key names
+	faint       = lipgloss.Color("#4E4860") // decoration only: separators and what is switched off
+	ghost       = lipgloss.Color("#322D40") // a gauge's empty track
 	border      = lipgloss.Color("#5A5270")
-	coral       = lipgloss.Color("#F49D89")
-	violet      = lipgloss.Color("#C6B6F2")
+	coral       = lipgloss.Color("#F49D89") // you: your message, prompt, cursor and selection
+	violet      = lipgloss.Color("#C6B6F2") // JULIA: her spark, her headings, her running calls
 	cyan        = lipgloss.Color("#92CED2")
 	green       = lipgloss.Color("#A9C9AD")
 	amber       = lipgloss.Color("#F9D399")
+	rose        = lipgloss.Color("#EE6D85") // failure, which no longer shares coral with you
 	pillBG      = lipgloss.Color("#2A2536") // a raised chip: a tool name
 	pillText    = lipgloss.Color("#D9D1E6")
 	coralStyle  = lipgloss.NewStyle().Foreground(coral)
 	violetStyle = lipgloss.NewStyle().Foreground(violet)
 	cyanStyle   = lipgloss.NewStyle().Foreground(cyan)
 	mutedStyle  = lipgloss.NewStyle().Foreground(muted)
+	subtleStyle = lipgloss.NewStyle().Foreground(subtle)
 	faintStyle  = lipgloss.NewStyle().Foreground(faint)
 	creamStyle  = lipgloss.NewStyle().Foreground(cream)
+	roseStyle   = lipgloss.NewStyle().Foreground(rose)
 )
 
 func composerStyles() textarea.Styles {
@@ -75,16 +82,15 @@ func sanitize(text string) string {
 func (m *model) resize(width, height int) {
 	wasFollowing := m.viewport.AtBottom()
 	m.width, m.height = max(20, width), max(8, height)
-	contentWidth := m.width - 2*m.margin()
-	m.mainWidth = contentWidth
-	if m.hasSidebar() {
-		m.mainWidth -= 29
+	m.mainWidth = m.width - 2*m.margin()
+	m.sidebarShown = m.wantsSidebar()
+	if m.sidebarShown {
+		m.mainWidth -= sidebarWidth + 2
 	}
-	// The whole composer panel, frame and title row included, stays within
-	// half the screen however long the draft gets.
-	composer := m.composerStyle()
-	m.input.MaxHeight = max(2, m.height/2-composer.GetVerticalFrameSize()-1)
-	m.input.SetWidth(max(8, m.mainWidth-composer.GetHorizontalFrameSize()))
+	// The whole composer, its edge and caption row included, stays within half
+	// the screen however long the draft gets.
+	m.input.MaxHeight = max(2, m.height/2-composerChrome)
+	m.input.SetWidth(max(8, m.mainWidth-2*m.composerPadding()))
 	m.composerRows = m.input.Height()
 	// The placeholder emits just one end-of-buffer space. Fill its whole row
 	// here so the textarea viewport cannot pad it with the terminal background.
@@ -95,8 +101,8 @@ func (m *model) resize(width, height int) {
 	if m.picker != nil {
 		m.picker.search.SetWidth(max(8, m.mainWidth-8))
 	}
-	// Measure the fixed controls so spacing and title changes cannot push the
-	// composer or shortcuts off screen. The header always occupies three rows.
+	// Measure the fixed controls so spacing changes cannot push the composer
+	// or the status row off screen. The masthead always occupies three rows.
 	m.bodyHeight = max(1, m.height-3-lipgloss.Height(m.bottomView()))
 	m.queueRows = len(m.queueStrip())
 	m.viewport.SetWidth(m.mainWidth)
@@ -115,8 +121,6 @@ func (m *model) margin() int {
 	return 2
 }
 
-func (m *model) hasSidebar() bool { return m.width >= 108 }
-
 func (m *model) refresh(forceBottom bool) {
 	m.relayoutQuestion()
 	atBottom := m.viewport.AtBottom()
@@ -128,6 +132,7 @@ func (m *model) refresh(forceBottom bool) {
 		return
 	}
 	m.lines, m.rows = m.lines[:0], m.rows[:0]
+	m.alignPills(m.entries)
 	previousRole := ""
 	for i := range m.entries {
 		layout := m.renderEntry(&m.entries[i])
@@ -206,6 +211,33 @@ func markdownRenderer(width int) *glamour.TermRenderer {
 	return renderer
 }
 
+// alignPills gives the tool calls of each run one pill width, the widest
+// name's, so the targets beside them share a column. Hidden thinking takes no
+// row, so it does not part a run; a question or a review is drawn as its own
+// card and ends one.
+func (m *model) alignPills(entries []entry) {
+	var run []int
+	width := 0
+	align := func() {
+		for _, i := range run {
+			entries[i].pillWidth = width
+		}
+		run, width = run[:0], 0
+	}
+
+	for i, item := range entries {
+		switch {
+		case item.role == "reasoning" && !m.showThinking:
+		case item.role == "tool" && item.call != nil && item.call.Name != core.QuestionTool && item.call.Name != core.ReviewTool:
+			run = append(run, i)
+			width = max(width, ansi.StringWidth(sanitize(item.call.Name)))
+		default:
+			align()
+		}
+	}
+	align()
+}
+
 func str(value string) *string { return &value }
 func ptr[T any](value T) *T    { return &value }
 
@@ -233,11 +265,11 @@ func (m *model) renderEntryIn(item *entry, in column) entryLayout {
 	if item.role == "reasoning" && !m.showThinking {
 		return entryLayout{}
 	}
-	if item.layout.text != "" && item.cachedRevision == item.revision && item.cachedWidth == in.width && item.cachedExpanded == m.expandTools && item.cachedGraphics == m.graphicsEpoch {
+	if item.layout.text != "" && item.cachedRevision == item.revision && item.cachedWidth == in.width && item.cachedExpanded == m.expandTools && item.cachedGraphics == m.graphicsEpoch && item.cachedPill == item.pillWidth {
 		return item.layout
 	}
 	item.layout = m.layoutEntryIn(*item, in)
-	item.cachedRevision, item.cachedWidth, item.cachedExpanded, item.cachedGraphics = item.revision, in.width, m.expandTools, m.graphicsEpoch
+	item.cachedRevision, item.cachedWidth, item.cachedExpanded, item.cachedGraphics, item.cachedPill = item.revision, in.width, m.expandTools, m.graphicsEpoch, item.pillWidth
 	return item.layout
 }
 
@@ -282,12 +314,22 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 	switch item.role {
 	case "user":
 		out.targets = []copyTarget{{"your message", item.text}}
-		// Your words sit on a card with a coral edge, as wide as the column.
-		card := func(s string) string {
-			return coralStyle.Render("▌") + paint(panel, max(3, in.width-3), ink(panel, cream).Render(" ")+s)
+		// Your words sit on a card with a coral edge, as wide as the column. Its
+		// top and bottom edges are half a row tall, so it floats without a frame,
+		// and it has no heading: the edge says whose it is. A labelled message,
+		// such as an agent's task, keeps its label.
+		width := max(4, in.width)
+		edge := func(half string) string {
+			return lipgloss.NewStyle().Foreground(yours).Render(strings.Repeat(half, width))
 		}
-		add(card(ink(panel, coral).Bold(true).Render(item.heading("You"))), rowMeta{gutter: 2, skip: true})
-		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string { return card(highlightImageTokens(s)) })
+		card := func(s string) string {
+			return ink(yours, coral).Render("▌") + paint(yours, width-1, ink(yours, cream).Render(" ")+s)
+		}
+		add(edge("▄"), rowMeta{gutter: 2, skip: true})
+		if item.label != "" {
+			add(card(ink(yours, coral).Bold(true).Render(item.label)), rowMeta{gutter: 2, skip: true})
+		}
+		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string { return card(highlightImageTokens(yours, s)) })
 		rows := imageRows(item.images)
 		if len(item.images) > 0 && len(item.imageIDs) == len(item.images) && m.thumbnailsShown() {
 			add(card(""), rowMeta{gutter: 2, skip: true})
@@ -296,6 +338,7 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 		for _, row := range rows {
 			add(card(ansi.Truncate(row, w, "…")), rowMeta{gutter: 2, skip: true})
 		}
+		add(edge("▀"), rowMeta{gutter: 2, skip: true})
 	case "reasoning":
 		if !m.showThinking {
 			return out
@@ -404,23 +447,26 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 		}
 		// The call is a pill: its name on a raised chip with the target beside
 		// it, and a mark before it only while it runs or once it has failed.
+		// The pills of one run of calls share a width, so their targets share a
+		// column.
 		mark, pill := "  ", ink(pillBG, pillText)
 		if !item.done {
 			mark, pill = violetStyle.Render("◌ "), ink(pillBG, violet)
 		}
 		if item.result != nil && item.result.IsError {
-			mark, pill = coralStyle.Render("! "), ink(pillBG, coral)
+			mark, pill = roseStyle.Render("! "), ink(pillBG, rose)
 		}
-		bar := "  "
-		title := mark + pill.Render(" "+sanitize(name)+" ")
+		chip := sanitize(name)
+		chip += strings.Repeat(" ", max(0, item.pillWidth-ansi.StringWidth(chip)))
+		title := mark + pill.Render(" "+chip+" ")
 		if detail != "" {
-			title += " " + mutedStyle.Render(ansi.Truncate(sanitize(detail), max(6, w-ansi.StringWidth(name)-6), "…"))
+			title += " " + mutedStyle.Render(ansi.Truncate(sanitize(detail), max(6, w-ansi.StringWidth(chip)-6), "…"))
 		}
 		// The title row waits for the result: a short one joins it on its row.
 		titleAdded := false
 		flushTitle := func() {
 			if !titleAdded {
-				add(bar+title, rowMeta{gutter: 5})
+				add(title, rowMeta{gutter: 3})
 				titleAdded = true
 			}
 		}
@@ -433,10 +479,10 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 				if task.role != "" {
 					heading += mutedStyle.Render(" · ") + cyanStyle.Render(ansi.Truncate(sanitize(task.role), max(1, w-14), "…"))
 				}
-				add(bar+"  "+heading, rowMeta{gutter: 4, skip: true})
+				add("  "+heading, rowMeta{gutter: 2, skip: true})
 				for _, paragraph := range strings.Split(sanitize(task.prompt), "\n") {
 					for lineIndex, line := range strings.Split(ansi.Hardwrap(paragraph, max(1, w-6), false), "\n") {
-						add(bar+"    "+creamStyle.Render(line), rowMeta{gutter: 6, cont: lineIndex > 0, target: target})
+						add("    "+creamStyle.Render(line), rowMeta{gutter: 4, cont: lineIndex > 0, target: target})
 					}
 				}
 			}
@@ -446,7 +492,7 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 			// The arguments in full: the title row shows the message or issue
 			// text only as far as the width allows.
 			for _, row := range argumentRows(callArguments(item.call.Arguments), w-4) {
-				add(bar+"  "+row.text, rowMeta{gutter: 4 + row.indent, cont: row.cont, target: 0})
+				add("  "+row.text, rowMeta{gutter: 2 + row.indent, cont: row.cont, target: 0})
 			}
 		}
 		if item.result != nil {
@@ -469,78 +515,78 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 			streamingBash := !item.done && item.call != nil && item.call.Name == "Bash"
 			merged := false
 			if plain := !streamingBash && !isOther && !isPage && !isScreen && !m.expandTools && !in.resultBelow && result != ""; plain && ansi.StringWidth(title)+5+ansi.StringWidth(first) <= w {
-				style := faintStyle
+				style := subtleStyle
 				if item.result.IsError {
-					style = coralStyle
+					style = roseStyle
 				}
-				add(bar+title+style.Render("  ·  "+first), rowMeta{gutter: 5})
+				add(title+faintStyle.Render("  ·  ")+style.Render(first), rowMeta{gutter: 3})
 				titleAdded, merged = true, true
 			}
 			flushTitle()
 			if isOther {
 				for _, row := range other {
-					add(bar+"  "+row, rowMeta{gutter: 4, target: 1})
+					add("  "+row, rowMeta{gutter: 2, target: 1})
 				}
 			} else if isPage && m.expandTools {
 				if page.headline != "" {
-					add(bar+"  "+mutedStyle.Render(ansi.Truncate(page.headline, w-2, "…")), rowMeta{gutter: 4, skip: true})
+					add("  "+mutedStyle.Render(ansi.Truncate(page.headline, w-2, "…")), rowMeta{gutter: 2, skip: true})
 				}
 				for _, line := range page.details {
-					add(bar+"  "+creamStyle.Render(ansi.Truncate(line, w-2, "…")), rowMeta{gutter: 4, target: 1})
+					add("  "+creamStyle.Render(ansi.Truncate(line, w-2, "…")), rowMeta{gutter: 2, target: 1})
 				}
 				// Notes are read whole: why a request was blocked is in its tail.
 				for _, note := range page.notes {
 					for i, line := range strings.Split(ansi.Wrap(note, max(8, w-4), ""), "\n") {
 						lead := map[bool]string{true: "· ", false: "  "}[i == 0]
-						add(bar+"  "+noteStyle(note).Render(lead+line), rowMeta{gutter: 6, skip: true})
+						add("  "+noteStyle(note).Render(lead+line), rowMeta{gutter: 4, skip: true})
 					}
 				}
 				for _, err := range page.errs {
 					for i, line := range strings.Split(ansi.Wrap(err, max(8, w-4), ""), "\n") {
 						lead := map[bool]string{true: "! ", false: "  "}[i == 0]
-						add(bar+"  "+coralStyle.Render(lead+line), rowMeta{gutter: 6, skip: true})
+						add("  "+coralStyle.Render(lead+line), rowMeta{gutter: 4, skip: true})
 					}
 				}
 				rows, edge := page.card(w - 2)
 				for i, row := range rows {
-					add(bar+"  "+row, rowMeta{gutter: 4 + codeGutter, end: 4 + ansi.StringWidth(row), skip: edge[i], target: 1})
+					add("  "+row, rowMeta{gutter: 2 + codeGutter, end: 2 + ansi.StringWidth(row), skip: edge[i], target: 1})
 				}
 				if page.shot != "" {
-					add(bar+"  "+mutedStyle.Italic(true).Render(ansi.Truncate(page.shot, w-2, "…")), rowMeta{gutter: 4, skip: true})
+					add("  "+mutedStyle.Italic(true).Render(ansi.Truncate(page.shot, w-2, "…")), rowMeta{gutter: 2, skip: true})
 				}
 			} else if isPage {
-				add(bar+"  "+page.summary(w-2), rowMeta{gutter: 4, target: 1})
+				add("  "+page.summary(w-2), rowMeta{gutter: 2, target: 1})
 			} else if isScreen && m.expandTools {
 				for _, note := range screen.notes {
-					add(bar+"  "+mutedStyle.Italic(true).Render(ansi.Truncate(note, w-2, "…")), rowMeta{gutter: 4, skip: true})
+					add("  "+mutedStyle.Italic(true).Render(ansi.Truncate(note, w-2, "…")), rowMeta{gutter: 2, skip: true})
 				}
 				rows, edge := screen.card(w - 2)
 				for i, row := range rows {
-					add(bar+"  "+row, rowMeta{gutter: 4 + codeGutter, end: 4 + ansi.StringWidth(row), skip: edge[i], target: 1})
+					add("  "+row, rowMeta{gutter: 2 + codeGutter, end: 2 + ansi.StringWidth(row), skip: edge[i], target: 1})
 				}
 			} else if isScreen {
-				add(bar+"  "+ansi.Truncate(screen.summary(), w-2, "…"), rowMeta{gutter: 4, target: 1})
+				add("  "+ansi.Truncate(screen.summary(), w-2, "…"), rowMeta{gutter: 2, target: 1})
 			} else if m.expandTools || streamingBash {
 				parts := strings.Split(ansi.Hardwrap(result, w-2, false), "\n")
 				if len(parts) > 100 {
 					parts = append(parts[:100], "… output truncated in the display")
 				}
 				for _, line := range parts {
-					add(bar+mutedStyle.Render("  "+line), rowMeta{gutter: 4, target: 1})
+					add(mutedStyle.Render("  "+line), rowMeta{gutter: 2, target: 1})
 				}
 			} else if result != "" && !merged {
-				style := faintStyle
+				style := subtleStyle
 				if item.result.IsError {
-					style = coralStyle
+					style = roseStyle
 				}
-				add(bar+style.Render("  "+ansi.Truncate(first, w-2, "…")), rowMeta{gutter: 4, target: 1})
+				add(style.Render("  "+ansi.Truncate(first, w-2, "…")), rowMeta{gutter: 2, target: 1})
 			}
 			// Images sit under the output as in a user's message: drawn when the
 			// terminal can, captioned otherwise or when only a marker was saved.
 			if len(item.images) > 0 && len(item.imageIDs) == len(item.images) && m.thumbnailsShown() {
-				add(bar, rowMeta{gutter: 2, skip: true})
+				add("", rowMeta{skip: true})
 				for _, row := range m.thumbnailRowsFor(item, m.thumbnailColumns()) {
-					add(bar+"  "+ansi.Truncate(row, m.thumbnailColumns(), "…"), rowMeta{gutter: 4, skip: true})
+					add("  "+ansi.Truncate(row, m.thumbnailColumns(), "…"), rowMeta{gutter: 2, skip: true})
 				}
 			} else {
 				for _, img := range item.images {
@@ -548,13 +594,13 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 				}
 			}
 			for _, description := range markers {
-				add(bar+"  "+ansi.Truncate(imageCaption(description), w-2, "…"), rowMeta{gutter: 4, skip: true})
+				add("  "+ansi.Truncate(imageCaption(description), w-2, "…"), rowMeta{gutter: 2, skip: true})
 			}
 		}
 		flushTitle()
 	case "warning":
 		out.targets = []copyTarget{{"warning", item.text}}
-		marked("!", coralStyle, item.text)
+		marked("!", roseStyle, item.text)
 	default:
 		out.targets = []copyTarget{{"note", item.text}}
 		marked("·", mutedStyle.Italic(true), item.text)
@@ -796,19 +842,6 @@ func (m *model) View() tea.View {
 	if m.width == 0 {
 		return tea.NewView("")
 	}
-	contentWidth := m.width - 2*m.margin()
-	// The masthead: the brand's wave as a ribbon across the top, the name set
-	// in the same gradient, and the workspace and mode at the right.
-	header := ribbon("JULIA")
-	right := violetStyle.Render("● " + sanitize(m.cfg.Mode))
-	if m.cfg.Demo {
-		right = violetStyle.Render("◈ PREVIEW")
-	}
-	if m.width >= 65 && m.cfg.Session != nil && m.cfg.Session.Directory != "" {
-		right = mutedStyle.Render(ansi.Truncate(sanitize(filepath.Base(filepath.Clean(m.cfg.Session.Directory))), 24, "…")+"  ·  ") + right
-	}
-	header += strings.Repeat(" ", max(1, contentWidth-ansi.StringWidth(header)-ansi.StringWidth(right))) + right
-	header = ribbon(strings.Repeat("▀", contentWidth)) + "\n" + ansi.Truncate(header, contentWidth, "") + "\n"
 	body := m.withActivity(m.highlightSelection(m.viewport.View()))
 	if m.picker != nil && m.pending == nil {
 		body = m.pickerView()
@@ -816,7 +849,7 @@ func (m *model) View() tea.View {
 		body = m.questionBody()
 	} else if m.fleetView != nil && m.pending == nil {
 		body = m.fleetBody()
-	} else if len(m.entries) == 0 && m.pending == nil {
+	} else if m.welcoming() {
 		body = m.welcome()
 	}
 	body = lipgloss.NewStyle().Width(m.mainWidth).Height(m.bodyHeight).Render(body)
@@ -824,13 +857,15 @@ func (m *model) View() tea.View {
 		// The command menu rises from the composer over the conversation.
 		body = m.overlayMenu(body, m.mainWidth, m.bodyHeight)
 	}
-	body += "\n" + m.bottomView()
+
+	// The masthead has a clear row above and below it: three rows in all.
+	column := "\n" + m.masthead() + "\n\n" + body + "\n" + m.bottomView()
 	if m.hasSidebar() {
-		// The sidebar runs from the masthead to the bottom edge, beside the composer.
-		body = lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(m.mainWidth).Render(body), "  ", m.sidebar())
+		// The sidebar runs the height of the screen, beside the masthead and the composer.
+		column = lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(m.mainWidth).Render(column), "  ", m.sidebar())
 	}
-	view := header + "\n" + body
-	view = lipgloss.NewStyle().Padding(0, m.margin()).Background(background).Foreground(cream).Width(m.width).Render(view)
+
+	view := lipgloss.NewStyle().Padding(0, m.margin()).Background(background).Foreground(cream).Width(m.width).Render(column)
 	// Clamp every final row, including pathological filenames and narrow resizes.
 	lines := strings.Split(view, "\n")
 	for i := range lines {
@@ -849,103 +884,17 @@ func (m *model) View() tea.View {
 	return v
 }
 
+// welcoming reports whether the body is the welcome: no conversation yet, and
+// nothing open over where it would be.
+func (m *model) welcoming() bool {
+	return len(m.entries) == 0 && m.pending == nil && m.picker == nil && m.question == nil && m.fleetView == nil
+}
+
 // cardBorder frames a filled card flush with its fill. One-eighth blocks sit on
 // the cell's edge, where a box-drawing stroke sits in its middle and leaves a
 // gap inside the frame or a halo outside it, whichever background its cell
 // has. The top and bottom lines are drawn on the page, the sides on the fill.
 var cardBorder = lipgloss.Border{Top: "▁", Bottom: "▔", Left: "▏", Right: "▕", TopLeft: "▁", TopRight: "▁", BottomLeft: "▔", BottomRight: "▔"}
-
-func (m *model) composerStyle() lipgloss.Style {
-	vertical, horizontal := 0, 1
-	if m.width >= 60 {
-		horizontal = 2
-	}
-	if m.height >= 36 {
-		vertical = 1
-	}
-	stroke := border
-	if m.pending != nil {
-		stroke = coral
-	}
-	return lipgloss.NewStyle().Width(m.mainWidth).Padding(vertical, horizontal).
-		Background(panel).Border(cardBorder).BorderForeground(stroke).BorderTopBackground(background).BorderBottomBackground(background).BorderLeftBackground(panel).BorderRightBackground(panel)
-}
-
-func (m *model) bottomView() string {
-	rows, _ := m.bottomLayout()
-	return strings.Join(rows, "\n")
-}
-
-// bottomLayout is the rows below the conversation, and the index among them
-// of the queue strip's first row, -1 when nothing is queued.
-func (m *model) bottomLayout() ([]string, int) {
-	style := m.composerStyle()
-	innerWidth := max(1, m.mainWidth-style.GetHorizontalFrameSize())
-	// Each part of the title sets the panel background itself: a style reset
-	// between two parts would otherwise let the terminal background through.
-	label, note := ink(panel, violet).Bold(true), ink(panel, muted)
-	composerTitle := label.Render("MESSAGE")
-	composerInput := m.input.View()
-	if m.picker != nil {
-		composerTitle = label.Render("SEARCH") + note.Render(" · your message draft is kept")
-		if m.mainWidth < 44 {
-			composerTitle = label.Render("SEARCH") + note.Render(" · draft kept")
-		}
-		composerInput = m.picker.search.View() + "\n"
-	}
-	if m.busy {
-		composerTitle = label.Render("MESSAGE") + note.Render(" · Enter queues it until JULIA settles")
-		if m.mainWidth < 52 {
-			composerTitle = label.Render("MESSAGE") + note.Render(" · Enter queues")
-		}
-	}
-	if m.fleetView != nil {
-		composerTitle = label.Render("DRAFT") + note.Render(" · kept while you inspect the fleet")
-		if m.mainWidth < 48 {
-			composerTitle = label.Render("DRAFT") + note.Render(" · fleet open")
-		}
-	}
-	if m.question != nil {
-		composerTitle = label.Render("DRAFT") + note.Render(" · kept while you answer")
-		if m.question.review != nil {
-			composerTitle = label.Render("DRAFT") + note.Render(" · kept while you review")
-		}
-	}
-	if m.pending != nil {
-		composerTitle = ink(panel, coral).Render("APPROVAL · y / Enter")
-	}
-	if m.picker == nil && m.pending == nil {
-		composerTitle += m.attachmentChips(max(0, innerWidth-ansi.StringWidth(composerTitle)))
-	}
-	composer := style.Render(ansi.Truncate(composerTitle, innerWidth, "…") + "\n" + composerInput)
-	if m.pending == nil {
-		// The top edge carries the brand's ribbon, as the masthead does; an
-		// approval keeps its coral frame whole.
-		if lines := strings.Split(composer, "\n"); len(lines) > 0 {
-			lines[0] = ribbonOn(background, ansi.Strip(lines[0]))
-			composer = strings.Join(lines, "\n")
-		}
-	}
-	var rows []string
-	if m.height >= 28 {
-		rows = append(rows, "")
-	}
-	rows = append(rows, m.statusLine())
-	if m.height >= 28 {
-		rows = append(rows, "")
-	}
-	queueAt := -1
-	if strip := m.queueStrip(); len(strip) > 0 {
-		queueAt = len(rows)
-		rows = append(rows, strip...)
-	}
-	rows = append(rows, composer)
-	if m.height >= 36 {
-		rows = append(rows, "")
-	}
-	rows = append(rows, m.footer(), "")
-	return rows, queueAt
-}
 
 // heroGap is the number of cells between the hero's letters.
 const heroGap = 2
@@ -971,10 +920,9 @@ func centred(total, block int) int {
 }
 
 // block pads every row to one odd width, centring each, so that
-// lipgloss.Place moves them as one rectangle. The width is odd so that the
-// crest, the label and the hairline, which are odd cells wide, share one axis
-// cell exactly, and the hero's letters and shadow together, also odd, sit on
-// it too; even rows lean half a cell left, as they must.
+// lipgloss.Place moves them as one rectangle. Rows of even width, as the
+// wordmark and the tagline are, all lean the same half cell left, so they
+// still share one axis.
 func block(rows []string) []string {
 	width := 0
 	for _, row := range rows {
@@ -987,16 +935,6 @@ func block(rows []string) []string {
 		out[i] = strings.Repeat(" ", pad/2) + row + strings.Repeat(" ", pad-pad/2)
 	}
 	return out
-}
-
-// heroMark is the wordmark: the hero rows each led by one space so that the
-// letters, not the shadow's extra column, are what the axis balances.
-func heroMark() []string {
-	var rows []string
-	for _, row := range heroLettering(heroGap) {
-		rows = append(rows, " "+row)
-	}
-	return rows
 }
 
 // tagline is the welcome's caption: what the name stands for, give or take.
@@ -1020,18 +958,25 @@ func taglineRows(width int) []string {
 // jewelLockup is the small-terminal mark: the quadrant lettering with the
 // tagline under it.
 func jewelLockup(width int) []string {
-	return append(append(logoLettering(), ""), taglineRows(width)...)
+	return append(append(logoLettering(nil), ""), taglineRows(width)...)
 }
 
-// welcome is the body before the first message: the wordmark with its
-// tagline. With less room the quadrant jewel, and at the last resort two lines of text. The block is
+// welcome is the body before the first message, a poster: the wordmark on its
+// reflection, the tagline, and the model the first message will meet. With
+// less room the model goes, then most of the reflection, then the quadrant
+// jewel stands in, and at the last resort two lines of text. The block is
 // centred, and never starts on the row under the masthead.
 func (m *model) welcome() string {
 	w, h := m.mainWidth, m.bodyHeight
+	hero := w >= heroWidth(heroGap)+6
 	var rows []string
 	switch {
-	case h >= 7 && w >= heroWidth(heroGap)+6:
-		rows = welcomePage(w)
+	case hero && h >= 12:
+		rows = m.welcomePage(w)
+	case hero && h >= 9:
+		rows = append(append(heroLettering(heroGap), ""), taglineRows(w)...)
+	case hero && h >= 7:
+		rows = append(heroLettering(heroGap)[:heroLetterRows+1], taglineRows(w)...)
 	case w >= 24 && h >= len(jewelLockup(w)):
 		rows = jewelLockup(w)
 	default:
@@ -1043,10 +988,34 @@ func (m *model) welcome() string {
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Top, content)
 }
 
-// welcomePage is the full welcome: the wordmark with the tagline set directly
-// under the shadow's feet.
-func welcomePage(w int) []string {
-	return append(heroMark(), taglineRows(w)...)
+// welcomePage is the full welcome: the wordmark standing on its reflection,
+// the tagline a row under it, and the vitals a row under that.
+func (m *model) welcomePage(w int) []string {
+	rows := append(append(heroLettering(heroGap), ""), taglineRows(w)...)
+	if vitals := m.welcomeVitals(w); vitals != "" {
+		rows = append(rows, "", vitals)
+	}
+	return rows
+}
+
+// welcomeVitals says what the first message will meet, since the welcome has
+// no sidebar to say it: the model, its reasoning effort, and how much of the
+// week's allowance is left.
+func (m *model) welcomeVitals(width int) string {
+	if m.cfg.Session == nil {
+		return ""
+	}
+	parts := []string{m.cfg.Session.Model}
+	if parts[0] == "" {
+		parts[0] = "provider default"
+	}
+	if showsReasoning(m.cfg.Session.Provider, m.cfg.NamedProviders) {
+		parts = append(parts, reasoningDisplay(m.cfg.Session.Provider, m.cfg.Session.Reasoning, m.cfg.NamedProviders))
+	}
+	if week := m.accountUsage.weekly; week.value != nil && !m.outdated(week) {
+		parts = append(parts, fmt.Sprintf("%.0f%% of the week left", week.value.RemainingPercent))
+	}
+	return ansi.Truncate(subtleStyle.Render(sanitize(strings.Join(parts, " · "))), width, "…")
 }
 
 // showsReasoning reports whether provider takes a reasoning effort: a CLI
@@ -1063,163 +1032,6 @@ func reasoningDisplay(provider, effort string, named map[string]bool) string {
 		return "provider default"
 	}
 	return "inherited"
-}
-
-// overSidebar reports whether a screen cell falls inside the sidebar column.
-func (m *model) overSidebar(x, y int) bool {
-	return m.hasSidebar() && x >= m.margin()+m.mainWidth+2 && y >= 3 && y < 3+m.sidebarHeight()
-}
-
-// sidebarHeight is every row below the header's three.
-func (m *model) sidebarHeight() int { return max(1, m.height-3) }
-
-// scrollSidebar moves the sidebar by delta rows; sidebar clamps the offset.
-func (m *model) scrollSidebar(delta int) {
-	m.sidebarOffset = max(0, m.sidebarOffset+delta)
-	m.sidebar()
-}
-
-func (m *model) sidebar() string {
-	const width = 23 // text cells on a row, inside the card and below it
-	card, page := paletteOn(panel), paletteOn(background)
-	fit := func(style lipgloss.Style, s string) string {
-		return style.Render(ansi.Truncate(sanitize(s), width, "…"))
-	}
-	provider, modelName, reasoning, directory, id := "—", "default", "", "", "new conversation"
-	if m.cfg.Session != nil {
-		provider, modelName, directory, id = m.cfg.Session.Provider, m.cfg.Session.Model, m.cfg.Session.Directory, m.cfg.Session.ID
-		reasoning = m.cfg.Session.Reasoning
-	}
-	if modelName == "" {
-		modelName = "provider default"
-	}
-	reasoning = reasoningDisplay(provider, reasoning, m.cfg.NamedProviders)
-	if directory != "" {
-		directory = filepath.Clean(directory)
-	}
-	connection := []string{card.label("MODEL"), fit(card.text, modelName), fit(card.cyan, provider)}
-	if m.cfg.Profile != "" {
-		connection = append(connection, fit(card.muted, "profile: "+m.cfg.Profile))
-	}
-	if showsReasoning(provider, m.cfg.NamedProviders) {
-		if !config.IsCLIProvider(provider) && reasoning == "provider default" {
-			connection = append(connection, card.muted.Render("reasoning:"), card.muted.Render("provider default"))
-		} else {
-			connection = append(connection, fit(card.muted, "reasoning: "+reasoning))
-		}
-		if config.IsCLIProvider(provider) {
-			connection = append(connection, m.weeklyUsageLine(card))
-			// Only Claude Code reports a 5-hour window.
-			if provider == "claude" {
-				connection = append(connection, m.fiveHourUsageLine(card))
-			}
-		}
-	}
-	// The per-call figures describe the last model call only; the session totals
-	// and the context estimate have their own sections.
-	activity := []string{card.label("ACTIVITY"), fit(card.text, fmt.Sprintf("%d tool calls", m.toolCount)), card.muted.Render("last call"), fit(card.muted, fmt.Sprintf("%s in · %s out", core.CompactTokens(m.inputTokens), core.CompactTokens(m.outputTokens)))}
-	sections := [][]string{m.contextSection(card, width), m.tokenSection(card, width), activity, connection}
-	if n := len(m.fleet); n > 0 {
-		count := fmt.Sprintf("%d subagents", n)
-		if n == 1 {
-			count = "1 subagent"
-		}
-		section := []string{card.label("FLEET"), fit(card.text, count)}
-		// The states on one row when they fit, else one per row.
-		if summary := m.fleetSummary(); ansi.StringWidth(summary) <= width {
-			section = append(section, card.muted.Render(summary))
-		} else {
-			for _, part := range strings.Split(summary, " · ") {
-				section = append(section, fit(card.muted, part))
-			}
-		}
-		sections = append(sections, append(section, card.faint.Render("ctrl+f inspects")))
-	}
-	// What changes as the session runs sits on one card, framed as cardBorder
-	// frames the composer: flush with the fill.
-	rows := []string{"", page.faint.Render(strings.Repeat("▁", width+4))}
-	for i, section := range sections {
-		if i > 0 {
-			section = append([]string{""}, section...)
-		}
-		for _, row := range section {
-			rows = append(rows, card.faint.Render("▏")+paint(panel, width+2, ink(panel, cream).Render(" ")+row)+card.faint.Render("▕"))
-		}
-	}
-	rows = append(rows, page.faint.Render(strings.Repeat("▔", width+4)))
-	// Below it, what rarely changes, set directly on the page.
-	session := []string{page.label("SESSION"), fit(page.text, id)}
-	if m.cfg.Version != "" {
-		session = append(session, fit(page.faint, "JULIA v"+strings.Join(strings.Fields(m.cfg.Version), " ")))
-	}
-	below := [][]string{
-		{page.label("WORKSPACE"), fit(page.text, filepath.Base(directory)), fit(page.muted, directory)},
-		{page.label("PERMISSIONS"), fit(page.green, "● "+m.cfg.Mode), fit(page.muted, permissionCaption(m.cfg.Mode))},
-		session,
-	}
-	if tools := toolRows(m.cfg.ToolDefinitions, width); len(tools) > 0 {
-		essentials := []string{page.label("THE ESSENTIALS")}
-		for _, row := range tools {
-			essentials = append(essentials, page.muted.Render(row))
-		}
-		below = append(below, essentials)
-	}
-	for _, section := range below {
-		rows = append(rows, "")
-		for _, row := range section {
-			rows = append(rows, " "+row)
-		}
-	}
-	// The card and every section always render in full; a sidebar taller than
-	// the body scrolls on its own under the mouse wheel.
-	height := m.sidebarHeight()
-	m.sidebarOffset = max(0, min(m.sidebarOffset, len(rows)-height))
-	rows = rows[m.sidebarOffset:]
-	if len(rows) > height {
-		rows = rows[:height]
-	}
-	return lipgloss.NewStyle().Width(width + 4).Height(height).Render(strings.Join(rows, "\n"))
-}
-
-// Pack the registered names into rows; no tool names belong in the view.
-func toolRows(definitions []core.ToolDefinition, width int) []string {
-	var rows []string
-	row := ""
-	for _, definition := range definitions {
-		name := ansi.Truncate(strings.Join(strings.Fields(sanitize(definition.Name)), " "), width, "…")
-		if name == "" {
-			continue
-		}
-		if row == "" {
-			row = name
-			continue
-		}
-		if ansi.StringWidth(row+"  "+name) > width {
-			rows = append(rows, row)
-			row = name
-		} else {
-			row += "  " + name
-		}
-	}
-	if row != "" {
-		rows = append(rows, row)
-	}
-	return rows
-}
-
-func permissionCaption(mode string) string {
-	switch mode {
-	case "auto", "auto-approve", "autoapprove":
-		return "Automatic review on"
-	case "read-only", "read_only", "readonly":
-		return "Read-only access"
-	case "ask":
-		return "Ask before changes"
-	case "yolo":
-		return "Yolo: no sandbox"
-	default:
-		return "Enforced per action" // must fit the 23-column sidebar on one row
-	}
 }
 
 // activityLine is the animated stream, what the task is doing, and how long
@@ -1247,130 +1059,6 @@ func (m *model) withActivity(body string) string {
 	}
 	lines[row] = ansi.Truncate(" "+m.activityLine(m.mainWidth-1), m.mainWidth, "")
 	return strings.Join(lines, "\n")
-}
-
-func (m *model) statusLine() string {
-	status := lipgloss.NewStyle().Foreground(green).Render("●") + mutedStyle.Render(" Ready")
-	if m.busy && m.conversationShown() {
-		status = "" // the activity is drawn under the latest entry
-	} else if m.busy {
-		status = m.activityLine(m.mainWidth)
-	} else if m.followup != nil {
-		// Work after the turn, such as its reflection: the interface is
-		// free, and says what is still under way.
-		status = violetStyle.Render("◌") + mutedStyle.Render(" "+sanitize(m.followup.Status))
-	} else if m.lastDuration > 0 {
-		status += faintStyle.Render(" · " + elapsed(m.lastDuration))
-	}
-	if !m.hasSidebar() && m.cfg.Session != nil {
-		model := m.cfg.Session.Model
-		if model == "" {
-			model = "provider default"
-		}
-		settings := model
-		if showsReasoning(m.cfg.Session.Provider, m.cfg.NamedProviders) {
-			settings += " · " + reasoningDisplay(m.cfg.Session.Provider, m.cfg.Session.Reasoning, m.cfg.NamedProviders)
-		}
-		if remaining := m.mainWidth - ansi.StringWidth(status); remaining > 3 {
-			suffix := violetStyle.Render(sanitize(settings))
-			if status != "" {
-				suffix = mutedStyle.Render(" · ") + suffix
-			}
-			status += ansi.Truncate(suffix, remaining, "…")
-		}
-	}
-	if m.pending != nil {
-		status = coralStyle.Render("◆ Waiting for your approval")
-	}
-	if m.question != nil {
-		status = violetStyle.Render("◆ Waiting for your answer")
-		if r := m.question.review; r != nil {
-			status = violetStyle.Render("◆ Waiting for your decisions") + mutedStyle.Render(fmt.Sprintf(" · %d of %d findings decided", r.decidedCount(), len(r.triage)))
-		}
-	}
-	if m.notice != "" {
-		status = mutedStyle.Render(sanitize(m.notice))
-	}
-	if m.fleetView != nil && m.fleetView.below > 0 && m.pending == nil && m.question == nil && m.notice == "" {
-		status = violetStyle.Render("↑ Reading the agent's work") + mutedStyle.Render(" · Ctrl+End to follow it")
-	}
-	if !m.viewport.AtBottom() && len(m.entries) > 0 && m.pending == nil && m.question == nil && m.picker == nil && m.fleetView == nil && m.notice == "" {
-		status = violetStyle.Render("↑ Reading history") + mutedStyle.Render(" · Ctrl+End to follow output")
-	}
-	return ansi.Truncate(status, m.mainWidth, "…")
-}
-
-func (m *model) footer() string {
-	if m.question != nil && m.pending == nil {
-		if m.width < 36 {
-			return mutedStyle.Render("ctrl+c stops")
-		}
-		verb, where := "answering", "answer above"
-		if m.question.review != nil {
-			verb, where = "reviewing", "decide above"
-		}
-		if m.width < 62 {
-			return mutedStyle.Render(where + " · ctrl+c stops")
-		}
-		if m.width < 78 {
-			return violetStyle.Render(verb) + mutedStyle.Render("  ctrl+c stops the task")
-		}
-		return violetStyle.Render(verb) + mutedStyle.Render("  ctrl+c stops the task  mouse wheel scrolls the conversation")
-	}
-	if m.pending != nil {
-		if m.width < 40 {
-			return mutedStyle.Render("y/enter allow · others deny")
-		}
-		if m.width < 62 {
-			return mutedStyle.Render("y/enter allow · any other key denies")
-		}
-		return coralStyle.Render("y / enter "+strings.ToLower(allowLabel(m.pending.Approval))) + mutedStyle.Render("  any other key denies  mouse wheel scrolls")
-	}
-	if m.fleetView != nil {
-		return m.fleetFooter()
-	}
-	if m.picker != nil {
-		if m.width < 40 {
-			return mutedStyle.Render("↑↓ select · enter · esc back")
-		}
-		if m.width < 62 {
-			return mutedStyle.Render("↑↓ choose · enter apply · esc back")
-		}
-		text := "↑↓ choose  enter apply  esc back"
-		if m.picker.kind == "reasoning" {
-			text += "  tab models"
-		}
-		return mutedStyle.Render(text)
-	}
-	send := "send"
-	if m.busy {
-		send = "queue"
-	}
-	if m.width < 62 {
-		return coralStyle.Render("enter") + mutedStyle.Render(" "+send+" · ") + violetStyle.Render("ctrl+p") + mutedStyle.Render(" models · ") + violetStyle.Render("/help")
-	}
-	// Shortcuts join in order of usefulness while they fit beside the sidebar,
-	// then show in their usual order.
-	extras, priority := []string{"ctrl+t thinking", "ctrl+o tools", "ctrl+p models", "drag copy", "ctrl+v image"}, []int{2, 0, 1, 3, 4}
-	if len(m.fleet) > 0 {
-		// With agents at work, the fleet is the shortcut worth knowing first.
-		extras, priority = []string{"ctrl+f fleet", "ctrl+t thinking", "ctrl+o tools", "ctrl+p models", "drag copy", "ctrl+v image"}, []int{0, 3, 1, 2, 4, 5}
-	}
-	shown := make([]bool, len(extras))
-	used := ansi.StringWidth("enter " + send + "  alt+enter newline  esc interrupt  /help")
-	for _, i := range priority {
-		if used+2+len(extras[i]) <= m.mainWidth {
-			used, shown[i] = used+2+len(extras[i]), true
-		}
-	}
-	left := coralStyle.Render("enter ") + mutedStyle.Render(send) + violetStyle.Render("  alt+enter ") + mutedStyle.Render("newline") + violetStyle.Render("  esc ") + mutedStyle.Render("interrupt") + violetStyle.Render("  /help")
-	for i, extra := range extras {
-		if shown[i] {
-			key, name, _ := strings.Cut(extra, " ")
-			left += violetStyle.Render("  "+key+" ") + mutedStyle.Render(name)
-		}
-	}
-	return left
 }
 
 func (m *model) approvalView() string {
@@ -1491,20 +1179,20 @@ func elapsed(d time.Duration) string {
 
 // RenderDemo returns an offline, ANSI-styled preview for visual regression
 // inspection. It starts neither a terminal program nor a provider.
-func RenderDemo(width, height int, definitions ...core.ToolDefinition) string {
-	return renderPreview(width, height, true, definitions)
+func RenderDemo(width, height int) string {
+	return renderPreview(width, height, true)
 }
 
 // RenderWelcome returns the initial, empty-conversation screen without starting
 // a terminal program or contacting a provider.
-func RenderWelcome(width, height int, definitions ...core.ToolDefinition) string {
-	return renderPreview(width, height, false, definitions)
+func RenderWelcome(width, height int) string {
+	return renderPreview(width, height, false)
 }
 
-func renderPreview(width, height int, demo bool, definitions []core.ToolDefinition) string {
+func renderPreview(width, height int, demo bool) string {
 	m := newModel(Config{
 		Session: &core.Session{ID: "a quiet kind of capable", Directory: "~/code/julia-cli", Provider: "codex", Model: "your selected model"},
-		Mode:    "auto", Demo: demo, ToolDefinitions: definitions,
+		Mode:    "auto", Demo: demo,
 	})
 	defer m.stop()
 	m.resize(width, height)

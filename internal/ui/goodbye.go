@@ -27,7 +27,7 @@ func RenderGoodbye(s *core.Session, resume string, width int) string {
 	}
 	fit := func(s string, w int) string { return ansi.Truncate(sanitize(s), w, "…") }
 
-	rows := append(logoLettering(), "", creamStyle.Bold(true).Render("Until next time."))
+	rows := append(logoLettering(nil), "", creamStyle.Bold(true).Render("Until next time."))
 	turns := 0
 	for _, m := range s.Messages {
 		if m.Role == "user" {

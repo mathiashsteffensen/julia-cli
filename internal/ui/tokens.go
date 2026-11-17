@@ -51,23 +51,18 @@ func (m *model) contextWindow() int {
 
 // resetCounters clears what the sidebar tracks per conversation. Token totals
 // live in the session, so replacing the session already resets them; only the
-// in-flight accumulator and the last-call figures need clearing here.
+// in-flight accumulator and the tool count need clearing here.
 func (m *model) resetCounters() {
-	m.toolCount, m.inputTokens, m.outputTokens = 0, 0, 0
+	m.toolCount = 0
 	m.live = core.SessionUsage{}
 	m.lastDuration = 0
 	m.fleet, m.fleetView = nil, nil
 }
 
-// recordUsage notes one model call. A call that reports nothing (a pure context
-// update after tool results) must not blank the last-call figures, and an
-// aggregate (a subagent's whole spend) is no call at all: it only adds to the totals.
+// recordUsage notes one model call. An aggregate (a subagent's whole spend) is
+// no call at all: it only adds to the totals, and says nothing of the context.
 func (m *model) recordUsage(event core.Event) {
-	u := event.Usage()
-	if !u.IsZero() && !event.Aggregate {
-		m.inputTokens, m.outputTokens = u.Prompt(), u.Output
-	}
-	m.live.Total.Add(u)
+	m.live.Total.Add(event.Usage())
 	if event.Aggregate {
 		return
 	}
@@ -82,27 +77,44 @@ func (m *model) recordUsage(event core.Event) {
 // palette is the set of text styles for one surface, each carrying the
 // surface's background, so a style reset inside a row never lets the page
 // show through a card.
-type palette struct{ text, muted, faint, violet, coral, cyan, green lipgloss.Style }
-
-func paletteOn(bg color.Color) palette {
-	return palette{text: ink(bg, cream), muted: ink(bg, muted), faint: ink(bg, faint), violet: ink(bg, violet), coral: ink(bg, coral), cyan: ink(bg, cyan), green: ink(bg, green)}
+type palette struct {
+	surface                                                             color.Color
+	text, muted, subtle, faint, violet, coral, cyan, green, amber, rose lipgloss.Style
 }
 
-// label is a section heading.
-func (p palette) label(s string) string { return p.violet.Bold(true).Render(s) }
+func paletteOn(bg color.Color) palette {
+	return palette{
+		surface: bg,
+		text:    ink(bg, cream), muted: ink(bg, muted), subtle: ink(bg, subtle), faint: ink(bg, faint),
+		violet: ink(bg, violet), coral: ink(bg, coral), cyan: ink(bg, cyan), green: ink(bg, green), amber: ink(bg, amber), rose: ink(bg, rose),
+	}
+}
 
-// contextSection is the CONTEXT section: a usage bar and "NN% · used / window".
-// The figure is never clamped, only the bar is. At or above the compaction
-// threshold both turn coral, since the next API turn will summarize the history.
+// label is a section heading: quiet, so that the values under it are what
+// the eye meets.
+func (p palette) label(s string) string { return p.subtle.Render(s) }
+
+// contextSection is the CONTEXT section: the percentage beside the label, a
+// gauge filled with the wave, and "used of window". The figure is never
+// clamped, only the gauge is. The gauge needs no warning color of its own,
+// since its tip warms as the window fills; at or above the compaction
+// threshold the figures turn amber too, since the next API turn will
+// summarize the history.
 func (m *model) contextSection(p palette, width int) []string {
 	window, used := m.contextWindow(), max(m.usage().Context, 0)
-	barStyle, textStyle := p.violet, p.muted
+	figure, amount, limit := p.text, p.muted, p.subtle
 	if used >= core.CompactionThreshold(window) {
-		barStyle, textStyle = p.coral, p.coral
+		figure, amount, limit = p.amber, p.amber, p.amber
 	}
-	percent := int(math.Min(math.Floor(float64(used)*100/float64(window)), 99_999))
-	text := fmt.Sprintf("%d%% · %s / %s", percent, compactWhole(used), compactWhole(window))
-	return []string{p.label("CONTEXT"), usageBar(used, window, width, barStyle, p.faint), textStyle.Render(ansi.Truncate(text, width, "…"))}
+	percent := figure.Bold(true).Render(fmt.Sprintf("%d%%", contextPercent(used, window)))
+	text := amount.Render(compactWhole(used)) + limit.Render(" of "+compactWhole(window))
+	return []string{p.heading("CONTEXT", percent, width), waveGauge(used, window, width, p.surface), ansi.Truncate(text, width, "…")}
+}
+
+// contextPercent is how full the context window is, rounded down and never
+// clamped at 100: a context over its window says by how much.
+func contextPercent(used, window int) int {
+	return int(math.Min(math.Floor(float64(used)*100/float64(window)), 99_999))
 }
 
 // compactWhole is core.CompactTokens without any decimal below a million, for rows
@@ -122,25 +134,37 @@ func compactWhole(n int) string {
 	return fmt.Sprintf("%d.%dM", t/10, t%10)
 }
 
-// usageBar draws used/window across width cells. Any non-zero usage shows at
-// least one cell, and usage beyond the window fills the bar without overflowing.
-func usageBar(used, window, width int, filled, empty lipgloss.Style) string {
-	n := 0
+// gaugeCells is how many of width cells used/window fills. Any non-zero usage
+// shows at least one cell, and usage beyond the window fills the gauge without
+// overflowing.
+func gaugeCells(used, window, width int) int {
 	switch {
 	case used <= 0:
+		return 0
 	case window <= 0 || used >= window:
-		n = width
-	default:
-		n = min(max(1, core.RoundDiv(used*width, window)), width)
+		return width
 	}
+	return min(max(1, core.RoundDiv(used*width, window)), width)
+}
+
+// usageBar draws used/window across width cells as a line.
+func usageBar(used, window, width int, filled, empty lipgloss.Style) string {
+	n := gaugeCells(used, window, width)
 	return filled.Render(strings.Repeat("━", n)) + empty.Render(strings.Repeat("─", width-n))
 }
 
-// tokenSection is the TOKENS section: session totals, then how the input splits
-// into cache hits and everything else (fresh tokens and cache writes).
-func (m *model) tokenSection(p palette, width int) []string {
-	total := m.usage().Total
-	line := p.text.Render(ansi.Truncate(core.CompactTokens(total.Prompt())+" in · "+core.CompactTokens(total.Output)+" out", width, "…"))
-	split := p.muted.Render(ansi.Truncate(compactWhole(total.CacheRead)+" cached · "+compactWhole(total.Input+total.CacheWrite)+" new", width, "…"))
-	return []string{p.label("TOKENS"), line, split}
+// waveGauge draws used/window across width cells as a bar half a row tall,
+// filled with the wave: each cell has the color of its place along it, so the
+// bar's tip is violet in a roomy window and amber in a full one.
+func waveGauge(used, window, width int, surface color.Color) string {
+	n := gaugeCells(used, window, width)
+	var b strings.Builder
+	for i := range width {
+		fill := color.Color(ghost)
+		if i < n {
+			fill = logoColor(i, width)
+		}
+		b.WriteString(ink(surface, fill).Render("▄"))
+	}
+	return b.String()
 }

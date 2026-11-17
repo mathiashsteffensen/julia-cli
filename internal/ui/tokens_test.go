@@ -70,13 +70,20 @@ func TestUsageBar(t *testing.T) {
 
 var negativeNumber = regexp.MustCompile(`-\d`)
 
-// sidebarText is the sidebar with styling removed, one entry per row.
+// sidebarText is the sidebar with styling removed, one entry per row, each run
+// of spaces as one: a heading and its figure read "CONTEXT 53%".
 func sidebarText(m *model) []string {
 	var rows []string
 	for _, row := range strings.Split(ansi.Strip(m.sidebar()), "\n") {
-		rows = append(rows, strings.TrimSpace(strings.Trim(strings.TrimSpace(row), "│▏▕")))
+		rows = append(rows, strings.Join(strings.Fields(row), " "))
 	}
 	return rows
+}
+
+// hasContext reports whether the CONTEXT section reads percent over amount,
+// as in "53%" and "138k of 256k".
+func hasContext(rows []string, percent, amount string) bool {
+	return hasRow(rows, "CONTEXT "+percent) && hasRow(rows, amount)
 }
 
 func hasRow(rows []string, want string) bool {
@@ -94,32 +101,26 @@ func TestSidebarShowsContextAndSessionTotals(t *testing.T) {
 	m := testModel(t, Config{Session: &core.Session{ID: "resumed", Directory: "/tmp/julia", Provider: "fake", Usage: saved}})
 	m.resize(128, 60)
 	rows := sidebarText(m)
-	for _, want := range []string{"CONTEXT", "53% · 138k / 256k", "TOKENS", "950k in · 12.3k out", "900k cached · 50k new", "ACTIVITY", "0 tool calls", "last call", "0 in · 0 out"} {
+	for _, want := range []string{"CONTEXT 53%", "138k of 256k", "SESSION", "950k in · 12.3k out", "900k cached · 50k new", "0 tool calls"} {
 		if !hasRow(rows, want) {
 			t.Errorf("sidebar is missing %q:\n%s", want, strings.Join(rows, "\n"))
 		}
 	}
-	// Per-call figures are the last model call only, never the session totals.
 	m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 1_200, CacheRead: 10_000, Output: 410}, 0))
-	if rows = sidebarText(m); !hasRow(rows, "11.2k in · 410 out") || !hasRow(rows, "961.2k in · 12.7k out") {
-		t.Errorf("last call and totals diverged:\n%s", strings.Join(rows, "\n"))
+	if rows = sidebarText(m); !hasRow(rows, "961.2k in · 12.7k out") {
+		t.Errorf("a model call did not add to the totals:\n%s", strings.Join(rows, "\n"))
 	}
 }
 
-func TestSubagentAggregateAddsToTotalsButIsNotTheLastCall(t *testing.T) {
+func TestSubagentAggregateAddsToTotalsButNotToTheContext(t *testing.T) {
 	m := testModel(t, Config{Session: &core.Session{ID: "s", Provider: "fake"}})
 	m.resize(128, 60)
 	m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 1_200, CacheRead: 10_000, Output: 410}, 12_000))
 	// A subagent's whole spend arrives as one event, far larger than any single call.
 	m.applyEvent(core.AggregateUsageEvent(core.TokenUsage{Input: 200_000, CacheRead: 1_000_000, Output: 40_000}))
 	rows := sidebarText(m)
-	if m.inputTokens != 11_200 || m.outputTokens != 410 {
-		t.Errorf("last call = %d in · %d out, want the parent's own call", m.inputTokens, m.outputTokens)
-	}
-	for _, want := range []string{"11.2k in · 410 out", "1.2M in · 40.4k out", "4% · 12k / 256k"} {
-		if !hasRow(rows, want) {
-			t.Errorf("sidebar is missing %q:\n%s", want, strings.Join(rows, "\n"))
-		}
+	if !hasRow(rows, "1.2M in · 40.4k out") || !hasContext(rows, "4%", "12k of 256k") {
+		t.Errorf("the aggregate must add to the totals and leave the context alone:\n%s", strings.Join(rows, "\n"))
 	}
 }
 
@@ -127,13 +128,10 @@ func TestSidebarZeroState(t *testing.T) {
 	m := testModel(t, Config{})
 	m.resize(128, 60)
 	rows := sidebarText(m)
-	for _, want := range []string{"0% · 0 / 256k", "0 in · 0 out", "0 cached · 0 new"} {
+	for _, want := range []string{"CONTEXT 0%", "0 of 256k", "0 in · 0 out", "0 cached · 0 new", "0 tool calls"} {
 		if !hasRow(rows, want) {
 			t.Errorf("zero state is missing %q:\n%s", want, strings.Join(rows, "\n"))
 		}
-	}
-	if !hasRow(rows, strings.Repeat("─", 23)) {
-		t.Errorf("context bar is not empty:\n%s", strings.Join(rows, "\n"))
 	}
 	if negativeNumber.MatchString(strings.Join(rows, "\n")) {
 		t.Error("zero state rendered a negative number")
@@ -142,20 +140,20 @@ func TestSidebarZeroState(t *testing.T) {
 
 func TestContextWindowIsConfigurable(t *testing.T) {
 	for _, tc := range []struct {
-		window int
-		want   string
+		window          int
+		percent, amount string
 	}{
-		{0, "50% · 128k / 256k"},
-		{-100, "50% · 128k / 256k"},
-		{core.DefaultContextWindow, "50% · 128k / 256k"},
-		{512_000, "25% · 128k / 512k"},
-		{1_000_000, "12% · 128k / 1M"},
+		{0, "50%", "128k of 256k"},
+		{-100, "50%", "128k of 256k"},
+		{core.DefaultContextWindow, "50%", "128k of 256k"},
+		{512_000, "25%", "128k of 512k"},
+		{1_000_000, "12%", "128k of 1M"},
 	} {
 		session := &core.Session{ID: "w", Provider: "fake", Usage: core.SessionUsage{Context: 128_000}}
 		m := testModel(t, Config{Session: session, ContextWindow: tc.window})
 		m.resize(128, 40)
-		if rows := sidebarText(m); !hasRow(rows, tc.want) {
-			t.Errorf("window %d: want %q in\n%s", tc.window, tc.want, strings.Join(rows, "\n"))
+		if rows := sidebarText(m); !hasContext(rows, tc.percent, tc.amount) {
+			t.Errorf("window %d: want %s, %s in\n%s", tc.window, tc.percent, tc.amount, strings.Join(rows, "\n"))
 		}
 	}
 }
@@ -169,11 +167,8 @@ func TestProviderContextWindowReplacesTheFallback(t *testing.T) {
 			m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 300_000, Output: 10_000}, 310_000))
 			// Claude reports the window separately, at the end of the turn.
 			m.applyEvent(core.Event{Kind: "usage", ContextWindow: 1_000_000})
-			if rows := sidebarText(m); !hasRow(rows, "31% · 310k / 1M") {
+			if rows := sidebarText(m); !hasContext(rows, "31%", "310k of 1M") {
 				t.Fatalf("provider window was ignored:\n%s", strings.Join(rows, "\n"))
-			}
-			if m.inputTokens != 300_000 || m.outputTokens != 10_000 {
-				t.Fatal("a window-only event changed the last-call figures")
 			}
 		})
 	}
@@ -190,15 +185,15 @@ func TestContextWindowFollowsTheSessionModel(t *testing.T) {
 	m.resize(128, 40)
 	for _, tc := range []struct {
 		provider, model string
-		want            string
+		percent, amount string
 	}{
-		{"openrouter", "vendor/large", "10% · 100k / 1M"},
-		{"codex", "gpt-6-astra", "25% · 100k / 400k"},
-		{"openrouter", "vendor/plain", "50% · 100k / 200k"},
+		{"openrouter", "vendor/large", "10%", "100k of 1M"},
+		{"codex", "gpt-6-astra", "25%", "100k of 400k"},
+		{"openrouter", "vendor/plain", "50%", "100k of 200k"},
 	} {
 		session.Provider, session.Model = tc.provider, tc.model
-		if rows := sidebarText(m); !hasRow(rows, tc.want) {
-			t.Errorf("%s/%s: want %q in\n%s", tc.provider, tc.model, tc.want, strings.Join(rows, "\n"))
+		if rows := sidebarText(m); !hasContext(rows, tc.percent, tc.amount) {
+			t.Errorf("%s/%s: want %s, %s in\n%s", tc.provider, tc.model, tc.percent, tc.amount, strings.Join(rows, "\n"))
 		}
 	}
 	if got := m.contextWindow(); got != 200_000 {
@@ -263,10 +258,7 @@ func TestRunUsageShowsLiveAndIsCountedOnce(t *testing.T) {
 			t.Fatalf("after event %d: the run leaked into the session before it finished: %+v", i, m.cfg.Session.Usage)
 		}
 	}
-	if m.inputTokens != 6150 || m.outputTokens != 120 {
-		t.Errorf("a context-only update replaced the last-call figures: %d in, %d out", m.inputTokens, m.outputTokens)
-	}
-	if rows := sidebarText(m); !hasRow(rows, "2% · 7k / 256k") || !hasRow(rows, "17.4k in · 500 out") {
+	if rows := sidebarText(m); !hasContext(rows, "2%", "7k of 256k") || !hasRow(rows, "17.4k in · 500 out") {
 		t.Errorf("live sidebar is stale:\n%s", strings.Join(rows, "\n"))
 	}
 
@@ -320,7 +312,7 @@ func TestReportedWindowSurvivesRunCompletionAndResume(t *testing.T) {
 	}
 	next := testModel(t, Config{Session: &resumed})
 	next.resize(128, 40)
-	if rows := sidebarText(next); !hasRow(rows, "31% · 310k / 1M") {
+	if rows := sidebarText(next); !hasContext(rows, "31%", "310k of 1M") {
 		t.Fatalf("resumed session lost the provider window:\n%s", strings.Join(rows, "\n"))
 	}
 }
@@ -358,13 +350,13 @@ func TestContextShrinksAfterCompaction(t *testing.T) {
 	m := testModel(t, Config{})
 	m.resize(128, 60)
 	m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 190_000, Output: 10_000}, 200_000))
-	if rows := sidebarText(m); !hasRow(rows, "78% · 200k / 256k") {
+	if rows := sidebarText(m); !hasContext(rows, "78%", "200k of 256k") {
 		t.Fatalf("context did not grow:\n%s", strings.Join(rows, "\n"))
 	}
 	// The summarization call is billed in full, but the history it leaves is small.
 	m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 205_000, Output: 3_000}, 90_000))
 	rows := sidebarText(m)
-	if !hasRow(rows, "35% · 90k / 256k") {
+	if !hasContext(rows, "35%", "90k of 256k") {
 		t.Errorf("context did not shrink after compaction:\n%s", strings.Join(rows, "\n"))
 	}
 	if !hasRow(rows, "395k in · 13k out") {
@@ -379,11 +371,11 @@ func TestClearResetsUsage(t *testing.T) {
 	m.applyEvent(core.UsageEvent(core.TokenUsage{Input: 7, Output: 8}, 60_000))
 	m.input.SetValue("/clear")
 	m.submit()
-	if m.usage() != (core.SessionUsage{}) || m.inputTokens != 0 || m.outputTokens != 0 {
-		t.Fatalf("/clear kept usage: %+v last call %d/%d", m.usage(), m.inputTokens, m.outputTokens)
+	if m.usage() != (core.SessionUsage{}) {
+		t.Fatalf("/clear kept usage: %+v", m.usage())
 	}
 	rows := sidebarText(m)
-	for _, want := range []string{"0% · 0 / 256k", "0 in · 0 out", "0 cached · 0 new"} {
+	for _, want := range []string{"CONTEXT 0%", "0 of 256k", "0 in · 0 out", "0 cached · 0 new"} {
 		if !hasRow(rows, want) {
 			t.Errorf("/clear sidebar is missing %q:\n%s", want, strings.Join(rows, "\n"))
 		}
@@ -413,13 +405,15 @@ func TestSettingsChangeInSameConversationKeepsUsage(t *testing.T) {
 func TestDemoPreviewsShowUsage(t *testing.T) {
 	// Tall enough for the whole sidebar, so no section is scrolled out of view.
 	demo := ansi.Strip(RenderDemo(128, 70))
-	for _, want := range []string{"CONTEXT", "46% · 119k / 256k", "TOKENS", "511.7k in · 6.8k out", "412k cached · 100k new", "117.3k in · 1.3k out"} {
+	for _, want := range []string{"CONTEXT", "46%", "119k of 256k", "SESSION", "511.7k in · 6.8k out", "412k cached · 100k new"} {
 		if !strings.Contains(demo, want) {
 			t.Errorf("demo preview is missing %q", want)
 		}
 	}
-	if welcome := ansi.Strip(RenderWelcome(128, 45)); !strings.Contains(welcome, "0% · 0 / 256k") || !strings.Contains(welcome, "0 in · 0 out") {
-		t.Error("welcome preview should show the zero state")
+	// The welcome is a poster: no instruments, which would only read zero, and
+	// the model the first message will meet.
+	if welcome := ansi.Strip(RenderWelcome(128, 45)); strings.Contains(welcome, "CONTEXT") || !strings.Contains(welcome, "your selected model") {
+		t.Errorf("welcome preview:\n%s", welcome)
 	}
 	// Usage the caller supplied is never replaced by the sample figures.
 	m := testModel(t, Config{Demo: true, Session: &core.Session{ID: "kept", Provider: "codex", Usage: core.SessionUsage{Context: 1000}}})
@@ -433,10 +427,13 @@ func styleSequence(style lipgloss.Style) string {
 	return strings.SplitN(style.Render("x"), "x", 2)[0]
 }
 
-func TestContextTurnsCoralAtCompactionThreshold(t *testing.T) {
-	coralOpen := styleSequence(paletteOn(panel).coral)
-	if coralOpen == "" || coralOpen == styleSequence(paletteOn(panel).muted) {
-		t.Fatalf("cannot distinguish coral output: %q", coralOpen)
+// The gauge's own tip warms as the window fills. The figures beside it turn
+// amber only at the compaction threshold, where the next turn summarizes.
+func TestContextTurnsAmberAtCompactionThreshold(t *testing.T) {
+	card := paletteOn(panel)
+	amberOpen := styleSequence(card.amber)
+	if amberOpen == "" || amberOpen == styleSequence(card.muted) {
+		t.Fatalf("cannot distinguish amber output: %q", amberOpen)
 	}
 	for _, window := range []int{0, 100_000, 512_000} {
 		effective := window
@@ -446,29 +443,41 @@ func TestContextTurnsCoralAtCompactionThreshold(t *testing.T) {
 		threshold := core.CompactionThreshold(effective)
 		for _, tc := range []struct {
 			context int
-			coral   bool
+			amber   bool
 		}{{0, false}, {threshold - 1, false}, {threshold, true}, {threshold + 1, true}, {threshold * 2, true}} {
 			session := &core.Session{ID: "c", Provider: "fake", Usage: core.SessionUsage{Context: tc.context}}
 			m := testModel(t, Config{Session: session, ContextWindow: window})
-			m.resize(128, 60)
-			// Only the context rows count.
-			var context []string
-			for _, row := range strings.Split(m.sidebar(), "\n") {
-				if strings.ContainsAny(ansi.Strip(row), "━─%") {
-					context = append(context, row)
-				}
-			}
-			if got := strings.Contains(strings.Join(context, "\n"), coralOpen); got != tc.coral {
-				t.Errorf("window %d context %d: coral = %v, want %v", window, tc.context, got, tc.coral)
+			section := m.contextSection(card, sidebarCells)
+			if got := strings.Contains(section[2], amberOpen); got != tc.amber {
+				t.Errorf("window %d context %d: amber = %v, want %v", window, tc.context, got, tc.amber)
 			}
 		}
 	}
-	// Beyond the window the figure keeps counting while the bar stays full.
+	// Beyond the window the figure keeps counting while the gauge stays full.
 	over := testModel(t, Config{Session: &core.Session{ID: "o", Provider: "fake", Usage: core.SessionUsage{Context: 300_000}}})
 	over.resize(128, 60)
-	rows := sidebarText(over)
-	if !hasRow(rows, "117% · 300k / 256k") || !hasRow(rows, strings.Repeat("━", 23)) {
+	if rows := sidebarText(over); !hasContext(rows, "117%", "300k of 256k") {
 		t.Errorf("over-window context is wrong:\n%s", strings.Join(rows, "\n"))
+	}
+	if cells := gaugeCells(300_000, 256_000, sidebarCells); cells != sidebarCells {
+		t.Errorf("over-window gauge fills %d of %d cells", cells, sidebarCells)
+	}
+}
+
+// The context gauge is filled with the wave: a filled cell has the color of
+// its own place, an empty one the track's.
+func TestWaveGaugeFillsWithTheWave(t *testing.T) {
+	track := styleSequence(ink(panel, ghost))
+	for _, tc := range []struct{ used, window, filled int }{
+		{0, 256_000, 0},
+		{1, 256_000, 1}, // any usage is visible
+		{128_000, 256_000, 12},
+		{900_000, 256_000, sidebarCells},
+	} {
+		gauge := waveGauge(tc.used, tc.window, sidebarCells, panel)
+		if got := sidebarCells - strings.Count(gauge, track); got != tc.filled || ansi.StringWidth(gauge) != sidebarCells {
+			t.Errorf("waveGauge(%d, %d) fills %d cells of %d, want %d", tc.used, tc.window, got, ansi.StringWidth(gauge), tc.filled)
+		}
 	}
 }
 
@@ -484,16 +493,15 @@ func TestSidebarNeverOverflowsItsColumn(t *testing.T) {
 		for i, usage := range usages {
 			for _, window := range []int{-1, 0, 1, 256_000, math.MaxInt} {
 				session := &core.Session{ID: long, Directory: "/" + long, Provider: provider, Model: long, Reasoning: long, Usage: usage}
-				m := testModel(t, Config{Session: session, Mode: long, ContextWindow: window, NamedProviders: map[string]bool{"openrouter": true, long: true}, ToolDefinitions: []core.ToolDefinition{{Name: "Read"}, {Name: long}, {Name: "Bash"}}})
-				m.inputTokens, m.outputTokens = math.MaxInt, -1
-				for height := 1; height <= 70; height++ {
-					m.height = height + 3 // the sidebar fills every row below the header
+				m := testModel(t, Config{Session: session, Mode: long, ContextWindow: window, NamedProviders: map[string]bool{"openrouter": true, long: true}})
+				for height := 8; height <= 70; height++ {
+					m.height = height // the sidebar fills every row of the screen
 					lines := strings.Split(m.sidebar(), "\n")
 					if len(lines) != height {
 						t.Fatalf("%.8s usage %d window %d: %d rows at height %d", provider, i, window, len(lines), height)
 					}
 					for _, line := range lines {
-						if ansi.StringWidth(line) > 27 {
+						if ansi.StringWidth(line) > sidebarWidth {
 							t.Fatalf("%.8s usage %d window %d height %d: row exceeds the sidebar: %q", provider, i, window, height, ansi.Strip(line))
 						}
 					}
@@ -522,9 +530,8 @@ func TestSidebarNeverOverflowsItsColumn(t *testing.T) {
 
 func TestSidebarShowsEverySectionInOrder(t *testing.T) {
 	m := testModel(t, Config{
-		Version:         "0.1.0",
-		Session:         &core.Session{ID: "all", Directory: "/tmp/julia", Provider: "codex", Model: "selected", Reasoning: "high", Usage: core.SessionUsage{Context: 119_000}},
-		ToolDefinitions: []core.ToolDefinition{{Name: "Read"}},
+		Version: "0.1.0",
+		Session: &core.Session{ID: "all", Directory: "/tmp/julia", Provider: "codex", Model: "selected", Reasoning: "high", Usage: core.SessionUsage{Context: 119_000}},
 	})
 	m.resize(128, 24)
 	m.height = 200 // room for the whole column, so nothing is scrolled out of view
@@ -532,8 +539,8 @@ func TestSidebarShowsEverySectionInOrder(t *testing.T) {
 	text := strings.Join(rows, "\n")
 	at := 0
 	for _, want := range []string{
-		"CONTEXT", "46% · 119k / 256k", "TOKENS", "0 cached · 0 new", "ACTIVITY", "last call",
-		"MODEL", "reasoning: high", "Weekly", "WORKSPACE", "PERMISSIONS", "SESSION", "v0.1.0", "THE ESSENTIALS", "Read",
+		"CONTEXT 46%", "119k of 256k", "MODEL", "selected", "codex · high", "QUOTA LEFT", "week",
+		"SESSION", "0 cached · 0 new", "0 tool calls", "all · v0.1.0",
 	} {
 		i := strings.Index(text[at:], want)
 		if i < 0 {
@@ -542,19 +549,20 @@ func TestSidebarShowsEverySectionInOrder(t *testing.T) {
 		at += i + len(want)
 	}
 	for i, row := range rows {
-		if row == "CONTEXT" && !strings.HasPrefix(rows[i+1], "━") {
+		if row == "CONTEXT 46%" && !strings.HasPrefix(rows[i+1], "▄") {
 			t.Errorf("the gauge lost its bar: %q", rows[i+1])
 		}
 	}
 }
 
 func TestSidebarScrollsIndependently(t *testing.T) {
-	m := testModel(t, Config{Version: "0.1.0", Session: &core.Session{ID: "scroll", Directory: "/tmp/julia", Provider: "codex", Model: "selected"}, ToolDefinitions: []core.ToolDefinition{{Name: "Read"}}})
-	m.resize(128, 24)
-	if rows := sidebarText(m); len(rows) != m.sidebarHeight() || !hasRow(rows, "CONTEXT") || hasRow(rows, "THE ESSENTIALS") {
-		t.Fatalf("a short sidebar should open on the card:\n%s", strings.Join(rows, "\n"))
+	m := testModel(t, Config{Version: "0.1.0", Session: &core.Session{ID: "scroll", Directory: "/tmp/julia", Provider: "codex", Model: "selected"}})
+	m.entries = []entry{{role: "assistant", text: "A conversation, so the sidebar is shown."}}
+	m.resize(128, 16)
+	if rows := sidebarText(m); len(rows) != m.height || !hasRow(rows, "CONTEXT 0%") || hasRow(rows, "scroll · v0.1.0") {
+		t.Fatalf("a short sidebar should open on its head:\n%s", strings.Join(rows, "\n"))
 	}
-	x, y := m.margin()+m.mainWidth+4, 3+m.sidebarHeight()/2
+	x, y := m.margin()+m.mainWidth+4, m.height/2
 	if !m.overSidebar(x, y) || m.overSidebar(m.margin()+1, y) {
 		t.Fatal("sidebar hit test is wrong")
 	}
@@ -567,8 +575,8 @@ func TestSidebarScrollsIndependently(t *testing.T) {
 		m.Update(tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelDown})
 	}
 	rows := sidebarText(m)
-	if len(rows) != m.sidebarHeight() || !hasRow(rows, "Read") || hasRow(rows, "CONTEXT") {
-		t.Fatalf("scrolling down should end on the last section:\n%s", strings.Join(rows, "\n"))
+	if len(rows) != m.height || !hasRow(rows, "scroll · v0.1.0") || hasRow(rows, "CONTEXT 0%") {
+		t.Fatalf("scrolling down should end on the session line:\n%s", strings.Join(rows, "\n"))
 	}
 	bottom := m.sidebarOffset
 	m.Update(tea.MouseWheelMsg{X: x, Y: y, Button: tea.MouseWheelUp})
@@ -584,24 +592,27 @@ func TestSidebarScrollsIndependently(t *testing.T) {
 
 func TestSidebarReachesTheBottomEdge(t *testing.T) {
 	for _, size := range [][2]int{{108, 20}, {128, 40}, {200, 60}} {
-		m := testModel(t, Config{Session: &core.Session{ID: "edge", Provider: "codex"}, ToolDefinitions: []core.ToolDefinition{{Name: "Read"}}})
+		m := testModel(t, Config{Session: &core.Session{ID: "edge", Provider: "codex"}})
+		m.entries = []entry{{role: "assistant", text: "A conversation, so the sidebar is shown."}}
 		m.resize(size[0], size[1])
 		lines := strings.Split(ansi.Strip(m.View().Content), "\n")
 		if len(lines) != size[1] {
 			t.Fatalf("%v: %d rows", size, len(lines))
 		}
-		// The card opens on the sidebar's first column, and the column is laid
-		// out to the bottom edge on every row.
-		border := m.margin() + m.mainWidth + 2
-		if cells := []rune(lines[4]); len(cells) <= border || cells[border] != '▁' {
-			t.Fatalf("%v: row 4 does not open the sidebar card: %q", size, lines[4])
+		// The card's half-row edges are the screen's first and last rows, and
+		// the column is laid out on every row between them.
+		column := m.margin() + m.mainWidth + 2
+		for y, edge := range map[int]rune{0: '▄', size[1] - 1: '▀'} {
+			if cells := []rune(lines[y]); len(cells) <= column || cells[column] != edge {
+				t.Fatalf("%v: row %d is not the sidebar card's edge: %q", size, y, lines[y])
+			}
 		}
-		for y := 3; y < size[1]; y++ {
-			if cells := []rune(lines[y]); len(cells) < border+27 {
+		for y := range lines {
+			if cells := []rune(lines[y]); len(cells) < column+sidebarWidth {
 				t.Fatalf("%v: row %d stops short of the sidebar: %q", size, y, lines[y])
 			}
 		}
-		if footer := ansi.StringWidth(m.footer()); footer > m.mainWidth {
+		if footer := ansi.StringWidth(m.footer(m.mainWidth)); footer > m.mainWidth {
 			t.Fatalf("%v: footer is %d wide beside a %d-column main area", size, footer, m.mainWidth)
 		}
 	}

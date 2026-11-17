@@ -8,7 +8,8 @@ import (
 )
 
 // A multi-line draft grows the composer and takes rows from the transcript,
-// but the composer panel never covers more than half the screen.
+// but the composer, its edge and caption row included, never covers more than
+// half the screen.
 func TestTheComposerGrowsUpToHalfTheScreen(t *testing.T) {
 	m := testModel(t, Config{})
 	m.resize(100, 40)
@@ -31,7 +32,7 @@ func TestTheComposerGrowsUpToHalfTheScreen(t *testing.T) {
 	if got := strings.Count(m.input.Value(), "\n"); got != 43 {
 		t.Fatalf("draft has %d newlines, want 43", got)
 	}
-	composer := m.composerStyle().GetVerticalFrameSize() + 1 + m.input.Height()
+	composer := composerChrome + m.input.Height()
 	if composer > m.height/2 || composer < m.height/2-1 {
 		t.Fatalf("composer is %d rows on a %d row screen", composer, m.height)
 	}

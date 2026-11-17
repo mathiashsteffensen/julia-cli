@@ -303,13 +303,13 @@ func TestProviderSwitchClearsVisibleHistoryAfterStartingNewSession(t *testing.T)
 	}
 	m := testModel(t, cfg)
 	m.entries = []entry{{role: "user", text: "old task"}}
-	m.toolCount, m.inputTokens, m.outputTokens, m.lastDuration = 2, 10, 20, time.Minute
+	m.toolCount, m.lastDuration = 2, time.Minute
 	m.cfg.Session.Usage = core.SessionUsage{Total: core.TokenUsage{Input: 5, CacheRead: 6, Output: 7}, Context: 8}
 	m.live = core.SessionUsage{Total: core.TokenUsage{Input: 1}, Context: 9}
 	if err := m.applySettings("openrouter", "vendor/model", ""); err != nil {
 		t.Fatal(err)
 	}
-	if m.cfg.Session.ID != "new-session" || m.cfg.Session.Provider != "openrouter" || len(m.cfg.Session.Messages) != 0 || len(m.entries) != 0 || m.toolCount != 0 || m.inputTokens != 0 || m.outputTokens != 0 || m.lastDuration != 0 {
+	if m.cfg.Session.ID != "new-session" || m.cfg.Session.Provider != "openrouter" || len(m.cfg.Session.Messages) != 0 || len(m.entries) != 0 || m.toolCount != 0 || m.lastDuration != 0 {
 		t.Fatal("provider switch did not isolate the new conversation")
 	}
 	if m.usage() != (core.SessionUsage{}) {
@@ -438,7 +438,7 @@ func TestPickerFitsNarrowTerminalAndSanitizesCatalog(t *testing.T) {
 				t.Fatalf("%v: width overflow", size)
 			}
 		}
-		if !strings.Contains(ansi.Strip(view), "enter") || !strings.Contains(ansi.Strip(view), "esc back") || !strings.Contains(ansi.Strip(view), "SEARCH") {
+		if !strings.Contains(ansi.Strip(view), "enter") || !strings.Contains(ansi.Strip(view), "esc back") || !strings.Contains(ansi.Strip(view), "Search") {
 			t.Fatalf("%v: picker controls hidden", size)
 		}
 	}
@@ -452,7 +452,7 @@ func TestPickerLoadingAndEmptyStatesFitSmallTerminal(t *testing.T) {
 		m.picker.loading = loading
 		m.picker.search.SetValue("no matching option")
 		view := ansi.Strip(m.View().Content)
-		if !strings.Contains(view, "SEARCH") || !strings.Contains(view, "esc back") || len(strings.Split(view, "\n")) > 15 {
+		if !strings.Contains(view, "Search") || !strings.Contains(view, "esc back") || len(strings.Split(view, "\n")) > 15 {
 			t.Fatal("small picker lost search or exit controls")
 		}
 	}

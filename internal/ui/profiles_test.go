@@ -61,7 +61,7 @@ func TestProfilePickerListsProfilesAndSwitches(t *testing.T) {
 	if !strings.Contains(m.notice, "Profile work") || !strings.Contains(m.notice, "codex/work-model") {
 		t.Fatalf("notice %q", m.notice)
 	}
-	if !strings.Contains(ansi.Strip(m.sidebar()), "profile: work") {
+	if !strings.Contains(ansi.Strip(m.sidebar()), "profile work") {
 		t.Fatal("sidebar does not show the active profile")
 	}
 }

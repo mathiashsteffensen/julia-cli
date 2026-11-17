@@ -67,10 +67,11 @@ func TestViewsFitTerminalAndKeepComposerVisible(t *testing.T) {
 					t.Errorf("%v: overflow row %q", size, line)
 				}
 			}
-			if !strings.Contains(view, "/help") {
-				t.Errorf("%v demo %v: footer hidden", size, demo)
+			plain := strings.Split(ansi.Strip(view), "\n")
+			if status := strings.TrimSpace(plain[len(plain)-1] + plain[len(plain)-2]); status == "" {
+				t.Errorf("%v demo %v: status row hidden", size, demo)
 			}
-			if !strings.Contains(view, "MESSAGE") {
+			if !strings.Contains(view, "▁") || !strings.Contains(ansi.Strip(view), "What shall we work on?") {
 				t.Errorf("%v demo %v: composer hidden", size, demo)
 			}
 		}
@@ -340,9 +341,18 @@ func TestClearArchivesOldSessionAndResetsAllProviderState(t *testing.T) {
 	}
 }
 
+// The model and its effort are on show wherever you are: on the welcome, in
+// the status row of a screen without a sidebar, and on the sidebar.
 func TestModelAndReasoningVisibleAcrossLayouts(t *testing.T) {
-	for _, size := range [][2]int{{100, 30}, {128, 40}} {
+	for _, layout := range []struct {
+		width, height int
+		conversation  bool
+	}{{100, 30, false}, {100, 30, true}, {128, 40, true}} {
+		size := [2]int{layout.width, layout.height}
 		m := testModel(t, Config{Session: &core.Session{ID: "test", Provider: "codex", Model: "gpt-6-astra", Reasoning: "medium"}})
+		if layout.conversation {
+			m.entries = []entry{{role: "assistant", text: "A conversation."}}
+		}
 		m.resize(size[0], size[1])
 		view := ansi.Strip(m.View().Content)
 		if !strings.Contains(view, "gpt-6-astra") || !strings.Contains(view, "medium") {
@@ -356,11 +366,18 @@ func TestModelAndReasoningVisibleAcrossLayouts(t *testing.T) {
 }
 
 func TestOpenRouterReasoningVisibleAcrossLayouts(t *testing.T) {
-	for _, size := range [][2]int{{100, 30}, {128, 40}} {
+	for _, layout := range []struct {
+		width, height int
+		conversation  bool
+	}{{100, 30, false}, {100, 30, true}, {128, 40, true}} {
+		size := [2]int{layout.width, layout.height}
 		m := testModel(t, Config{
 			Session:        &core.Session{ID: "test", Provider: "openrouter", Model: "vendor/model", Reasoning: "high"},
 			NamedProviders: map[string]bool{"openrouter": true},
 		})
+		if layout.conversation {
+			m.entries = []entry{{role: "assistant", text: "A conversation."}}
+		}
 		m.resize(size[0], size[1])
 		view := ansi.Strip(m.View().Content)
 		if !strings.Contains(view, "high") {

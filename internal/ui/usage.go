@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"julia/internal/config"
 	"julia/internal/core"
 )
@@ -139,25 +141,39 @@ func (m *model) resetAccountUsage() {
 	m.accountUsage.lastAttempt = time.Time{}
 }
 
-func (m *model) weeklyUsageLine(p palette) string {
-	return m.usageLine(p, "Weekly", m.accountUsage.weekly)
+// outdated reports whether a reading is too old to trust: an update failed after
+// it, or its window has since reset.
+func (m *model) outdated(reading usageReading) bool {
+	return reading.stale || (!reading.value.ResetsAt.IsZero() && !m.now.Before(reading.value.ResetsAt))
 }
 
-func (m *model) fiveHourUsageLine(p palette) string {
-	return m.usageLine(p, "5-hour", m.accountUsage.fiveHour)
-}
-
-func (m *model) usageLine(p palette, label string, reading usageReading) string {
+// quotaRow is one allowance window on the sidebar: its name, a line of what
+// is left, and the percentage. The line turns amber under a quarter and rose
+// under a tenth. A window that is loading, unknown or stale says so in words
+// instead.
+func (m *model) quotaRow(p palette, name string, reading usageReading, width int) string {
+	const nameWidth, figureWidth = 8, 5 // "5 hour  " and " 100%"
+	label := p.muted.Render(name + strings.Repeat(" ", nameWidth-ansi.StringWidth(name)))
 	if reading.value == nil {
 		if m.accountUsage.loading {
-			return p.muted.Render(label + " · loading…")
+			return label + p.muted.Render("loading…")
 		}
-		return p.faint.Render(label + " · unavailable")
+		return label + p.subtle.Render("unavailable")
 	}
-	value := reading.value
-	stale := reading.stale || (!value.ResetsAt.IsZero() && !m.now.Before(value.ResetsAt))
-	if stale {
-		return p.muted.Render(fmt.Sprintf("%s · %.0f%% · stale", label, value.RemainingPercent))
+
+	left := reading.value.RemainingPercent
+	figure := fmt.Sprintf("%.0f%%", left)
+	if m.outdated(reading) {
+		return label + p.muted.Render(figure+" · stale")
 	}
-	return p.violet.Render(fmt.Sprintf("%s · %.0f%% left", label, value.RemainingPercent))
+
+	line := ink(p.surface, sink(violet, p.surface, 0.7))
+	switch {
+	case left < 10:
+		line = p.rose
+	case left < 25:
+		line = p.amber
+	}
+	bar := usageBar(int(math.Round(left)), 100, width-nameWidth-figureWidth, line, ink(p.surface, ghost))
+	return label + bar + p.text.Render(strings.Repeat(" ", figureWidth-ansi.StringWidth(figure))+figure)
 }

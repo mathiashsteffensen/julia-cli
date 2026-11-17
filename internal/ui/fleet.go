@@ -481,6 +481,7 @@ func (m *model) fleetPane(l fleetLayout) []string {
 	masthead = append(masthead, fit(spend, faintStyle.Render(oneLine(a.id)), width), faintStyle.Render(strings.Repeat("─", width)))
 	var lines []string
 	in := column{width: width, markdown: m.fleetMarkdown.at(width), wordWrap: true}
+	m.alignPills(a.entries)
 	previousRole := ""
 	for i := range a.entries {
 		layout := m.renderEntryIn(&a.entries[i], in)
@@ -523,25 +524,6 @@ func fit(left, right string, width int) string {
 		return left + strings.Repeat(" ", gap) + right
 	}
 	return ansi.Truncate(left, width, "…")
-}
-
-func (m *model) fleetFooter() string {
-	if m.width < 44 {
-		return mutedStyle.Render("↑↓ agent · esc close")
-	}
-	if m.width < 70 {
-		return mutedStyle.Render("↑↓ agent · pgup/pgdn scroll · esc close")
-	}
-	keys := []string{"↑↓ agent", "pgup/pgdn scroll", "ctrl+t thinking", "esc close"}
-	if ansi.StringWidth(strings.Join(keys, "  ")+"  ctrl+o expand") <= m.mainWidth {
-		keys = slices.Insert(keys, len(keys)-1, "ctrl+o expand")
-	}
-	var out string
-	for _, item := range keys {
-		key, name, _ := strings.Cut(item, " ")
-		out += violetStyle.Render(key+" ") + mutedStyle.Render(name) + "  "
-	}
-	return strings.TrimRight(out, " ")
 }
 
 // demoFleet is the preview's fleet: one agent in each state, mid-task.

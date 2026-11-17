@@ -114,9 +114,8 @@ func (o *options) runSession(cmd *cobra.Command) error {
 	default:
 		return errors.New("--memory must be off, read or write")
 	}
-	demoTools := append(tools.Definitions(l.roles, linearToken != "", mailConfig.Enabled(), githubAuth.Enabled(), bugsnagAuth.Enabled()), tools.QuestionDefinition(), tools.ReviewDefinition())
 	if o.snapshot > 0 {
-		fmt.Print(ui.RenderDemo(o.snapshot, 40, demoTools...))
+		fmt.Print(ui.RenderDemo(o.snapshot, 40))
 		return nil
 	}
 	if s == nil {
@@ -126,7 +125,7 @@ func (o *options) runSession(cmd *cobra.Command) error {
 		if err := selectSessionModel(&cfg, s, l.dir, backend, model, reasoningSet, resuming); err != nil {
 			return err
 		}
-		preview := baseUIConfig(s, cfg, demoTools)
+		preview := baseUIConfig(s, cfg)
 		preview.Demo, preview.Profile = true, profileLabel(l.path)
 		preview.Hangup = hangup
 		return ui.Run(preview)
@@ -222,7 +221,7 @@ func (o *options) runSession(cmd *cobra.Command) error {
 		}
 		return errors.Join(err, saveErr)
 	}
-	uiConfig := baseUIConfig(s, cfg, runner.Definitions())
+	uiConfig := baseUIConfig(s, cfg)
 	uiConfig.Backend, uiConfig.Save, uiConfig.Approvals, uiConfig.Questions = runner, l.store.Save, approvals, questions
 	if memoryStore != nil {
 		uiConfig.Memory = func(action, name string) (string, error) {
@@ -970,9 +969,9 @@ func withoutDefinitions(definitions []core.ToolDefinition, disabled []string) []
 // baseUIConfig is what the live and demo interfaces share. The context window
 // comes from configuration so the sidebar gauge and API compaction measure the
 // same budget.
-func baseUIConfig(s *core.Session, cfg config.Config, definitions []core.ToolDefinition) ui.Config {
+func baseUIConfig(s *core.Session, cfg config.Config) ui.Config {
 	settings := profileSettings(cfg)
-	return ui.Config{Session: s, Version: version, Mode: cfg.Mode, ToolDefinitions: definitions, ContextWindow: cfg.ContextTokens, Skills: userSkills, EnabledModels: settings.EnabledModels, NamedProviders: settings.NamedProviders}
+	return ui.Config{Session: s, Version: version, Mode: cfg.Mode, ContextWindow: cfg.ContextTokens, Skills: userSkills, EnabledModels: settings.EnabledModels, NamedProviders: settings.NamedProviders}
 }
 
 // userSkills is every skill in ~/.agents/skills, for the interface's slash
