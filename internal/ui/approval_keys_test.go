@@ -29,6 +29,8 @@ func TestPendingApprovalConsumesEveryKeyAndOnlyYOrEnterAllows(t *testing.T) {
 		{"page down", tea.KeyPressMsg{Code: tea.KeyPgDown}, false},
 		{"history end", tea.KeyPressMsg{Code: tea.KeyEnd, Mod: tea.ModCtrl}, false},
 		{"tool expansion", tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl}, false},
+		{"sidebar toggle", tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl}, false},
+		{"steer", tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl}, false},
 		{"model picker", tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl}, false},
 		{"alt enter", tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt}, false},
 	} {
@@ -49,7 +51,7 @@ func TestPendingApprovalConsumesEveryKeyAndOnlyYOrEnterAllows(t *testing.T) {
 			default:
 				t.Fatal("key did not resolve the approval")
 			}
-			if m.pending != nil || m.input.Value() != "retained draft" || m.expandTools || m.picker != nil || cancelled {
+			if m.pending != nil || m.input.Value() != "retained draft" || m.expandTools || m.sidebarHidden || m.picker != nil || cancelled {
 				t.Fatal("approval key leaked into another action")
 			}
 			m.decide(!tc.allow)

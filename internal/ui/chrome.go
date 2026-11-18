@@ -292,22 +292,30 @@ func (m *model) footer(width int) string {
 		return keys(width, "↑↓", "choose", "enter", "apply", "esc", "back", "tab", "models")
 	case m.picker != nil:
 		return keys(width, "↑↓", "choose", "enter", "apply", "esc", "back")
-	case !m.hasSidebar() && !m.welcoming() && len(m.fleet) == 0:
-		return m.vitals(width)
 	case !m.hasSidebar() && !m.welcoming():
-		// No sidebar lists the agents at work, so the row points at the fleet first.
-		fleet := keys(width, "ctrl+f", "fleet")
-		if vitals := m.vitals(width - ansi.StringWidth(fleet) - 3); fleet != "" && vitals != "" {
-			return fleet + "   " + vitals
+		// Keep the fleet reachable and show how to restore a hidden sidebar.
+		var hints []string
+		if len(m.fleet) > 0 {
+			hints = append(hints, "ctrl+f", "fleet")
 		}
-		return fleet
+		if m.sidebarHidden && m.width >= 108 {
+			hints = append(hints, "ctrl+s", "sidebar")
+		}
+		shortcuts := keys(width, hints...)
+		if shortcuts == "" {
+			return m.vitals(width)
+		}
+		if vitals := m.vitals(width - ansi.StringWidth(shortcuts) - 3); vitals != "" {
+			return shortcuts + "   " + vitals
+		}
+		return shortcuts
 	}
 
 	send := "send"
 	if m.busy {
 		send = "queue"
 	}
-	return keys(width, "enter", send, "/", "commands", "alt+enter", "newline", "esc", "interrupt")
+	return keys(width, "enter", send, "/", "commands", "alt+enter", "newline", "esc", "interrupt", "ctrl+s", "sidebar")
 }
 
 // keys sets key hints in a row, each key in muted and what it does in subtle,

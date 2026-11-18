@@ -192,7 +192,7 @@ func TestStatusRowSharesItsRowWithTheKeys(t *testing.T) {
 	m.entries = []entry{{role: "assistant", text: "A conversation."}}
 
 	m.resize(128, 30)
-	if row := ansi.Strip(m.statusRow()); !strings.HasPrefix(row, "● Ready") || !strings.HasSuffix(row, "enter send   / commands   alt+enter newline   esc interrupt") {
+	if row := ansi.Strip(m.statusRow()); !strings.HasPrefix(row, "● Ready") || !strings.HasSuffix(row, "enter send   / commands   alt+enter newline   esc interrupt   ctrl+s sidebar") {
 		t.Fatalf("beside the sidebar: %q", row)
 	}
 	m.busy = true

@@ -105,7 +105,7 @@ func sendText(m *model, text string) {
 	m.Update(keyMsg("enter"))
 }
 
-func ctrlS(m *model) { m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl}) }
+func ctrlG(m *model) { m.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl}) }
 
 func userTexts(m *model) []string {
 	var texts []string
@@ -164,7 +164,7 @@ func TestSeveralQueuedMessagesSendAsOne(t *testing.T) {
 func TestSteerHandsTheQueueToTheTurnUnderWay(t *testing.T) {
 	m, b := busyModel(t, true)
 	sendText(m, "use the staging config")
-	ctrlS(m)
+	ctrlG(m)
 	pump(t, m, func() bool { return len(m.queued) == 0 })
 	if got := userTexts(m); len(got) != 2 || got[1] != "use the staging config" {
 		t.Fatalf("steered message not shown where delivered: %q", got)
@@ -173,10 +173,10 @@ func TestSteerHandsTheQueueToTheTurnUnderWay(t *testing.T) {
 	b.noTurn(t)
 }
 
-func TestCtrlSSteersTheDraftDirectly(t *testing.T) {
+func TestCtrlGSteersTheDraftDirectly(t *testing.T) {
 	m, b := busyModel(t, true)
 	m.input.SetValue("stop touching the tests")
-	ctrlS(m)
+	ctrlG(m)
 	if m.input.Value() != "" {
 		t.Fatal("draft not sent")
 	}
@@ -215,7 +215,7 @@ func TestClickingTheSteerButtonSteers(t *testing.T) {
 func TestSteeredMessageTheBackendNeverTookSendsNext(t *testing.T) {
 	m, b := busyModel(t, false)
 	sendText(m, "and the docs")
-	ctrlS(m)
+	ctrlG(m)
 	view := ansi.Strip(m.View().Content)
 	if !strings.Contains(view, "STEERING") || strings.Contains(view, "steer now") {
 		t.Fatalf("strip should say the message is steering:\n%s", view)

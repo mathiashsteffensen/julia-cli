@@ -20,9 +20,11 @@ const (
 )
 
 // wantsSidebar reports whether the screen should carry the sidebar: it is wide
-// enough, and a conversation has begun. Before the first message the screen is
-// a poster and has none, since every instrument would read zero.
-func (m *model) wantsSidebar() bool { return m.width >= 108 && len(m.entries) > 0 }
+// enough, a conversation has begun, and the user has not hidden it. Before the
+// first message the screen is a poster without instruments.
+func (m *model) wantsSidebar() bool {
+	return !m.sidebarHidden && m.width >= 108 && len(m.entries) > 0
+}
 
 // hasSidebar reports whether the current layout carries the sidebar, as
 // resize last measured it.

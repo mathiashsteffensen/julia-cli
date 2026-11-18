@@ -133,9 +133,9 @@ func (m *model) steerButton() string {
 	case m.mainWidth < 36:
 		return space + label.Render("steer") + space
 	case m.mainWidth < 64:
-		return space + ink(chipBG, violet).Render("ctrl+s") + space + space + label.Render("steer") + space
+		return space + ink(chipBG, violet).Render("ctrl+g") + space + space + label.Render("steer") + space
 	}
-	return space + ink(chipBG, violet).Render("ctrl+s") + space + space + label.Render("steer now") + space
+	return space + ink(chipBG, violet).Render("ctrl+g") + space + space + label.Render("steer now") + space
 }
 
 // queueStrip is the queue as shown above the composer: a heading with the
