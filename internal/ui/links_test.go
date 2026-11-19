@@ -66,6 +66,19 @@ func TestClickOnURLInYourMessageOpensIt(t *testing.T) {
 	}
 }
 
+func TestClickOnURLAtTheEndOfAWrappedRowOpensOnlyTheURL(t *testing.T) {
+	m, opened := linkModel(t)
+	link := "https://example.com/docs"
+	// The URL fills its row, and the row wraps at the space after it.
+	m.entries = []entry{{role: "user", text: strings.Repeat("x", m.mainWidth-4-len(link)-1) + " " + link + " and more"}}
+	m.refresh(true)
+	m.viewport.GotoTop()
+	clickText(t, m, "example.com")
+	if len(*opened) != 1 || (*opened)[0] != link {
+		t.Fatalf("opened %q, want %q", *opened, link)
+	}
+}
+
 func TestClickBesideALinkOpensNothing(t *testing.T) {
 	m, opened := linkModel(t, entry{role: "assistant", text: "Plain words here, then https://example.com"})
 	clickText(t, m, "words")

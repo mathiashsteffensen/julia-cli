@@ -104,6 +104,9 @@ func (m *model) plainLinkAt(at cell) string {
 			end = min(end, ref.end)
 		}
 		part := ansi.Cut(plain, ref.gutter, end)
+		if row > first {
+			text.WriteString(ref.gap)
+		}
 		if row == at.row {
 			if at.col < ref.gutter || at.col >= end {
 				return ""

@@ -165,22 +165,31 @@ func (m *model) refresh(forceBottom bool) {
 	}
 }
 
-// markdownCache keeps the Markdown renderer for the width last asked of it.
+// markdownCache keeps the Markdown renderer for the width last asked of it, and
+// the one that does not wrap.
 type markdownCache struct {
-	renderer *glamour.TermRenderer
-	width    int
+	renderer  *glamour.TermRenderer
+	width     int
+	unwrapped *glamour.TermRenderer
 }
 
 func (cache *markdownCache) at(width int) *glamour.TermRenderer {
 	if cache.renderer == nil || cache.width != width {
-		cache.renderer, cache.width = markdownRenderer(width), width
+		cache.renderer, cache.width = markdownRenderer(max(10, width-4)), width
 	}
 	return cache.renderer
 }
 
+func (cache *markdownCache) unwrappedRenderer() *glamour.TermRenderer {
+	if cache.unwrapped == nil {
+		cache.unwrapped = markdownRenderer(0)
+	}
+	return cache.unwrapped
+}
+
 // markdownRenderer renders a reply's Markdown in the interface's colors,
-// wrapped to fit a column of width.
-func markdownRenderer(width int) *glamour.TermRenderer {
+// wrapped at wrap cells, or not at all for 0.
+func markdownRenderer(wrap int) *glamour.TermRenderer {
 	style := styles.DarkStyleConfig
 	margin := uint(0)
 	style.Document.Margin = &margin
@@ -207,7 +216,7 @@ func markdownRenderer(width int) *glamour.TermRenderer {
 	style.CodeBlock.Margin = &margin
 	style.Link.Color = str("#C6B6F2")
 	style.LinkText.Color = str("#C6B6F2")
-	renderer, _ := glamour.NewTermRenderer(glamour.WithStyles(style), glamour.WithWordWrap(max(10, width-4)))
+	renderer, _ := glamour.NewTermRenderer(glamour.WithStyles(style), glamour.WithWordWrap(wrap))
 	return renderer
 }
 
@@ -242,7 +251,14 @@ func str(value string) *string { return &value }
 func ptr[T any](value T) *T    { return &value }
 
 func (m *model) renderEntry(item *entry) entryLayout {
-	return m.renderEntryIn(item, column{width: m.mainWidth, markdown: m.markdown.at(m.mainWidth)})
+	in := column{width: m.mainWidth, markdown: m.markdown.at(m.mainWidth)}
+	// Every streamed delta lays the latest reply out again, and a second render
+	// would double that cost: the reply joins its wrapped rows once it is done.
+	streaming := m.busy && item == &m.entries[len(m.entries)-1]
+	if !streaming {
+		in.unwrapped = m.markdown.unwrappedRenderer()
+	}
+	return m.renderEntryIn(item, in)
 }
 
 // column is where an entry is laid out: the conversation, or a fleet agent's
@@ -250,6 +266,10 @@ func (m *model) renderEntry(item *entry) entryLayout {
 type column struct {
 	width    int
 	markdown *glamour.TermRenderer
+	// unwrapped renders the Markdown again without wrapping it, which tells the
+	// rows the wrap made, so a copy can join them. Nil where nothing is copied,
+	// and while a reply streams.
+	unwrapped *glamour.TermRenderer
 	// wordWrap breaks a message between words. The conversation breaks
 	// between cells instead, so a copy can join a wrapped row back exactly.
 	wordWrap bool
@@ -265,11 +285,12 @@ func (m *model) renderEntryIn(item *entry, in column) entryLayout {
 	if item.role == "reasoning" && !m.showThinking {
 		return entryLayout{}
 	}
-	if item.layout.text != "" && item.cachedRevision == item.revision && item.cachedWidth == in.width && item.cachedExpanded == m.expandTools && item.cachedGraphics == m.graphicsEpoch && item.cachedPill == item.pillWidth {
+	marksWraps := in.unwrapped != nil
+	if item.layout.text != "" && item.cachedRevision == item.revision && item.cachedWidth == in.width && item.cachedExpanded == m.expandTools && item.cachedGraphics == m.graphicsEpoch && item.cachedPill == item.pillWidth && item.cachedWraps == marksWraps {
 		return item.layout
 	}
 	item.layout = m.layoutEntryIn(*item, in)
-	item.cachedRevision, item.cachedWidth, item.cachedExpanded, item.cachedGraphics, item.cachedPill = item.revision, in.width, m.expandTools, m.graphicsEpoch, item.pillWidth
+	item.cachedRevision, item.cachedWidth, item.cachedExpanded, item.cachedGraphics, item.cachedPill, item.cachedWraps = item.revision, in.width, m.expandTools, m.graphicsEpoch, item.pillWidth, marksWraps
 	return item.layout
 }
 
@@ -295,9 +316,10 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 			if in.wordWrap {
 				parts = ansi.Wrap(line, width, "")
 			}
-			for i, part := range strings.Split(parts, "\n") {
-				row.cont = i > 0
-				add(render(part), row)
+			rows := strings.Split(parts, "\n")
+			for i, wrap := range markWraps(rows, []string{line}) {
+				row.cont, row.gap = wrap.cont, wrap.gap
+				add(render(rows[i]), row)
 			}
 		}
 	}
@@ -329,7 +351,8 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 		if item.label != "" {
 			add(card(ink(yours, coral).Bold(true).Render(item.label)), rowMeta{gutter: 2, skip: true})
 		}
-		wrapped(sanitize(item.text), w, rowMeta{gutter: 2}, func(s string) string { return card(highlightImageTokens(yours, s)) })
+		// The card's padding after the text is no part of a copy.
+		wrapped(sanitize(item.text), w, rowMeta{gutter: 2, end: 2 + w}, func(s string) string { return card(highlightImageTokens(yours, s)) })
 		rows := imageRows(item.images)
 		if len(item.images) > 0 && len(item.imageIDs) == len(item.images) && m.thumbnailsShown() {
 			add(card(""), rowMeta{gutter: 2, skip: true})
@@ -394,6 +417,12 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 					text = trimTrailing(strings.Trim(rendered, "\n"))
 				}
 			}
+			var unwrapped []string
+			if in.unwrapped != nil {
+				if rendered, err := in.unwrapped.Render(segment.text); err == nil {
+					unwrapped = strings.Split(ansi.Strip(rendered), "\n")
+				}
+			}
 			lines := strings.Split(text, "\n")
 			for len(lines) > 0 && strings.TrimSpace(ansi.Strip(lines[0])) == "" {
 				lines = lines[1:]
@@ -401,8 +430,9 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 			for len(lines) > 0 && strings.TrimSpace(ansi.Strip(lines[len(lines)-1])) == "" {
 				lines = lines[:len(lines)-1]
 			}
-			for _, line := range lines {
-				add(lead+line, rowMeta{gutter: 2})
+			wraps := markWraps(lines, unwrapped)
+			for i, line := range lines {
+				add(lead+line, rowMeta{gutter: 2 + wraps[i].gutter, cont: wraps[i].cont, gap: wraps[i].gap})
 				lead = "  "
 			}
 		}
@@ -492,7 +522,7 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 			// The arguments in full: the title row shows the message or issue
 			// text only as far as the width allows.
 			for _, row := range argumentRows(callArguments(item.call.Arguments), w-4) {
-				add("  "+row.text, rowMeta{gutter: 2 + row.indent, cont: row.cont, target: 0})
+				add("  "+row.text, rowMeta{gutter: 2 + row.indent, cont: row.cont, gap: row.gap, target: 0})
 			}
 		}
 		if item.result != nil {
@@ -568,11 +598,12 @@ func (m *model) layoutEntryIn(item entry, in column) entryLayout {
 				add("  "+ansi.Truncate(screen.summary(), w-2, "…"), rowMeta{gutter: 2, target: 1})
 			} else if m.expandTools || streamingBash {
 				parts := strings.Split(ansi.Hardwrap(result, w-2, false), "\n")
+				wraps := markWraps(parts, strings.Split(result, "\n"))
 				if len(parts) > 100 {
-					parts = append(parts[:100], "… output truncated in the display")
+					parts, wraps = append(parts[:100], "… output truncated in the display"), append(wraps[:100], rowMeta{})
 				}
-				for _, line := range parts {
-					add(mutedStyle.Render("  "+line), rowMeta{gutter: 2, target: 1})
+				for i, line := range parts {
+					add(mutedStyle.Render("  "+line), rowMeta{gutter: 2, cont: wraps[i].cont, gap: wraps[i].gap, target: 1})
 				}
 			} else if result != "" && !merged {
 				style := subtleStyle
@@ -745,6 +776,7 @@ type argumentRow struct {
 	text   string
 	indent int
 	cont   bool
+	gap    string
 }
 
 func argumentRows(arguments []argument, width int) []argumentRow {
@@ -761,12 +793,13 @@ func argumentRows(arguments []argument, width int) []argumentRow {
 		indent := keyWidth + 2
 		first := true
 		for _, paragraph := range strings.Split(sanitize(a.value), "\n") {
-			for _, line := range strings.Split(ansi.Wrap(paragraph, max(1, width-indent), ""), "\n") {
+			lines := strings.Split(ansi.Wrap(paragraph, max(1, width-indent), ""), "\n")
+			for i, wrap := range markWraps(lines, []string{paragraph}) {
 				lead := strings.Repeat(" ", indent)
 				if first {
 					lead = label
 				}
-				rows = append(rows, argumentRow{text: lead + creamStyle.Render(line), indent: indent, cont: !first})
+				rows = append(rows, argumentRow{text: lead + creamStyle.Render(lines[i]), indent: indent, cont: wrap.cont, gap: wrap.gap})
 				first = false
 			}
 		}

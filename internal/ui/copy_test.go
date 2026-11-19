@@ -197,6 +197,83 @@ func TestDragCopyJoinsWrappedSubagentPromptRows(t *testing.T) {
 	}
 }
 
+// dragCopy drags from the first cell of the row showing from to the last cell
+// of the row showing to, and returns what the drag copied.
+func dragCopy(t *testing.T, m *model, from, to string) string {
+	t.Helper()
+	m.refresh(true)
+	m.viewport.GotoTop()
+	var copied string
+	m.clipboard = func(text string) error { copied = text; return nil }
+	start, end := screenRow(t, m, from), screenRow(t, m, to)
+	m.Update(tea.MouseClickMsg{X: 0, Y: start, Button: tea.MouseLeft})
+	m.Update(tea.MouseMotionMsg{X: m.width - 1, Y: end, Button: tea.MouseLeft})
+	_, cmd := m.Update(tea.MouseReleaseMsg{X: m.width - 1, Y: end, Button: tea.MouseLeft})
+	runCmd(m, cmd)
+	return copied
+}
+
+func TestDragCopyJoinsTheRowsAReplyWrapped(t *testing.T) {
+	m, _ := copyModel(t)
+	paragraph := "Prose that wraps " + strings.Repeat("and keeps going ", 12) + "to its end."
+	item := "An item " + strings.Repeat("that runs on ", 12) + "and stops."
+	m.entries = []entry{{role: "assistant", text: paragraph + "\n\n- " + item + "\n- Second item\n\nDone."}}
+	// The reply streamed in; it marks its wrapped rows once the task is done.
+	m.busy = true
+	m.refresh(true)
+	m.busy = false
+
+	got := dragCopy(t, m, "Prose that wraps", "Done.")
+	if want := paragraph + "\n\n• " + item + "\n• Second item\n\nDone."; got != want {
+		t.Errorf("copied %q, want %q", got, want)
+	}
+}
+
+func TestDragCopyJoinsTheRowsLongToolOutputWrapped(t *testing.T) {
+	m, _ := copyModel(t)
+	output := "first " + strings.Repeat("x", 150) + " end\nsecond line"
+	m.entries = []entry{{
+		role:   "tool",
+		done:   true,
+		call:   &core.ToolCall{Name: "Bash", Arguments: json.RawMessage(`{"command":"cat log"}`)},
+		result: &core.ToolResult{Content: output},
+	}}
+	m.expandTools = true
+	if got := dragCopy(t, m, "first x", "second line"); got != output {
+		t.Errorf("copied %q, want %q", got, output)
+	}
+}
+
+func TestDragCopyKeepsTheSpacesAndLineBreaksOfAWrappedArgument(t *testing.T) {
+	m, _ := copyModel(t)
+	description := "Describe " + strings.Repeat("the words ", 20) + "done.\nSecond paragraph."
+	arguments, err := json.Marshal(map[string]string{"action": "create_issue", "description": description})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.entries = []entry{{
+		role:   "tool",
+		done:   true,
+		call:   &core.ToolCall{Name: "Linear", Arguments: arguments},
+		result: &core.ToolResult{Content: "ok"},
+	}}
+	m.expandTools = true
+	if got := dragCopy(t, m, "Describe", "Second paragraph."); got != description {
+		t.Errorf("copied %q, want %q", got, description)
+	}
+}
+
+func TestDragCopyOfYourWrappedMessageKeepsItsSpacesAndNoPadding(t *testing.T) {
+	m, _ := copyModel(t)
+	w := m.mainWidth - 4
+	// The first row wraps at a space, the second inside a word.
+	message := strings.Repeat("a", w) + " " + strings.Repeat("b", w+10) + " end"
+	m.entries = []entry{{role: "user", text: message}}
+	if got := dragCopy(t, m, "aaaa", "end"); got != message {
+		t.Errorf("copied %q, want %q", got, message)
+	}
+}
+
 func TestDoubleClickCopiesWholeMessages(t *testing.T) {
 	m, copied := copyModel(t)
 	row := screenRow(t, m, "remove the worktree please")

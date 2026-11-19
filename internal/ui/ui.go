@@ -123,6 +123,7 @@ type entry struct {
 	cachedExpanded bool
 	cachedGraphics uint64
 	cachedPill     int
+	cachedWraps    bool // the layout marked the rows its Markdown wrap made
 	layout         entryLayout
 }
 

@@ -33,12 +33,13 @@ type copyTarget struct {
 
 // rowMeta maps one rendered row of an entry back to copyable text.
 type rowMeta struct {
-	gutter int  // decoration cells before the text
-	end    int  // cell where the text ends, 0 for the row's end; code cards pad past it
-	cont   bool // continues a wrapped row; a copy joins them without a newline
-	skip   bool // a label or card edge: never part of a dragged selection
-	target int  // index into the entry's targets that a double-click copies
-	code   bool // inside a code card: a single click copies the target
+	gutter int    // decoration cells before the text
+	end    int    // cell where the text ends, 0 for the row's end; code cards pad past it
+	cont   bool   // continues a wrapped row; a copy joins them without a newline
+	gap    string // the spaces a word wrap took out before this row, which a copy puts back
+	skip   bool   // a label or card edge: never part of a dragged selection
+	target int    // index into the entry's targets that a double-click copies
+	code   bool   // inside a code card: a single click copies the target
 }
 
 type entryLayout struct {
@@ -51,6 +52,44 @@ type entryLayout struct {
 type rowRef struct {
 	entry int
 	rowMeta
+}
+
+// markWraps finds the rows a wrap made, by reading the rows alongside the lines
+// they were wrapped from; lines are plain text. A row that goes on with the
+// text where the row above stopped continues it: it gets cont, the spaces the
+// wrap took out as its gap, and its hanging indent as its gutter. Any other row
+// starts the next line that begins with it, and a row that no line begins with,
+// such as a table's, stays unmarked.
+func markWraps(rows, lines []string) []rowMeta {
+	marks := make([]rowMeta, len(rows))
+	next := 0  // the first line no row has started yet
+	rest := "" // what the rows so far left of the line they show
+	for i, row := range rows {
+		row = ansi.Strip(row)
+		body := strings.TrimLeft(rest, " ")
+		text := row
+		if !strings.HasPrefix(body, text) {
+			// Glamour indents a row it wrapped under a list item's text or a quote's bar.
+			text = strings.TrimLeft(row, " │")
+		}
+		if strings.TrimSpace(text) != "" && strings.HasPrefix(body, text) {
+			marks[i] = rowMeta{cont: true, gutter: ansi.StringWidth(row) - ansi.StringWidth(text), gap: rest[:len(rest)-len(body)]}
+			rest = body[len(text):]
+			continue
+		}
+
+		rest = ""
+		if strings.TrimSpace(row) == "" {
+			continue
+		}
+		for j := next; j < len(lines); j++ {
+			if strings.HasPrefix(lines[j], row) {
+				next, rest = j+1, lines[j][len(row):]
+				break
+			}
+		}
+	}
+	return marks
 }
 
 type cell struct{ row, col int }
@@ -259,7 +298,7 @@ func (m *model) selectedText() string {
 			text = strings.TrimRight(text, " ")
 		}
 		if joinNext && m.rows[row].cont && len(out) > 0 {
-			out[len(out)-1] += text
+			out[len(out)-1] += m.rows[row].gap + text
 		} else {
 			out = append(out, text)
 		}
