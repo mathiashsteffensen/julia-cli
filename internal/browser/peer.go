@@ -2,37 +2,55 @@ package browser
 
 import (
 	"context"
-	"errors"
 	"net"
-
-	"julia/internal/sockets"
+	"os/exec"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // chromeOwns reports whether a connection to the proxy comes from Chrome or
 // one of its helpers. The proxy listens on loopback, which a sandboxed command
 // allowed onto loopback can reach too; without this check it could borrow the
-// browser's approvals and send what it likes to an approved origin. Where
-// sockets cannot be listed, no sandbox runs beside the browser, and every
-// local connection is Chrome's.
+// browser's approvals. The command sandbox runs on macOS only.
 func chromeOwns(conn net.Conn, chrome int) bool {
 	client, ok1 := conn.RemoteAddr().(*net.TCPAddr)
 	server, ok2 := conn.LocalAddr().(*net.TCPAddr)
 	if !ok1 || !ok2 {
 		return false
 	}
-	socks, err := sockets.List(context.Background(), "tcp")
-	if errors.Is(err, sockets.ErrUnsupported) {
+	if runtime.GOOS != "darwin" {
 		return true
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "/usr/sbin/lsof", "-nP", "-a",
+		"-i4TCP@"+client.String(), "-sTCP:ESTABLISHED", "-Fpn").Output()
 	if err != nil {
 		return false
 	}
-	for _, s := range socks {
-		if s.Local.Port == client.Port && s.Remote.Port == server.Port && s.Remote.Loopback() {
-			return descends(s.PID, chrome)
+
+	pid := clientPID(string(out), client.String(), server.String())
+	return pid > 0 && descends(pid, chrome)
+}
+
+// lsof lists both ends of a loopback connection. Only the entry pointing
+// from the client to the proxy identifies the process we need to check.
+func clientPID(fields, client, server string) int {
+	want := "n" + client + "->" + server
+	var pid int
+	for field := range strings.SplitSeq(fields, "\n") {
+		if value, ok := strings.CutPrefix(field, "p"); ok {
+			pid, _ = strconv.Atoi(value)
+		}
+		if field == want {
+			return pid
 		}
 	}
-	return false
+	return 0
 }
 
 // descends reports whether pid is root or one of its descendants. A parent
